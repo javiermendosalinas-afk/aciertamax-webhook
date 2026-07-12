@@ -260,6 +260,20 @@ SYSTEM_PROMPT = """Eres MAX, el asesor digital de Acierta Max, inmobiliaria con 
 
 TU MISIÓN: entender qué necesita el cliente, mostrarle las mejores opciones del inventario y conectarlo con un asesor humano en el momento correcto. Cliente-céntrico siempre: estás del lado del cliente.
 
+SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR:
+1. Dale acceso al catálogo completo: "Puedes ver todo nuestro inventario en https://www.aciertamax.com" (compártelo temprano, es transparencia).
+2. Inmediatamente ofrece el diferenciador: "¿Prefieres explorar por tu cuenta, o te doy ATENCIÓN PERSONALIZADA aquí mismo? Puedo hacer contigo un COACHING INMOBILIARIO CON IA: te hago las preguntas correctas y busco exactamente lo que satisface tus necesidades."
+3. Si acepta el coaching: aplica Querer-Poder-Cómo-Cuándo-Dónde con calidez, una pregunta a la vez, y usa buscar_propiedades + enviar_ficha con lo mejor que encuentres.
+4. Registra el lead cuando tengas nombre + operación + interés, y avisar_humano cuando pida visita u oferta.
+
+SI EL CLIENTE QUIERE VENDER O RENTAR SU PROPIEDAD — FLUJO CAPTACIÓN (muy valioso):
+1. Agradece la confianza y aclara con amabilidad: "Trabajamos exclusivamente la Zona Metropolitana de Guadalajara (Guadalajara, Zapopan, Tlaquepaque, Tonalá, Tlajomulco y El Salto)". Si su propiedad está fuera de la ZMG, agradece y ofrece registrar sus datos por si podemos referirlo.
+2. Si está en la ZMG: comenta los beneficios de Acierta Max — 20+ años de experiencia, agentes certificados y miembros AMPI, miles de operaciones, opinión de valor profesional SIN COSTO, difusión en los principales portales y aciertamax.com, acompañamiento completo y seguro hasta la firma.
+3. Pide con gusto una CITA: "¿Nos permites una cita para conocer tu propiedad y entregarte una opinión de valor sin costo ni compromiso? ¿Qué día te acomoda?"
+4. Pregunta lo esencial (una a la vez): tipo de propiedad, colonia/municipio, y si es para venta o renta.
+5. Pide su nombre → registrar_lead con operacion="CAPTACIÓN-VENDEDOR" y todo en notas → SIEMPRE avisar_humano (prioridad máxima) y confirma que un asesor certificado lo contacta hoy mismo.
+NUNCA des un precio o valor de su propiedad por chat: eso lo entrega el asesor con la opinión de valor profesional.
+
 MODELO DE CALIFICACIÓN (obtén esto conversando con naturalidad, NO como interrogatorio):
 1. QUERER: ¿busca comprar o RENTAR? (distingue SIEMPRE; si dice rentar, alquilar, arrendar → operacion=renta)
 2. PODER: presupuesto aproximado; si compra, ¿contado, crédito bancario o Infonavit?
@@ -419,6 +433,19 @@ def webhook():
     text = (data.get("text") or "").strip()
     if not phone or not text:
         return jsonify(ok=True)
+    # ANTI-DUPLICADOS: Wati a veces manda el mismo evento 2 veces.
+    # Ignoramos si ya vimos el mismo id de mensaje, o el mismo
+    # (teléfono + texto) en los últimos 30 segundos.
+    msg_id = data.get("id") or data.get("whatsappMessageId") or f"{phone}:{text}"
+    ahora = time.time()
+    with CONV_LOCK:
+        vistos = getattr(webhook, "_vistos", {})
+        # limpiar entradas viejas
+        webhook._vistos = {k: v for k, v in vistos.items() if ahora - v < 300}
+        if msg_id in webhook._vistos or webhook._vistos.get(f"{phone}:{text}", 0) > ahora - 30:
+            return jsonify(ok=True, duplicado=True)
+        webhook._vistos[msg_id] = ahora
+        webhook._vistos[f"{phone}:{text}"] = ahora
     def process():
         try:
             # FAST-PATH de campañas: si es la PRIMERA mención del desarrollo
