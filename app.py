@@ -208,11 +208,20 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
         creds = Credentials.from_service_account_info(
             json.loads(GOOGLE_CREDS_JSON),
             scopes=["https://www.googleapis.com/auth/spreadsheets"])
-        sh = gspread.authorize(creds).open_by_key(SHEET_ID).sheet1
+        libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+        # Pestaña propia de MAX: se crea sola la primera vez, con
+        # encabezados correctos, sin tocar las pestañas existentes.
+        try:
+            sh = libro.worksheet("Leads MAX")
+        except Exception:
+            sh = libro.add_worksheet(title="Leads MAX", rows=1000, cols=10)
+            sh.append_row(["FOLIO", "FECHA Y HORA", "WHATSAPP", "NOMBRE",
+                           "OPERACIÓN", "INTERÉS", "PRESUPUESTO", "ZONA",
+                           "NOTAS", "ESTATUS"])
         n = len(sh.get_all_values())  # incluye encabezado
         folio = f"ACIERTA-{n:04d}"
         sh.append_row([folio, time.strftime("%Y-%m-%d %H:%M"), phone, nombre,
-                       operacion, interes, presupuesto, zona, notas])
+                       operacion, interes, presupuesto, zona, notas, "NUEVO"])
         return {"registrado": True, "folio": folio}
     except Exception as e:
         return {"registrado": False, "motivo": str(e)[:200]}
@@ -288,6 +297,8 @@ PROPIEDADES EN CAMPAÑA (el sistema ya envió la ficha oficial si el cliente la 
 Para PARQUE MORELOS y el resto del inventario: usa buscar_propiedades.
 
 REGLAS DE ORO:
+- Si NO te queda claro si la persona quiere COMPRAR o VENDER su propiedad, PREGÚNTALO antes de buscar o asumir. Frases como "vendo", "quiero vender", "pongo en venta" = VENDEDOR (captación), aunque mencione precios o características: esos datos describen SU propiedad, no lo que busca comprar.
+- Si la conversación parece continuar algo que no recuerdas, discúlpate brevemente y confirma: "Para atenderte bien, ¿me confirmas si buscas comprar/rentar, o vender tu propiedad?"
 - Un saludo inicial cálido con tu nombre (MAX de Acierta Max) solo la primera vez.
 - Usa buscar_propiedades en cuanto sepas operación + una pista más (zona o presupuesto). No esperes a tener todo.
 - Ofrece fichas: "¿Te mando la ficha con fotos?" y usa enviar_ficha si acepta (máx 3 por turno).
