@@ -363,7 +363,7 @@ def agent_reply(phone, user_text):
 # ------------------------------------------------------------------
 CAMPANAS = {
     "block": {
-        "claves": ["block", "iteso", "the block", "mante"],
+        "claves": ["block", "iteso", "the block"],
         "foto": "https://assets.easybroker.com/property_images/6057125/107111726/EB-WG7125.png",
         "caption": "🏙 THE BLOCK EASY LIVING — Vive más. Muévete menos.\n📍 Periférico Sur M. Gómez Morín 8331, a un paso de ITESO\n💰 RENTA $18,000/mes · Amueblado disponible",
         "cuerpo": ("🛏 1 recámara amplia con baño y clóset · 🛁 medio baño de visitas · "
@@ -378,7 +378,7 @@ CAMPANAS = {
         "seguimiento": "¿La buscas para ti o para alguien más? Si gustas te agendo una visita esta misma semana 🙌",
     },
     "santa_ana": {
-        "claves": ["santa ana", "santaana", "bugambilias", "360"],
+        "claves": ["santa ana", "santaana", "santa ana 360"],
         "foto": "https://assets.easybroker.com/property_images/6102602/108091829/EB-WL2602.png",
         "caption": "🏡 SANTA ANA 360 — Zapopan sur, a minutos de Bugambilias\n📍 Santa Ana Tepetitlán, Zapopan\n💰 VENTA $1,820,000 MXN",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños completos · 📐 53 m² · 🚗 estacionamiento "
@@ -394,7 +394,7 @@ CAMPANAS = {
         "seguimiento": "¿Lo comprarías con crédito bancario, INFONAVIT o recursos propios? Con eso te digo el paso a paso y te agendo visita 🙌",
     },
     "bellavittoria": {
-        "claves": ["bella", "vittoria", "bellavittoria", "lomas de la victoria", "cobre"],
+        "claves": ["bella", "vittoria", "bellavittoria"],
         "foto": "https://assets.easybroker.com/property_images/5810277/101922700/EB-VI0277.png",
         "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,400,000 MXN",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 70–75 m² · 🚗 1-2 cajones "
@@ -459,15 +459,12 @@ def webhook():
         webhook._vistos[f"{phone}:{text}"] = ahora
     def process():
         try:
-            # FAST-PATH de campañas: si es la PRIMERA mención del desarrollo
-            # en la conversación, manda la ficha exacta al instante.
+            # FAST-PATH de campañas: SOLO en el PRIMER mensaje de la
+            # conversación (así llegan los clics de anuncios). A media
+            # conversación decide el agente, que sí tiene contexto.
             nombre, campana = detectar_campana(text)
             historial = get_history(phone)
-            ya_enviada = bool(campana) and any(
-                m.get("role") == "assistant"
-                and campana["caption"][:30] in str(m.get("content", ""))
-                for m in historial)
-            if campana and not ya_enviada:
+            if campana and not historial:
                 responder_campana(phone, text, campana)
                 return
             reply = agent_reply(phone, text)
