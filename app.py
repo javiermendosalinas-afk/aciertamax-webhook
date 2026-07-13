@@ -263,6 +263,11 @@ TOOLS = [
      "description": "Envía al cliente la ficha comercial de una propiedad (foto + datos + liga). Úsala cuando el cliente muestre interés en una propiedad específica de los resultados. Máximo 3 fichas por turno.",
      "input_schema": {"type": "object", "properties": {
          "public_id": {"type": "string"}}, "required": ["public_id"]}},
+    {"name": "enviar_ficha_campana",
+     "description": "Envía al cliente la ficha oficial (foto + datos + liga) de una de las 4 propiedades EN CAMPAÑA: block (The Block/ITESO), santa_ana (Santa Ana 360), bellavittoria (Bella Vittoria), villa_dhara (Villa Dhara/Parque Morelos). ÚSALA DE INMEDIATO cuando el cliente pida la ficha, fotos, brochure o diga 'sí/me interesa/esa' sobre una de estas propiedades.",
+     "input_schema": {"type": "object", "properties": {
+         "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara"]}},
+      "required": ["desarrollo"]}},
     {"name": "registrar_lead",
      "description": "Registra o actualiza el lead en el CRM cuando ya tengas al menos nombre + operación + interés. Úsala UNA vez por conversación cuando el prospecto esté calificado.",
      "input_schema": {"type": "object", "properties": {
@@ -311,6 +316,7 @@ PROPIEDADES EN CAMPAÑA (el sistema ya envió la ficha oficial si el cliente la 
 3. BELLA VITTORIA: deptos en VENTA desde $3,400,000, A ESTRENAR. 2 recámaras, 2 baños, 70-75 m², 1-2 cajones. Cobre 4232, Lomas de la Victoria, Tlaquepaque, a minutos de Plaza del Sol. Créditos bancarios e INFONAVIT/COFINAVIT, entrega inmediata, registrado ante PROFECO. Liga oficial: https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es
 4. VILLA DHARA (Parque Morelos): loft ÚNICO de doble altura, 1 recámara, 1 baño, 74 m² + terraza privada de 55 m², amueblado, a estrenar (2025), piso 2. Frente al Parque Morelos, El Retiro, Guadalajara. RENTA $14,000/mes (mantenimiento $1,500) o VENTA $2,295,000 (acepta bancarios e INFONAVIT/COFINAVIT). Amenidades: gimnasio, biblioteca, salas de trabajo, ludoteca, huerto urbano, vigilancia 24/7. Cerca de Hospital Civil, Catedral, Línea 3. Ideal ejecutivos, médicos, nómadas digitales, Airbnb. Liga oficial: https://www.aciertamax.com/property/el-departamento-mas-exclusivo-de-villa-dhara-terraza-privada-74-m-amueblado?agent=javier373&lang=es
 Para PARQUE MORELOS y el resto del inventario: usa buscar_propiedades.
+REGLA CRÍTICA DE LAS PROPIEDADES EN CAMPAÑA: si el cliente pide la ficha, fotos o brochure de una de estas 4, o responde "sí / esa / me interesa" cuando se la ofreciste, usa INMEDIATAMENTE enviar_ficha_campana — NO hagas más preguntas antes, NO la describas de nuevo: mándala. Nota: estas 4 propiedades pueden NO aparecer en buscar_propiedades (el nombre de la zona no coincide); NUNCA digas "no aparece en el sistema": tú ya tienes sus datos aquí y su ficha en enviar_ficha_campana.
 
 REGLAS DE ORO:
 - DATOS 100% VERIFICADOS SOLAMENTE: al describir una propiedad, menciona ÚNICAMENTE atributos que las herramientas devolvieron para ESA propiedad específica, o que estén en su ficha de PROPIEDADES EN CAMPAÑA. NUNCA mezcles características de una propiedad con otra (ej. el estacionamiento techado es de Santa Ana 360, NO de Bella Vittoria). Ante CUALQUIER dato del que no estés seguro, no lo afirmes: di "déjame mandarte la ficha oficial con los detalles exactos" y usa enviar_ficha. Un dato inventado destruye la confianza del cliente y de Acierta Max.
@@ -332,28 +338,40 @@ REGLAS DE ORO:
 """
 
 def call_claude(messages):
-    # Blindaje: la API exige turnos alternados user/assistant. Si dos
-    # mensajes del cliente llegaron seguidos, se fusionan.
+    # SANITIZACIÓN: la API exige (1) primer turno = user, (2) sin
+    # contenidos vacíos, (3) turnos alternados. Se limpia todo aquí.
     limpio = []
     for m in messages:
+        c = m.get("content")
+        if c is None or (isinstance(c, str) and not c.strip()) or (isinstance(c, list) and not c):
+            continue  # descartar mensajes vacíos
+        if not limpio and m["role"] != "user":
+            continue  # el primer mensaje debe ser del usuario
         if limpio and limpio[-1]["role"] == m["role"] \
-           and isinstance(limpio[-1]["content"], str) and isinstance(m["content"], str):
+           and isinstance(limpio[-1]["content"], str) and isinstance(c, str):
             limpio[-1] = {"role": m["role"],
-                          "content": limpio[-1]["content"] + "\n" + m["content"]}
+                          "content": limpio[-1]["content"] + "\n" + c}
         else:
-            limpio.append(m)
-    r = requests.post(ANTHROPIC_API, timeout=60, headers={
-        "x-api-key": ANTHROPIC_API_KEY,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }, json={
-        "model": CLAUDE_MODEL, "max_tokens": 1024,
-        "system": SYSTEM_PROMPT, "tools": TOOLS, "messages": limpio,
-    })
-    if r.status_code != 200:
-        print(f"[MAX-ERROR] Claude API {r.status_code}: {r.text[:500]}", flush=True)
+            limpio.append({"role": m["role"], "content": c})
+    if not limpio:
+        limpio = [{"role": "user", "content": "Hola"}]
+    for intento in (1, 2):  # un reintento automático ante fallas transitorias
+        r = requests.post(ANTHROPIC_API, timeout=60, headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }, json={
+            "model": CLAUDE_MODEL, "max_tokens": 1024,
+            "system": SYSTEM_PROMPT, "tools": TOOLS, "messages": limpio,
+        })
+        if r.status_code == 200:
+            return r.json()
+        print(f"[MAX-ERROR] Claude API {r.status_code} (intento {intento}): {r.text[:500]}", flush=True)
+        if r.status_code in (429, 500, 502, 503, 529) and intento == 1:
+            time.sleep(2)
+            continue
+        r.raise_for_status()
     r.raise_for_status()
-    return r.json()
 
 def run_tool(name, args, phone):
     print(f"[MAX] Herramienta: {name} {json.dumps(args, ensure_ascii=False)[:200]}", flush=True)
@@ -362,6 +380,8 @@ def run_tool(name, args, phone):
             out = eb_buscar(**args)
         elif name == "enviar_ficha":
             out = enviar_ficha(phone, args.get("public_id", ""))
+        elif name == "enviar_ficha_campana":
+            out = enviar_ficha_campana(phone, args.get("desarrollo", ""))
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
         elif name == "avisar_humano":
@@ -487,6 +507,19 @@ def responder_campana(phone, texto, campana):
     append_history(phone, "assistant",
         f"[Envié la ficha oficial de campaña con foto, datos y liga] {campana['caption']} "
         f"Y pregunté: {campana['seguimiento']}")
+
+def enviar_ficha_campana(phone, desarrollo):
+    """Envía la ficha oficial de una propiedad EN CAMPAÑA (foto + cuerpo)
+    en cualquier momento de la conversación."""
+    c = CAMPANAS.get(desarrollo)
+    if not c:
+        return {"error": f"desarrollo desconocido: {desarrollo}"}
+    ok_img = wati_send_image(phone, c["foto"], c["caption"])
+    if not ok_img:
+        wati_send_text(phone, c["caption"])
+    wati_send_text(phone, c["cuerpo"])
+    return {"enviada": True, "desarrollo": desarrollo,
+            "nota": "ficha con foto y liga ya enviada al cliente; continúa la conversación sin repetir estos datos"}
 
 # ------------------------------------------------------------------
 # WEBHOOK WATI
