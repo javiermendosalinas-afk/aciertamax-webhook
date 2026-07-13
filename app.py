@@ -201,8 +201,16 @@ def enviar_ficha(phone, public_id):
 # ------------------------------------------------------------------
 # GOOGLE SHEETS — registro de leads con folio ACIERTA-XXXX
 # ------------------------------------------------------------------
+REGISTRADOS = {}  # phone -> (folio, timestamp): evita folios duplicados
+
 def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
                    zona="", notas=""):
+    # Candado: si este número ya se registró en las últimas 24h,
+    # regresar el mismo folio en vez de crear otro.
+    previo = REGISTRADOS.get(phone)
+    if previo and time.time() - previo[1] < 86400:
+        return {"registrado": True, "folio": previo[0],
+                "nota": "ya estaba registrado; usa este folio, no lo registres de nuevo"}
     if not (GOOGLE_CREDS_JSON and SHEET_ID):
         return {"registrado": False, "motivo": "Sheets no configurado"}
     try:
@@ -225,6 +233,7 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
         folio = f"ACIERTA-{n:04d}"
         sh.append_row([folio, time.strftime("%Y-%m-%d %H:%M"), phone, nombre,
                        operacion, interes, presupuesto, zona, notas, "NUEVO"])
+        REGISTRADOS[phone] = (folio, time.time())
         return {"registrado": True, "folio": folio}
     except Exception as e:
         return {"registrado": False, "motivo": str(e)[:200]}
@@ -303,6 +312,8 @@ PROPIEDADES EN CAMPAÑA (el sistema ya envió la ficha oficial si el cliente la 
 Para PARQUE MORELOS y el resto del inventario: usa buscar_propiedades.
 
 REGLAS DE ORO:
+- NUNCA pidas el teléfono del cliente: ya lo tienes (es este WhatsApp) y el sistema lo registra automáticamente. Solo pregunta si desea ser contactado en un número DIFERENTE.
+- Registra a cada cliente UNA sola vez; si la herramienta te dice que ya estaba registrado, usa ese folio y no lo repitas.
 - NUNCA prometas tiempos exactos de contacto ("en 30-60 minutos"); di "hoy mismo" o "a la brevedad".
 - NUNCA sugieras contactar directamente a Javier Mendoza ni a ninguna persona del equipo por nombre; el canal es: "un asesor certificado te contactará".
 - Si ya ofreciste las mismas opciones y el cliente las rechazó, NO las vuelvas a ofrecer; reconócelo y pasa a alternativas (registrar su búsqueda para avisarle, ampliar criterios, o cita con asesor).
