@@ -309,6 +309,7 @@ PROPIEDADES EN CAMPAÑA (el sistema ya envió la ficha oficial si el cliente la 
 1. THE BLOCK EASY LIVING (también le dicen "el de ITESO"): depto en RENTA $18,000/mes + mant. $2,800. 1 recámara, 2 baños, 65 m², piso 4, amueblado disponible. Periférico Sur 8331, El Mante, Tlaquepaque, junto a ITESO. No aceptan mascotas. Liga oficial: https://www.aciertamax.com/property/iteso-amplio-departamento-nuevo-vista-panoramica-roof-garden-ubicacion-premium?agent=javier373&lang=es
 2. SANTA ANA 360: depto en VENTA $1,820,000. 2 recámaras, 2 baños, 53 m², año 2022, estacionamiento techado. Santa Ana Tepetitlán, Zapopan, cerca de Bugambilias. Acepta crédito bancario, INFONAVIT y contado. Pet friendly. Liga oficial: https://www.aciertamax.com/property/departamento-equipado-de-2-recamaras-en-santa-ana-360-cerca-de-bugambilias?agent=javier373&lang=es
 3. BELLA VITTORIA: deptos en VENTA desde $3,400,000, A ESTRENAR. 2 recámaras, 2 baños, 70-75 m², 1-2 cajones. Cobre 4232, Lomas de la Victoria, Tlaquepaque, a minutos de Plaza del Sol. Créditos bancarios e INFONAVIT/COFINAVIT, entrega inmediata, registrado ante PROFECO. Liga oficial: https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es
+4. VILLA DHARA (Parque Morelos): loft ÚNICO de doble altura, 1 recámara, 1 baño, 74 m² + terraza privada de 55 m², amueblado, a estrenar (2025), piso 2. Frente al Parque Morelos, El Retiro, Guadalajara. RENTA $14,000/mes (mantenimiento $1,500) o VENTA $2,295,000 (acepta bancarios e INFONAVIT/COFINAVIT). Amenidades: gimnasio, biblioteca, salas de trabajo, ludoteca, huerto urbano, vigilancia 24/7. Cerca de Hospital Civil, Catedral, Línea 3. Ideal ejecutivos, médicos, nómadas digitales, Airbnb. Liga oficial: https://www.aciertamax.com/property/el-departamento-mas-exclusivo-de-villa-dhara-terraza-privada-74-m-amueblado?agent=javier373&lang=es
 Para PARQUE MORELOS y el resto del inventario: usa buscar_propiedades.
 
 REGLAS DE ORO:
@@ -448,6 +449,22 @@ CAMPANAS = {
                    "https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es\n\n"
                    "Acierta Max — Socio AMPI, certificado ✅"),
         "seguimiento": "¿Lo buscas para vivir o como inversión? Hay unidades desde ese precio y te puedo agendar visita al desarrollo esta semana 🙌",
+    },
+    "villa_dhara": {
+        "claves": ["villa dhara", "dhara", "parque morelos"],
+        "foto": "https://assets.easybroker.com/property_images/6057913/107125331/EB-WG7913.png",
+        "caption": "🌿 VILLA DHARA — El loft con terraza privada frente al Parque Morelos\n📍 El Retiro, Centro de Guadalajara\n💰 RENTA $14,000/mes · o VENTA $2,295,000 MXN",
+        "cuerpo": ("🛏 1 recámara · 🛁 1 baño completo · 📐 74 m² + TERRAZA PRIVADA de 55 m² · "
+                   "a estrenar (2025) · totalmente AMUEBLADO · sala de doble altura\n\n"
+                   "✨ Amenidades: gimnasio, biblioteca, salas de trabajo, ludoteca, huerto urbano, "
+                   "terrazas panorámicas, elevador, vigilancia 24/7.\n"
+                   "📍 A minutos caminando de Hospital Civil, Centro Médico, Catedral, "
+                   "San Juan de Dios, Ciudad Creativa Digital y Línea 3 del Tren Ligero.\n"
+                   "💳 En venta acepta créditos bancarios e INFONAVIT/COFINAVIT. Mantenimiento $1,500.\n\n"
+                   "🔗 Ficha completa con las 11 fotos:\n"
+                   "https://www.aciertamax.com/property/el-departamento-mas-exclusivo-de-villa-dhara-terraza-privada-74-m-amueblado?agent=javier373&lang=es\n\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "Este loft es único en el desarrollo: ¿te interesa para RENTARLO y vivirlo, o para COMPRARLO como inversión (ideal Airbnb)? 🙌",
     },
 }
 
