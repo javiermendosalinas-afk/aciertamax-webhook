@@ -268,6 +268,19 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara"]}},
       "required": ["desarrollo"]}},
+    {"name": "buscar_inventario_zmg",
+     "description": "Busca en la BOLSA COMPLETA de la ZMG (~1,800 casas y departamentos en VENTA desde $3,000,000, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $3M. Regresa título, precio, recámaras y liga.",
+     "input_schema": {"type": "object", "properties": {
+         "municipio": {"type": "string", "description": "Guadalajara, Zapopan, Tlaquepaque, Tonalá o Tlajomulco"},
+         "precio_min": {"type": "number"}, "precio_max": {"type": "number"},
+         "recamaras_min": {"type": "number"},
+         "tipo": {"type": "string", "description": "casa o departamento"},
+         "limite": {"type": "number", "description": "máx 8, default 5"}},
+      "required": []}},
+    {"name": "enviar_ficha_liga",
+     "description": "Envía al cliente la ficha (foto + datos + liga oficial) de una propiedad de la bolsa ZMG. Usa la liga EXACTA que regresó buscar_inventario_zmg. Máximo 3 por turno.",
+     "input_schema": {"type": "object", "properties": {
+         "liga": {"type": "string"}}, "required": ["liga"]}},
     {"name": "registrar_lead",
      "description": "Registra o actualiza el lead en el CRM cuando ya tengas al menos nombre + operación + interés. Úsala UNA vez por conversación cuando el prospecto esté calificado.",
      "input_schema": {"type": "object", "properties": {
@@ -317,6 +330,11 @@ PROPIEDADES EN CAMPAÑA (el sistema ya envió la ficha oficial si el cliente la 
 4. VILLA DHARA (Parque Morelos): loft ÚNICO de doble altura, 1 recámara, 1 baño, 74 m² + terraza privada de 55 m², amueblado, a estrenar (2025), piso 2. Frente al Parque Morelos, El Retiro, Guadalajara. RENTA $14,000/mes (mantenimiento $1,500) o VENTA $2,295,000 (acepta bancarios e INFONAVIT/COFINAVIT). Amenidades: gimnasio, biblioteca, salas de trabajo, ludoteca, huerto urbano, vigilancia 24/7. Cerca de Hospital Civil, Catedral, Línea 3. Ideal ejecutivos, médicos, nómadas digitales, Airbnb. Liga oficial: https://www.aciertamax.com/property/el-departamento-mas-exclusivo-de-villa-dhara-terraza-privada-74-m-amueblado?agent=javier373&lang=es
 Para PARQUE MORELOS y el resto del inventario: usa buscar_propiedades.
 REGLA CRÍTICA DE LAS PROPIEDADES EN CAMPAÑA: si el cliente pide la ficha, fotos o brochure de una de estas 4, o responde "sí / esa / me interesa" cuando se la ofreciste, usa INMEDIATAMENTE enviar_ficha_campana — NO hagas más preguntas antes, NO la describas de nuevo: mándala. Nota: estas 4 propiedades pueden NO aparecer en buscar_propiedades (el nombre de la zona no coincide); NUNCA digas "no aparece en el sistema": tú ya tienes sus datos aquí y su ficha en enviar_ficha_campana.
+
+INVENTARIO — ORDEN DE BÚSQUEDA:
+1. Propiedades en campaña (datos aquí arriba) y buscar_propiedades (inventario propio, venta y renta de todos los precios).
+2. buscar_inventario_zmg: la BOLSA COMPLETA de la ZMG (~1,800 casas y deptos en VENTA desde $3M). Úsala siempre que el cliente compre desde $3M o cuando el inventario propio no alcance. ¡Con esta herramienta casi siempre HAY opciones: nunca digas "no tengo" sin consultarla!
+3. Con propiedades de la bolsa: comparte SOLO los datos del registro (precio, recámaras, baños, m², municipio) + la liga con enviar_ficha_liga. NO inventes amenidades ni detalles: la ficha completa está en la liga. Máximo 3 fichas por turno.
 
 REGLAS DE ORO:
 - DATOS 100% VERIFICADOS SOLAMENTE: al describir una propiedad, menciona ÚNICAMENTE atributos que las herramientas devolvieron para ESA propiedad específica, o que estén en su ficha de PROPIEDADES EN CAMPAÑA. NUNCA mezcles características de una propiedad con otra (ej. el estacionamiento techado es de Santa Ana 360, NO de Bella Vittoria). Ante CUALQUIER dato del que no estés seguro, no lo afirmes: di "déjame mandarte la ficha oficial con los detalles exactos" y usa enviar_ficha. Un dato inventado destruye la confianza del cliente y de Acierta Max.
@@ -382,6 +400,10 @@ def run_tool(name, args, phone):
             out = enviar_ficha(phone, args.get("public_id", ""))
         elif name == "enviar_ficha_campana":
             out = enviar_ficha_campana(phone, args.get("desarrollo", ""))
+        elif name == "buscar_inventario_zmg":
+            out = buscar_inventario_zmg(**args)
+        elif name == "enviar_ficha_liga":
+            out = enviar_ficha_liga(phone, args.get("liga", ""))
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
         elif name == "avisar_humano":
@@ -530,6 +552,101 @@ def enviar_ficha_campana(phone, desarrollo):
     FICHAS_ENVIADAS.setdefault(phone, set()).add(desarrollo)
     return {"enviada": True, "desarrollo": desarrollo,
             "nota": "ficha con foto y liga ya enviada al cliente; continúa la conversación sin repetir estos datos"}
+
+# ------------------------------------------------------------------
+# INVENTARIO ZMG COMPARTIDO (bolsa completa leída de aciertamax.com)
+# Archivo inventario_zmg.csv junto a app.py; se actualiza semanalmente
+# corriendo inventario_zmg.py y resubiendo el CSV al repositorio.
+# ------------------------------------------------------------------
+INVENTARIO_ZMG = []
+try:
+    import csv as _csv
+    with open("inventario_zmg.csv", encoding="utf-8") as _f:
+        for _row in _csv.DictReader(_f):
+            try:
+                _row["Precio"] = int(float(_row.get("Precio") or 0))
+            except ValueError:
+                _row["Precio"] = 0
+            try:
+                _row["Recámaras"] = int(float(_row["Recámaras"])) if _row.get("Recámaras") not in (None, "", "nan") else None
+            except ValueError:
+                _row["Recámaras"] = None
+            INVENTARIO_ZMG.append(_row)
+    print(f"[MAX] Inventario ZMG cargado: {len(INVENTARIO_ZMG)} propiedades", flush=True)
+except FileNotFoundError:
+    print("[MAX] Sin inventario_zmg.csv: solo inventario propio disponible", flush=True)
+
+def buscar_inventario_zmg(municipio=None, precio_min=None, precio_max=None,
+                          recamaras_min=None, tipo=None, limite=5):
+    """Busca en la bolsa compartida ZMG (venta >= $3M)."""
+    if not INVENTARIO_ZMG:
+        return {"aviso": "inventario compartido no disponible; usa buscar_propiedades"}
+    res = []
+    muni_l = (municipio or "").lower()
+    tipo_l = (tipo or "").lower()
+    for p in INVENTARIO_ZMG:
+        if muni_l and muni_l not in p.get("Municipio", "").lower():
+            continue
+        if tipo_l:
+            pt = p.get("Tipo", "").lower()
+            if "depa" in tipo_l or "depart" in tipo_l:
+                if "departamento" not in pt:
+                    continue
+            elif "casa" in tipo_l and "casa" not in pt:
+                continue
+        precio = p.get("Precio") or 0
+        if precio_min and precio < float(precio_min):
+            continue
+        if precio_max and precio > float(precio_max):
+            continue
+        if recamaras_min and (p.get("Recámaras") or 0) < int(recamaras_min):
+            continue
+        res.append(p)
+    res.sort(key=lambda x: x.get("Precio") or 0)
+    out = [{
+        "titulo": p.get("Título/Colonia"), "municipio": p.get("Municipio"),
+        "tipo": p.get("Tipo"), "precio": p.get("Precio"),
+        "recamaras": p.get("Recámaras"), "banos": p.get("Baños"),
+        "m2": p.get("m²"), "liga": p.get("Liga"),
+    } for p in res[: min(int(limite or 5), 8)]]
+    return {"total_coincidencias": len(res), "propiedades": out,
+            "nota": "datos según ficha publicada; para detalles y fotos usa enviar_ficha_liga con la liga"}
+
+def enviar_ficha_liga(phone, liga):
+    """Ficha de una propiedad de la bolsa: foto (og:image de la página)
+    + datos del registro + liga oficial con código de agente."""
+    p = next((x for x in INVENTARIO_ZMG if x.get("Liga") == liga), None)
+    if not p:
+        return {"error": "liga no encontrada en el inventario"}
+    foto = None
+    try:
+        r = requests.get(liga, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        m = None
+        if r.status_code == 200:
+            import re as _re
+            m = _re.search(r'property="og:image"\s+content="([^"]+)"', r.text) or \
+                _re.search(r'content="([^"]+)"\s+property="og:image"', r.text)
+        if m:
+            foto = m.group(1).replace("&amp;", "&")
+    except Exception:
+        pass
+    precio = p.get("Precio") or 0
+    caption = (f"🏡 {p.get('Título/Colonia', 'Propiedad')}\n"
+               f"📍 {p.get('Municipio', 'ZMG')}\n"
+               f"💰 ${precio:,.0f} MXN en VENTA")
+    partes = []
+    if p.get("Recámaras"): partes.append(f"🛏 {p['Recámaras']} rec")
+    if p.get("Baños") not in (None, "", "nan"): partes.append(f"🛁 {p['Baños']} baños")
+    if p.get("m²") not in (None, "", "nan"): partes.append(f"📐 {p['m²']} m²")
+    cuerpo = (" · ".join(partes) +
+              f"\n\n🔗 Ficha completa con fotos y detalles:\n{liga}"
+              f"\n\nAcierta Max — Socio AMPI, certificado ✅")
+    ok_img = wati_send_image(phone, foto, caption) if foto else False
+    if not ok_img:
+        wati_send_text(phone, caption)
+    wati_send_text(phone, cuerpo)
+    return {"enviada": True, "titulo": p.get("Título/Colonia"),
+            "nota": "ficha enviada; continúa la conversación"}
 
 # ------------------------------------------------------------------
 # WEBHOOK WATI
