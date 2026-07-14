@@ -269,7 +269,7 @@ TOOLS = [
          "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara"]}},
       "required": ["desarrollo"]}},
     {"name": "buscar_inventario_zmg",
-     "description": "Busca en la BOLSA COMPLETA de la ZMG (~1,800 casas y departamentos en VENTA desde $3,000,000, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $3M. Regresa título, precio, recámaras y liga.",
+     "description": "Busca en la BOLSA COMPLETA de la ZMG (~1,800 casas y departamentos en VENTA desde $3,000,000, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $3M — pero SOLO después de haber hecho al menos una pregunta de calidad (uso, urgencia, o preferencia específica) como coach, no como reflejo automático al primer mensaje del cliente. Regresa título, precio, recámaras y liga.",
      "input_schema": {"type": "object", "properties": {
          "municipio": {"type": "string", "description": "Guadalajara, Zapopan, Tlaquepaque, Tonalá o Tlajomulco"},
          "precio_min": {"type": "number"}, "precio_max": {"type": "number"},
@@ -278,9 +278,14 @@ TOOLS = [
          "limite": {"type": "number", "description": "máx 8, default 5"}},
       "required": []}},
     {"name": "enviar_ficha_liga",
-     "description": "Envía al cliente la ficha (foto + datos + liga oficial) de una propiedad de la bolsa ZMG. Usa la liga EXACTA que regresó buscar_inventario_zmg. Máximo 3 por turno.",
+     "description": "Envía al cliente la ficha (foto + datos + liga oficial) de una propiedad de la bolsa ZMG. Usa la liga EXACTA que regresó buscar_inventario_zmg o seleccionar_de_lista. Máximo 3 por turno.",
      "input_schema": {"type": "object", "properties": {
          "liga": {"type": "string"}}, "required": ["liga"]}},
+    {"name": "seleccionar_de_lista",
+     "description": "Resuelve cuando el cliente se refiere a una opción de la ÚLTIMA lista que le mostraste por número o posición ('la 3', 'esa', 'la primera'). SIEMPRE úsala en ese caso en vez de adivinar o repetir de memoria — te regresa los datos reales y la liga exacta de esa posición.",
+     "input_schema": {"type": "object", "properties": {
+         "numero": {"type": "number", "description": "Posición en la última lista mostrada (1, 2, 3...)"}},
+      "required": ["numero"]}},
     {"name": "registrar_lead",
      "description": "Registra o actualiza el lead en el CRM cuando ya tengas al menos nombre + operación + interés. Úsala UNA vez por conversación cuando el prospecto esté calificado.",
      "input_schema": {"type": "object", "properties": {
@@ -302,11 +307,17 @@ AGENDA DE CITAS: cuando el cliente quiera agendar cita o visita, además de avis
 
 TU MISIÓN: entender qué necesita el cliente, mostrarle las mejores opciones del inventario y conectarlo con un asesor humano en el momento correcto. Cliente-céntrico siempre: estás del lado del cliente.
 
-SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR:
+SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su COACH, no un buscador — usa SPIN Compacto):
 1. Dale acceso al catálogo completo: "Puedes ver todo nuestro inventario en https://www.aciertamax.com" (compártelo temprano, es transparencia).
-2. Inmediatamente ofrece el diferenciador: "¿Prefieres explorar por tu cuenta, o te doy ATENCIÓN PERSONALIZADA aquí mismo? Puedo hacer contigo un COACHING INMOBILIARIO CON IA: te hago las preguntas correctas y busco exactamente lo que satisface tus necesidades."
-3. Si acepta el coaching: aplica Querer-Poder-Cómo-Cuándo-Dónde con calidez, una pregunta a la vez, y usa buscar_propiedades + enviar_ficha con lo mejor que encuentres.
-4. Registra el lead cuando tengas nombre + operación + interés, y avisar_humano cuando pida visita u oferta.
+2. Ofrece el diferenciador: "¿Prefieres explorar por tu cuenta, o te doy ATENCIÓN PERSONALIZADA aquí mismo? Puedo hacer contigo un COACHING INMOBILIARIO CON IA: te hago las preguntas correctas y busco exactamente lo que satisface tus necesidades."
+3. SITUACIÓN: la cubre el modelo Querer-Poder-Cómo-Cuándo-Dónde (zona, presupuesto, recámaras, uso). No la repreguntes si el cliente ya la dio de golpe.
+4. PROBLEMA — ANTES DE TU PRIMERA BÚSQUEDA: agradece los datos que ya diste, pero SIEMPRE agrega UNA pregunta de problema/calidad que no sea pura situación — la que más ayude a acotar: ¿qué es lo que más te ha costado encontrar hasta ahora?, ¿es para vivir o invertir?, ¿algo que no pueda faltar (amenidad, colonia exacta, planta baja)? Nunca dispares buscar_inventario_zmg de inmediato solo con precio+zona+recámaras: esos tres datos rara vez acotan lo suficiente en una bolsa de miles.
+5. SI LA BÚSQUEDA REGRESA MUCHOS RESULTADOS (más de ~15): NO listes las más baratas. Di cuántas hay y pide UNA preferencia más para acotar antes de mostrar la lista. Mejor 5 opciones bien dirigidas que 5 arbitrarias.
+6. SI LA BÚSQUEDA REGRESA POCOS O NINGÚN RESULTADO: dilo con honestidad y pregunta cuál criterio prefiere ceder (precio, zona vecina, recámaras) — no decidas tú solo.
+7. PROBLEMA otra vez, tras cada reacción del cliente a una opción ("no me convence", "me gusta"): pregunta AL MENOS UNA VEZ el porqué antes de solo buscar más ("¿qué le faltó — tamaño, ubicación, algo más?"). Esto es lo que te distingue de un buscador.
+8. IMPLICACIÓN — solo si el cliente YA reveló una urgencia real (renta que vence, familia creciendo, oferta que expira): amplifica con tacto, una sola vez, sin forzar: "y si no encuentras algo a tiempo, ¿qué pasaría con [lo que mencionó]?". Nunca la inventes ni la fuerces si no hay urgencia real en la conversación.
+9. NECESIDAD-BENEFICIO — cuando por fin una opción encaje o esté cerca: en vez de enumerar tú las ventajas, pregunta para que el cliente las diga: "si esta cumple con eso, ¿qué te resolvería?" o "¿qué tanto se acerca a lo que buscabas?". Que lo diga él, no tú.
+10. Registra el lead cuando tengas nombre + operación + interés, y avisar_humano cuando pida visita u oferta.
 
 SI EL CLIENTE QUIERE VENDER O RENTAR SU PROPIEDAD — FLUJO CAPTACIÓN (muy valioso):
 1. Agradece la confianza y aclara con amabilidad: "Trabajamos exclusivamente la Zona Metropolitana de Guadalajara (Guadalajara, Zapopan, Tlaquepaque, Tonalá, Tlajomulco y El Salto)". Si su propiedad está fuera de la ZMG, agradece y ofrece registrar sus datos por si podemos referirlo.
@@ -335,8 +346,10 @@ INVENTARIO — ORDEN DE BÚSQUEDA:
 1. Propiedades en campaña (datos aquí arriba) y buscar_propiedades (inventario propio, venta y renta de todos los precios).
 2. buscar_inventario_zmg: la BOLSA COMPLETA de la ZMG (~1,800 casas y deptos en VENTA desde $3M). Úsala siempre que el cliente compre desde $3M o cuando el inventario propio no alcance. ¡Con esta herramienta casi siempre HAY opciones: nunca digas "no tengo" sin consultarla!
 3. Con propiedades de la bolsa: comparte SOLO los datos del registro (precio, recámaras, baños, m², municipio) + la liga con enviar_ficha_liga. NO inventes amenidades ni detalles: la ficha completa está en la liga. Máximo 3 fichas por turno.
+4. CUANDO EL CLIENTE SE REFIERE A UNA OPCIÓN YA MOSTRADA ("la 3", "esa", "la primera", "la de Ciudad Granja"): usa SIEMPRE seleccionar_de_lista con el número de posición — NUNCA repitas datos de memoria ni adivines cuál era. Si el cliente nombra una zona/colonia que NUNCA apareció en tus resultados (tú no la mencionaste ni el cliente la vio en una lista tuya), es una zona NUEVA que el cliente está pidiendo: haz una NUEVA búsqueda con buscar_inventario_zmg filtrando por esa zona. Si esa nueva búsqueda no trae nada, di la verdad ("no tengo opciones en esa colonia exacta ahorita") y ofrece alternativas reales — jamás inventes un nombre de fraccionamiento o desarrollo que ninguna herramienta te dio.
 
 REGLAS DE ORO:
+- PROHIBIDO INVENTAR PROPIEDADES: cada nombre, precio, m² o característica que menciones debe venir literalmente de una respuesta de herramienta (buscar_propiedades, buscar_inventario_zmg, seleccionar_de_lista, o las fichas de campaña). Si el cliente insiste en un nombre que tú nunca dijiste y ninguna búsqueda lo confirma, jamás lo repitas como si existiera: aclara con calma que no tienes esa propiedad exacta disponible en este momento.
 - DATOS 100% VERIFICADOS SOLAMENTE: al describir una propiedad, menciona ÚNICAMENTE atributos que las herramientas devolvieron para ESA propiedad específica, o que estén en su ficha de PROPIEDADES EN CAMPAÑA. NUNCA mezcles características de una propiedad con otra (ej. el estacionamiento techado es de Santa Ana 360, NO de Bella Vittoria). Ante CUALQUIER dato del que no estés seguro, no lo afirmes: di "déjame mandarte la ficha oficial con los detalles exactos" y usa enviar_ficha. Un dato inventado destruye la confianza del cliente y de Acierta Max.
 - NUNCA pidas el teléfono del cliente: ya lo tienes (es este WhatsApp) y el sistema lo registra automáticamente. Solo pregunta si desea ser contactado en un número DIFERENTE.
 - Registra a cada cliente UNA sola vez; si la herramienta te dice que ya estaba registrado, usa ese folio y no lo repitas.
@@ -401,9 +414,11 @@ def run_tool(name, args, phone):
         elif name == "enviar_ficha_campana":
             out = enviar_ficha_campana(phone, args.get("desarrollo", ""))
         elif name == "buscar_inventario_zmg":
-            out = buscar_inventario_zmg(**args)
+            out = buscar_inventario_zmg(phone, **args)
         elif name == "enviar_ficha_liga":
             out = enviar_ficha_liga(phone, args.get("liga", ""))
+        elif name == "seleccionar_de_lista":
+            out = seleccionar_de_lista(phone, args.get("numero"))
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
         elif name == "avisar_humano":
@@ -576,9 +591,14 @@ try:
 except FileNotFoundError:
     print("[MAX] Sin inventario_zmg.csv: solo inventario propio disponible", flush=True)
 
-def buscar_inventario_zmg(municipio=None, precio_min=None, precio_max=None,
+ULTIMA_BUSQUEDA = {}  # phone -> lista de propiedades mostradas en el último resultado
+                      # (permite resolver "la 3", "esa" sin adivinar ni inventar)
+
+def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=None,
                           recamaras_min=None, tipo=None, limite=5):
-    """Busca en la bolsa compartida ZMG (venta >= $3M)."""
+    """Busca en la bolsa compartida ZMG (venta >= $3M). Guarda el resultado
+    exacto mostrado a ESTE cliente para poder resolver referencias como
+    "la 3" con seleccionar_de_lista, sin inventar nada."""
     if not INVENTARIO_ZMG:
         return {"aviso": "inventario compartido no disponible; usa buscar_propiedades"}
     res = []
@@ -603,14 +623,37 @@ def buscar_inventario_zmg(municipio=None, precio_min=None, precio_max=None,
             continue
         res.append(p)
     res.sort(key=lambda x: x.get("Precio") or 0)
+    mostradas = res[: min(int(limite or 5), 8)]
+    # Se guarda la lista EXACTA mostrada, en el mismo orden, indexada 1..N
+    ULTIMA_BUSQUEDA[phone] = mostradas
     out = [{
+        "numero": i + 1,
         "titulo": p.get("Título/Colonia"), "municipio": p.get("Municipio"),
         "tipo": p.get("Tipo"), "precio": p.get("Precio"),
         "recamaras": p.get("Recámaras"), "banos": p.get("Baños"),
         "m2": p.get("m²"), "liga": p.get("Liga"),
-    } for p in res[: min(int(limite or 5), 8)]]
+    } for i, p in enumerate(mostradas)]
     return {"total_coincidencias": len(res), "propiedades": out,
-            "nota": "datos según ficha publicada; para detalles y fotos usa enviar_ficha_liga con la liga"}
+            "nota": "Guardado como la lista activa de este cliente. Si el cliente responde "
+                    "'la 1/2/3...' usa seleccionar_de_lista con ese número — NUNCA inventes "
+                    "un nombre de propiedad que no esté en esta lista."}
+
+def seleccionar_de_lista(phone, numero):
+    """Resuelve 'la 3', 'esa', etc. contra la ÚLTIMA lista real mostrada
+    a este cliente. Si no hay coincidencia, dice la verdad: no inventa."""
+    lista = ULTIMA_BUSQUEDA.get(phone) or []
+    try:
+        idx = int(numero) - 1
+    except (TypeError, ValueError):
+        return {"error": "número inválido"}
+    if not lista or idx < 0 or idx >= len(lista):
+        return {"error": "no tengo esa propiedad en la última lista que te mostré; "
+                          "pide de nuevo la lista con buscar_inventario_zmg o pregunta "
+                          "al cliente a cuál de las mostradas se refiere"}
+    p = lista[idx]
+    return {"titulo": p.get("Título/Colonia"), "municipio": p.get("Municipio"),
+            "precio": p.get("Precio"), "recamaras": p.get("Recámaras"),
+            "banos": p.get("Baños"), "m2": p.get("m²"), "liga": p.get("Liga")}
 
 def enviar_ficha_liga(phone, liga):
     """Ficha de una propiedad de la bolsa: foto (og:image de la página)
@@ -640,7 +683,9 @@ def enviar_ficha_liga(phone, liga):
     if p.get("m²") not in (None, "", "nan"): partes.append(f"📐 {p['m²']} m²")
     cuerpo = (" · ".join(partes) +
               f"\n\n🔗 Ficha completa con fotos y detalles:\n{liga}"
-              f"\n\nAcierta Max — Socio AMPI, certificado ✅")
+              f"\n\nAcierta Max — Socio AMPI, certificado ✅"
+              f"\n\n🔵 _Propiedad compartida mediante colaboración inmobiliaria profesional. "
+              f"Precio y disponibilidad sujetos a confirmación._")
     ok_img = wati_send_image(phone, foto, caption) if foto else False
     if not ok_img:
         wati_send_text(phone, caption)
