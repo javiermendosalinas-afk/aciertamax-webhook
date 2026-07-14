@@ -269,12 +269,13 @@ TOOLS = [
          "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara"]}},
       "required": ["desarrollo"]}},
     {"name": "buscar_inventario_zmg",
-     "description": "Busca en la BOLSA COMPLETA de la ZMG (~1,800 casas y departamentos en VENTA desde $3,000,000, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $3M — pero SOLO después de haber hecho al menos una pregunta de calidad (uso, urgencia, o preferencia específica) como coach, no como reflejo automático al primer mensaje del cliente. Regresa título, precio, recámaras y liga.",
+     "description": "Busca en la BOLSA COMPLETA de la ZMG (~1,800 casas y departamentos en VENTA desde $3,000,000, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $3M — pero SOLO después de haber hecho al menos una pregunta de calidad (uso, urgencia, o preferencia específica) como coach, no como reflejo automático al primer mensaje del cliente. Si el cliente nombra una COLONIA o fraccionamiento específico (ej. 'Madeiras', 'Andares'), usa el parámetro 'texto' para filtrar de verdad por ese nombre — NO vuelvas a mostrar la lista genérica del municipio disfrazada de 'colonias vecinas'. Regresa título, precio, recámaras y liga.",
      "input_schema": {"type": "object", "properties": {
          "municipio": {"type": "string", "description": "Guadalajara, Zapopan, Tlaquepaque, Tonalá o Tlajomulco"},
          "precio_min": {"type": "number"}, "precio_max": {"type": "number"},
          "recamaras_min": {"type": "number"},
          "tipo": {"type": "string", "description": "casa o departamento"},
+         "texto": {"type": "string", "description": "colonia, fraccionamiento o palabra clave del título a buscar dentro del municipio, ej. 'Madeiras'"},
          "limite": {"type": "number", "description": "máx 8, default 5"}},
       "required": []}},
     {"name": "enviar_ficha_liga",
@@ -312,6 +313,8 @@ SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su CO
 2. Ofrece el diferenciador: "¿Prefieres explorar por tu cuenta, o te doy ATENCIÓN PERSONALIZADA aquí mismo? Puedo hacer contigo un COACHING INMOBILIARIO CON IA: te hago las preguntas correctas y busco exactamente lo que satisface tus necesidades."
 3. SITUACIÓN: la cubre el modelo Querer-Poder-Cómo-Cuándo-Dónde (zona, presupuesto, recámaras, uso). No la repreguntes si el cliente ya la dio de golpe.
 4. PROBLEMA — ANTES DE TU PRIMERA BÚSQUEDA: agradece los datos que ya diste, pero SIEMPRE agrega UNA pregunta de problema/calidad que no sea pura situación — la que más ayude a acotar: ¿qué es lo que más te ha costado encontrar hasta ahora?, ¿es para vivir o invertir?, ¿algo que no pueda faltar (amenidad, colonia exacta, planta baja)? Nunca dispares buscar_inventario_zmg de inmediato solo con precio+zona+recámaras: esos tres datos rara vez acotan lo suficiente en una bolsa de miles.
+4b. VÁLVULA DE ESCAPE — deja de preguntar en cuanto veas cualquiera de estas señales: el cliente ya nombró una colonia/propiedad específica y clara, repite algo que ya dijo, muestra señales de impaciencia (mensajes cortos, "ya te dije", "dámelo", signos de exasperación), o pide explícitamente ver la ficha. En ese momento actúa de inmediato (busca con el filtro 'texto' de la colonia que dio, o manda la ficha) — NO hagas otra pregunta de calidad, y NO vuelvas a mostrar una lista genérica que el cliente ya vio. Una pregunta de más en el momento equivocado cuesta la venta.
+4c. Si el cliente nombra una colonia o fraccionamiento (ej. "Madeiras", "colonias vecinas a X"), usa buscar_inventario_zmg con el parámetro 'texto' para filtrar de verdad — nunca repitas la lista genérica del municipio con otro nombre.
 5. SI LA BÚSQUEDA REGRESA MUCHOS RESULTADOS (más de ~15): NO listes las más baratas. Di cuántas hay y pide UNA preferencia más para acotar antes de mostrar la lista. Mejor 5 opciones bien dirigidas que 5 arbitrarias.
 6. SI LA BÚSQUEDA REGRESA POCOS O NINGÚN RESULTADO: dilo con honestidad y pregunta cuál criterio prefiere ceder (precio, zona vecina, recámaras) — no decidas tú solo.
 7. PROBLEMA otra vez, tras cada reacción del cliente a una opción ("no me convence", "me gusta"): pregunta AL MENOS UNA VEZ el porqué antes de solo buscar más ("¿qué le faltó — tamaño, ubicación, algo más?"). Esto es lo que te distingue de un buscador.
@@ -595,7 +598,7 @@ ULTIMA_BUSQUEDA = {}  # phone -> lista de propiedades mostradas en el último re
                       # (permite resolver "la 3", "esa" sin adivinar ni inventar)
 
 def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=None,
-                          recamaras_min=None, tipo=None, limite=5):
+                          recamaras_min=None, tipo=None, texto=None, limite=5):
     """Busca en la bolsa compartida ZMG (venta >= $3M). Guarda el resultado
     exacto mostrado a ESTE cliente para poder resolver referencias como
     "la 3" con seleccionar_de_lista, sin inventar nada."""
@@ -604,6 +607,7 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
     res = []
     muni_l = (municipio or "").lower()
     tipo_l = (tipo or "").lower()
+    texto_l = (texto or "").lower().strip()
     for p in INVENTARIO_ZMG:
         if muni_l and muni_l not in p.get("Municipio", "").lower():
             continue
@@ -614,6 +618,8 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                     continue
             elif "casa" in tipo_l and "casa" not in pt:
                 continue
+        if texto_l and texto_l not in p.get("Título/Colonia", "").lower():
+            continue
         precio = p.get("Precio") or 0
         if precio_min and precio < float(precio_min):
             continue
