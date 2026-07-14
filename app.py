@@ -503,10 +503,16 @@ def responder_campana(phone, texto, campana):
         wati_send_text(phone, campana["caption"])
     wati_send_text(phone, campana["cuerpo"])
     wati_send_text(phone, campana["seguimiento"])
+    for nombre_c, c in CAMPANAS.items():
+        if c is campana:
+            FICHAS_ENVIADAS.setdefault(phone, set()).add(nombre_c)
+            break
     append_history(phone, "user", texto)
     append_history(phone, "assistant",
         f"[Envié la ficha oficial de campaña con foto, datos y liga] {campana['caption']} "
         f"Y pregunté: {campana['seguimiento']}")
+
+FICHAS_ENVIADAS = {}  # phone -> set de desarrollos ya enviados
 
 def enviar_ficha_campana(phone, desarrollo):
     """Envía la ficha oficial de una propiedad EN CAMPAÑA (foto + cuerpo)
@@ -514,10 +520,14 @@ def enviar_ficha_campana(phone, desarrollo):
     c = CAMPANAS.get(desarrollo)
     if not c:
         return {"error": f"desarrollo desconocido: {desarrollo}"}
+    if desarrollo in FICHAS_ENVIADAS.get(phone, set()):
+        return {"enviada": False,
+                "nota": "esta ficha YA se envió antes en esta conversación; NO la repitas, continúa la conversación respondiendo la duda del cliente"}
     ok_img = wati_send_image(phone, c["foto"], c["caption"])
     if not ok_img:
         wati_send_text(phone, c["caption"])
     wati_send_text(phone, c["cuerpo"])
+    FICHAS_ENVIADAS.setdefault(phone, set()).add(desarrollo)
     return {"enviada": True, "desarrollo": desarrollo,
             "nota": "ficha con foto y liga ya enviada al cliente; continúa la conversación sin repetir estos datos"}
 
