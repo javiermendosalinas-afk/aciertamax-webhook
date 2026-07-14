@@ -193,9 +193,12 @@ def enviar_ficha(phone, public_id):
     ok_img = False
     if d.get("foto"):
         ok_img = wati_send_image(phone, d["foto"], caption)
-    if not ok_img:
-        wati_send_text(phone, caption)
-    wati_send_text(phone, cuerpo)
+    ok_caption = ok_img or wati_send_text(phone, caption)
+    ok_cuerpo = wati_send_text(phone, cuerpo)
+    if not (ok_caption and ok_cuerpo):
+        return {"enviada": False,
+                "error": "el envío por WhatsApp falló o solo se completó parcialmente",
+                "nota": "NO confirmes al cliente que se la mandaste; dile que hubo un problema técnico"}
     return {"enviada": True, "propiedad": d.get("titulo"), "public_id": public_id}
 
 # ------------------------------------------------------------------
@@ -352,6 +355,8 @@ INVENTARIO — ORDEN DE BÚSQUEDA:
 4. CUANDO EL CLIENTE SE REFIERE A UNA OPCIÓN YA MOSTRADA ("la 3", "esa", "la primera", "la de Ciudad Granja"): usa SIEMPRE seleccionar_de_lista con el número de posición — NUNCA repitas datos de memoria ni adivines cuál era. Si el cliente nombra una zona/colonia que NUNCA apareció en tus resultados (tú no la mencionaste ni el cliente la vio en una lista tuya), es una zona NUEVA que el cliente está pidiendo: haz una NUEVA búsqueda con buscar_inventario_zmg filtrando por esa zona. Si esa nueva búsqueda no trae nada, di la verdad ("no tengo opciones en esa colonia exacta ahorita") y ofrece alternativas reales — jamás inventes un nombre de fraccionamiento o desarrollo que ninguna herramienta te dio.
 
 REGLAS DE ORO:
+- PROHIBIDO CONFIRMAR ENVÍOS NO VERIFICADOS: NUNCA digas "ya te envié", "listo", "te mandé la ficha" o cualquier variante a menos que acabes de recibir en ESTE MISMO turno el resultado de enviar_ficha_liga o enviar_ficha_campana con "enviada": true, PARA CADA UNA de las fichas que dices haber mandado. Si vas a mandar 2 o 3 fichas, DEBES llamar la herramienta esa misma cantidad de veces, una por cada una, antes de confirmar nada. Si el resultado trae error o "enviada": false, dilo con honestidad ("tuve un problema mandándola, dame un segundo") — jamás confirmes un envío que no verificaste. Afirmar una acción que no ocurrió es tan grave como inventar un dato: rompe la confianza al instante.
+- NO auto-interpretes un "sí" ambiguo de un mensaje del cliente como consentimiento a una oferta que TÚ apenas estás haciendo en esa misma respuesta (ej. si preguntas "¿te mando las fichas?" y en la misma respuesta ya las diste por enviadas). Si no estás seguro de que el "sí" responde exactamente a tu oferta de fichas, pregunta o espera el siguiente turno del cliente antes de ejecutar el envío.
 - PROHIBIDO INVENTAR PROPIEDADES: cada nombre, precio, m² o característica que menciones debe venir literalmente de una respuesta de herramienta (buscar_propiedades, buscar_inventario_zmg, seleccionar_de_lista, o las fichas de campaña). Si el cliente insiste en un nombre que tú nunca dijiste y ninguna búsqueda lo confirma, jamás lo repitas como si existiera: aclara con calma que no tienes esa propiedad exacta disponible en este momento.
 - DATOS 100% VERIFICADOS SOLAMENTE: al describir una propiedad, menciona ÚNICAMENTE atributos que las herramientas devolvieron para ESA propiedad específica, o que estén en su ficha de PROPIEDADES EN CAMPAÑA. NUNCA mezcles características de una propiedad con otra (ej. el estacionamiento techado es de Santa Ana 360, NO de Bella Vittoria). Ante CUALQUIER dato del que no estés seguro, no lo afirmes: di "déjame mandarte la ficha oficial con los detalles exactos" y usa enviar_ficha. Un dato inventado destruye la confianza del cliente y de Acierta Max.
 - NUNCA pidas el teléfono del cliente: ya lo tienes (es este WhatsApp) y el sistema lo registra automáticamente. Solo pregunta si desea ser contactado en un número DIFERENTE.
@@ -564,9 +569,12 @@ def enviar_ficha_campana(phone, desarrollo):
         return {"enviada": False,
                 "nota": "esta ficha YA se envió antes en esta conversación; NO la repitas, continúa la conversación respondiendo la duda del cliente"}
     ok_img = wati_send_image(phone, c["foto"], c["caption"])
-    if not ok_img:
-        wati_send_text(phone, c["caption"])
-    wati_send_text(phone, c["cuerpo"])
+    ok_caption = ok_img or wati_send_text(phone, c["caption"])
+    ok_cuerpo = wati_send_text(phone, c["cuerpo"])
+    if not (ok_caption and ok_cuerpo):
+        return {"enviada": False,
+                "error": "el envío por WhatsApp falló o solo se completó parcialmente",
+                "nota": "NO confirmes al cliente que se la mandaste; dile que hubo un problema técnico"}
     FICHAS_ENVIADAS.setdefault(phone, set()).add(desarrollo)
     return {"enviada": True, "desarrollo": desarrollo,
             "nota": "ficha con foto y liga ya enviada al cliente; continúa la conversación sin repetir estos datos"}
@@ -693,9 +701,12 @@ def enviar_ficha_liga(phone, liga):
               f"\n\n🔵 _Propiedad compartida mediante colaboración inmobiliaria profesional. "
               f"Precio y disponibilidad sujetos a confirmación._")
     ok_img = wati_send_image(phone, foto, caption) if foto else False
-    if not ok_img:
-        wati_send_text(phone, caption)
-    wati_send_text(phone, cuerpo)
+    ok_caption = ok_img or wati_send_text(phone, caption)
+    ok_cuerpo = wati_send_text(phone, cuerpo)
+    if not (ok_caption and ok_cuerpo):
+        return {"enviada": False,
+                "error": "el envío por WhatsApp falló o solo se completó parcialmente",
+                "nota": "NO confirmes al cliente que se la mandaste; dile que hubo un problema técnico y vuelve a intentar o pide un momento"}
     return {"enviada": True, "titulo": p.get("Título/Colonia"),
             "nota": "ficha enviada; continúa la conversación"}
 
