@@ -241,11 +241,18 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
     except Exception as e:
         return {"registrado": False, "motivo": str(e)[:200]}
 
-def avisar_humano(phone, resumen):
-    """Escala a Javier/equipo cuando el cliente está listo o pide humano."""
+def avisar_humano(phone, resumen, categoria=None):
+    """Escala a Javier/equipo. categoria cambia el encabezado del aviso
+    para que sea escaneable de un vistazo (lead normal vs caso especial)."""
+    etiquetas = {
+        "RECLAMO-PROPIETARIO": "⚠️ RECLAMO DE PROPIETARIO",
+        "COLABORACION-AGENTE": "🤝 AGENTE QUIERE COLABORAR",
+        "BOLSA-TRABAJO": "📋 INTERÉS EN TRABAJAR AQUÍ",
+    }
+    encabezado = etiquetas.get(categoria, "🔥 LEAD CALIENTE")
     if HUMAN_HANDOFF:
         wati_send_text(HUMAN_HANDOFF,
-            f"🔥 LEAD CALIENTE\nCliente: {phone}\n{resumen[:600]}")
+            f"{encabezado}\nCliente: {phone}\n{resumen[:600]}")
     return {"avisado": bool(HUMAN_HANDOFF)}
 
 # ------------------------------------------------------------------
@@ -280,6 +287,7 @@ TOOLS = [
          "recamaras_min": {"type": "number"},
          "tipo": {"type": "string", "description": "casa o departamento"},
          "texto": {"type": "string", "description": "colonia, fraccionamiento o palabra clave del título a buscar dentro del municipio, ej. 'Madeiras'"},
+         "amueblado": {"type": "string", "enum": ["Sí", "No"], "description": "Solo filtra si el cliente lo pidió explícitamente. El dato no siempre está disponible en el registro; si no viene marcado, la propiedad SÍ se incluye (no se descarta por falta de dato)."},
          "limite": {"type": "number", "description": "máx 8, default 5"}},
       "required": []}},
     {"name": "enviar_ficha_liga",
@@ -299,9 +307,11 @@ TOOLS = [
          "zona": {"type": "string"}, "notas": {"type": "string"}},
       "required": ["nombre", "operacion"]}},
     {"name": "avisar_humano",
-     "description": "Notifica al equipo humano de Acierta. Úsala cuando: el cliente pida hablar con una persona, quiera agendar visita, esté listo para ofertar, o haga una pregunta legal/fiscal que no debes responder.",
+     "description": "Notifica al equipo humano de Acierta. Úsala cuando: el cliente pida hablar con una persona, quiera agendar visita, esté listo para ofertar, haga una pregunta legal/fiscal que no debes responder, o sea uno de los CASOS ESPECIALES (reclamo de propietario, agente que quiere colaborar, interés en trabajar aquí).",
      "input_schema": {"type": "object", "properties": {
-         "resumen": {"type": "string", "description": "Resumen del cliente y su necesidad"}},
+         "resumen": {"type": "string", "description": "Resumen del cliente y su necesidad"},
+         "categoria": {"type": "string", "enum": ["RECLAMO-PROPIETARIO", "COLABORACION-AGENTE", "BOLSA-TRABAJO"],
+                      "description": "Solo para casos especiales; omite este campo en leads normales de compra/venta/renta"}},
       "required": ["resumen"]}},
 ]
 
@@ -316,7 +326,8 @@ SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su CO
 1. Dale acceso al catálogo completo: "Puedes ver todo nuestro inventario en https://www.aciertamax.com" (compártelo temprano, es transparencia).
 2. Ofrece el diferenciador: "¿Prefieres explorar por tu cuenta, o te doy ATENCIÓN PERSONALIZADA aquí mismo? Puedo hacer contigo un COACHING INMOBILIARIO CON IA: te hago las preguntas correctas y busco exactamente lo que satisface tus necesidades."
 3. SITUACIÓN: la cubre el modelo Querer-Poder-Cómo-Cuándo-Dónde (zona, presupuesto, recámaras, uso). No la repreguntes si el cliente ya la dio de golpe.
-4. PROBLEMA — ANTES DE TU PRIMERA BÚSQUEDA: agradece los datos que ya diste, pero SIEMPRE agrega UNA pregunta de problema/calidad que no sea pura situación — la que más ayude a acotar: ¿qué es lo que más te ha costado encontrar hasta ahora?, ¿es para vivir o invertir?, ¿algo que no pueda faltar (amenidad, colonia exacta, planta baja)? Nunca dispares buscar_inventario_zmg de inmediato solo con precio+zona+recámaras: esos tres datos rara vez acotan lo suficiente en una bolsa de miles.
+4. PROBLEMA — ANTES DE TU PRIMERA BÚSQUEDA: agradece los datos que ya diste, pero SIEMPRE agrega UNA pregunta de problema/calidad que no sea pura situación — la que más ayude a acotar: ¿qué es lo que más te ha costado encontrar hasta ahora?, ¿es para vivir o invertir?, ¿algo que no pueda faltar (amenidad, colonia exacta, planta baja)? Si es RENTA, pregunta también si lo busca amueblado o sin muebles (usa el parámetro 'amueblado'). Nunca dispares buscar_inventario_zmg de inmediato solo con precio+zona+recámaras: esos tres datos rara vez acotan lo suficiente en una bolsa de miles.
+4e. SI EL CLIENTE DA UN PUNTO DE REFERENCIA en vez de colonia/municipio (ej. "cerca del ITESO", "por Andares", "junto a Plaza del Sol"): pregunta hasta dónde está dispuesto a buscar ("¿solo esa zona, o abrimos a colonias vecinas / todo el municipio?") antes de buscar — no inventes un radio en kilómetros, esa precisión no existe en los datos; usa 'texto' o 'municipio' según lo que el cliente prefiera ampliar.
 4b. VÁLVULA DE ESCAPE — deja de preguntar en cuanto veas cualquiera de estas señales: el cliente ya nombró una colonia/propiedad específica y clara, repite algo que ya dijo, muestra señales de impaciencia (mensajes cortos, "ya te dije", "dámelo", signos de exasperación), o pide explícitamente ver la ficha. En ese momento actúa de inmediato (busca con el filtro 'texto' de la colonia que dio, o manda la ficha) — NO hagas otra pregunta de calidad, y NO vuelvas a mostrar una lista genérica que el cliente ya vio. Una pregunta de más en el momento equivocado cuesta la venta.
 4d. NUNCA RE-OFREZCAS UNA ZONA O PROPIEDAD QUE EL CLIENTE YA RECHAZÓ EXPLÍCITAMENTE: si el cliente dijo "ya te dije que ahí no", "esa zona no", o similar, esa opción queda descartada por el resto de la conversación — no la vuelvas a sugerir ni con otras palabras. Si no tienes nada que cumpla lo que sí pide, dilo con honestidad ("no tengo opciones exactas en esa zona ahorita") y ofrece registrar su búsqueda o escalar a un asesor — NO insistas en la misma alternativa rechazada una y otra vez, eso agota al cliente más rápido que no tener inventario.
 4c. Si el cliente nombra una colonia o fraccionamiento (ej. "Madeiras", "colonias vecinas a X"), usa buscar_inventario_zmg con el parámetro 'texto' para filtrar de verdad — nunca repitas la lista genérica del municipio con otro nombre.
@@ -325,6 +336,13 @@ SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su CO
 7. PROBLEMA otra vez, tras cada reacción del cliente a una opción ("no me convence", "me gusta"): pregunta AL MENOS UNA VEZ el porqué antes de solo buscar más ("¿qué le faltó — tamaño, ubicación, algo más?"). Esto es lo que te distingue de un buscador.
 8. IMPLICACIÓN — solo si el cliente YA reveló una urgencia real (renta que vence, familia creciendo, oferta que expira): amplifica con tacto, una sola vez, sin forzar: "y si no encuentras algo a tiempo, ¿qué pasaría con [lo que mencionó]?". Nunca la inventes ni la fuerces si no hay urgencia real en la conversación.
 9. NECESIDAD-BENEFICIO — cuando por fin una opción encaje o esté cerca: en vez de enumerar tú las ventajas, pregunta para que el cliente las diga: "si esta cumple con eso, ¿qué te resolvería?" o "¿qué tanto se acerca a lo que buscabas?". Que lo diga él, no tú.
+CASOS ESPECIALES (no son leads normales — trátalos con tacto y escala siempre, con la categoría correcta en avisar_humano):
+- "Esta propiedad es mía" / reclamo de propietario sobre un anuncio: discúlpate, NO discutas ni confirmes ni niegues nada tú mismo. Di algo como "Gracias por avisarnos, esto lo debe atender directamente nuestro equipo." Usa avisar_humano con categoria="RECLAMO-PROPIETARIO" y resumen claro (qué anuncio, qué dijo).
+- "Soy agente inmobiliario" / quiere colaborar o co-brokear: agradece el interés profesional, sé cordial, y usa avisar_humano con categoria="COLABORACION-AGENTE" — esto lo atiende Javier o el equipo comercial, no lo resuelvas tú con detalles de comisión.
+- "Quiero trabajar en Acierta Max" / bolsa de trabajo: agradece el interés, pide nombre y área de interés si lo comparte con gusto, pero NO hagas entrevista ni preguntas de reclutamiento. Usa avisar_humano con categoria="BOLSA-TRABAJO" para que RH lo contacte.
+
+CIERRE HUMANIZADO — solo cuando ACABAS de ejecutar avisar_humano o registrar_lead con éxito en este mismo turno (nunca antes, nunca como promesa adelantada): agradece la preferencia y anuncia que un coach certificado le llama en breve, con calidez y SIN repetir siempre la misma frase — varía entre algo como "Gracias por tu confianza en Acierta Max 🙏 En breve un coach certificado te contacta para acompañarte en todo el proceso." o "Qué gusto que nos elijas. Un coach del equipo te escribe en breve para seguir contigo." Mantén el tono cálido y breve — no es un mensaje aparte largo, cabe en el mismo cierre de la conversación.
+
 10. Registra el lead cuando tengas nombre + operación + interés, y avisar_humano cuando pida visita u oferta.
 
 SI EL CLIENTE QUIERE VENDER O RENTAR SU PROPIEDAD — FLUJO CAPTACIÓN (muy valioso):
@@ -357,7 +375,7 @@ INVENTARIO — ORDEN DE BÚSQUEDA:
 4. CUANDO EL CLIENTE SE REFIERE A UNA OPCIÓN YA MOSTRADA ("la 3", "esa", "la primera", "la de Ciudad Granja"): usa SIEMPRE seleccionar_de_lista con el número de posición — NUNCA repitas datos de memoria ni adivines cuál era. Si el cliente nombra una zona/colonia que NUNCA apareció en tus resultados (tú no la mencionaste ni el cliente la vio en una lista tuya), es una zona NUEVA que el cliente está pidiendo: haz una NUEVA búsqueda con buscar_inventario_zmg filtrando por esa zona. Si esa nueva búsqueda no trae nada, di la verdad ("no tengo opciones en esa colonia exacta ahorita") y ofrece alternativas reales — jamás inventes un nombre de fraccionamiento o desarrollo que ninguna herramienta te dio.
 
 REGLAS DE ORO:
-- PROHIBIDO CONFIRMAR ENVÍOS NO VERIFICADOS: NUNCA digas "ya te envié", "listo", "te mandé la ficha" o cualquier variante a menos que acabes de recibir en ESTE MISMO turno el resultado de enviar_ficha_liga o enviar_ficha_campana con "enviada": true, PARA CADA UNA de las fichas que dices haber mandado. Si vas a mandar 2 o 3 fichas, DEBES llamar la herramienta esa misma cantidad de veces, una por cada una, antes de confirmar nada. Si el resultado trae error o "enviada": false, dilo con honestidad ("tuve un problema mandándola, dame un segundo") — jamás confirmes un envío que no verificaste. Afirmar una acción que no ocurrió es tan grave como inventar un dato: rompe la confianza al instante.
+- PROHIBIDO CONFIRMAR ENVÍOS NO VERIFICADOS: NUNCA digas "ya te envié", "listo", "te mandé la ficha", "ya va la ficha", "en camino", "ahí te llega" o CUALQUIER variante que dé a entender que una ficha se está mandando o ya se mandó, a menos que acabes de recibir en ESTE MISMO turno el resultado de enviar_ficha_liga o enviar_ficha_campana con "enviada": true, PARA CADA UNA de las fichas de las que hables. El orden correcto es: llama la herramienta PRIMERO, espera su resultado, y SOLO ENTONCES escribe tu mensaje de confirmación (o de disculpa si falló). Nunca redactes el texto de confirmación antes de tener el resultado real. Si vas a mandar 2 o 3 fichas, DEBES llamar la herramienta esa misma cantidad de veces antes de confirmar nada. Si el resultado trae error o "enviada": false, dilo con honestidad ("tuve un problema mandándola, dame un segundo") — jamás confirmes ni anuncies un envío que no verificaste. Afirmar una acción que no ocurrió es tan grave como inventar un dato: rompe la confianza al instante.
 - SI PIDES VARIAS FICHAS EN UN TURNO, REVISA CADA RESULTADO POR SEPARADO antes de resumir: si de 2 fichas solo 1 regresó "enviada": true, NO digas "listo, las dos" — di exactamente cuál sí llegó y cuál no ("Te llegó la ficha de La Calma; la de Torre La Cantera tuve un problema, dame un segundo e inténtalo de nuevo"). Nunca generalices un éxito parcial como éxito total.
 - NO auto-interpretes un "sí" ambiguo de un mensaje del cliente como consentimiento a una oferta que TÚ apenas estás haciendo en esa misma respuesta (ej. si preguntas "¿te mando las fichas?" y en la misma respuesta ya las diste por enviadas). Si no estás seguro de que el "sí" responde exactamente a tu oferta de fichas, pregunta o espera el siguiente turno del cliente antes de ejecutar el envío.
 - PROHIBIDO INVENTAR PROPIEDADES: cada nombre, precio, m² o característica que menciones debe venir literalmente de una respuesta de herramienta (buscar_propiedades, buscar_inventario_zmg, seleccionar_de_lista, o las fichas de campaña). Si el cliente insiste en un nombre que tú nunca dijiste y ninguna búsqueda lo confirma, jamás lo repitas como si existiera: aclara con calma que no tienes esa propiedad exacta disponible en este momento.
@@ -433,7 +451,7 @@ def run_tool(name, args, phone):
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
         elif name == "avisar_humano":
-            out = avisar_humano(phone, args.get("resumen", ""))
+            out = avisar_humano(phone, args.get("resumen", ""), args.get("categoria"))
         else:
             out = {"error": f"herramienta desconocida {name}"}
     except Exception as e:
@@ -472,7 +490,7 @@ def agent_reply(phone, user_text):
 # ------------------------------------------------------------------
 CAMPANAS = {
     "block": {
-        "claves": ["block", "iteso", "the block"],
+        "claves": ["block", "iteso", "the block", "eb-wg7125"],
         "foto": "https://assets.easybroker.com/property_images/6057125/107111726/EB-WG7125.png",
         "caption": "🏙 THE BLOCK EASY LIVING — Vive más. Muévete menos.\n📍 Periférico Sur M. Gómez Morín 8331, a un paso de ITESO\n💰 RENTA $18,000/mes · Amueblado disponible",
         "cuerpo": ("🛏 1 recámara amplia con baño y clóset · 🛁 medio baño de visitas · "
@@ -487,7 +505,7 @@ CAMPANAS = {
         "seguimiento": "¿La buscas para ti o para alguien más? Si gustas te agendo una visita esta misma semana 🙌",
     },
     "santa_ana": {
-        "claves": ["santa ana", "santaana", "santa ana 360"],
+        "claves": ["santa ana", "santaana", "santa ana 360", "eb-wl2602"],
         "foto": "https://assets.easybroker.com/property_images/6102602/108091829/EB-WL2602.png",
         "caption": "🏡 SANTA ANA 360 — Zapopan sur, a minutos de Bugambilias\n📍 Santa Ana Tepetitlán, Zapopan\n💰 VENTA $1,820,000 MXN",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños completos · 📐 53 m² · 🚗 estacionamiento "
@@ -503,7 +521,7 @@ CAMPANAS = {
         "seguimiento": "¿Lo comprarías con crédito bancario, INFONAVIT o recursos propios? Con eso te digo el paso a paso y te agendo visita 🙌",
     },
     "bellavittoria": {
-        "claves": ["bella", "vittoria", "bellavittoria"],
+        "claves": ["bella", "vittoria", "bellavittoria", "eb-vi0277"],
         "foto": "https://assets.easybroker.com/property_images/5810277/101922700/EB-VI0277.png",
         "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,400,000 MXN",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 70–75 m² · 🚗 1-2 cajones "
@@ -519,7 +537,7 @@ CAMPANAS = {
         "seguimiento": "¿Lo buscas para vivir o como inversión? Hay unidades desde ese precio y te puedo agendar visita al desarrollo esta semana 🙌",
     },
     "villa_dhara": {
-        "claves": ["villa dhara", "dhara", "parque morelos"],
+        "claves": ["villa dhara", "dhara", "parque morelos", "eb-wg7913"],
         "foto": "https://assets.easybroker.com/property_images/6057913/107125331/EB-WG7913.png",
         "caption": "🌿 VILLA DHARA — El loft con terraza privada frente al Parque Morelos\n📍 El Retiro, Centro de Guadalajara\n💰 RENTA $14,000/mes · o VENTA $2,295,000 MXN",
         "cuerpo": ("🛏 1 recámara · 🛁 1 baño completo · 📐 74 m² + TERRAZA PRIVADA de 55 m² · "
@@ -609,7 +627,8 @@ ULTIMA_BUSQUEDA = {}  # phone -> lista de propiedades mostradas en el último re
                       # (permite resolver "la 3", "esa" sin adivinar ni inventar)
 
 def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=None,
-                          recamaras_min=None, tipo=None, texto=None, operacion=None, limite=5):
+                          recamaras_min=None, tipo=None, texto=None, operacion=None,
+                          amueblado=None, limite=5):
     """Busca en la bolsa compartida ZMG (venta desde $2M, renta desde $13,000/mes).
     Guarda el resultado exacto mostrado a ESTE cliente para poder resolver
     referencias como "la 3" con seleccionar_de_lista, sin inventar nada."""
@@ -634,6 +653,11 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                 continue
         if texto_l and texto_l not in p.get("Título/Colonia", "").lower():
             continue
+        if amueblado is not None:
+            am = (p.get("Amueblado") or "").strip()
+            quiere_amueblado = str(amueblado).lower() in ("sí", "si", "true", "1", "yes")
+            if am and ((quiere_amueblado and am != "Sí") or (not quiere_amueblado and am != "No")):
+                continue  # solo excluye cuando el dato SÍ existe y contradice
         precio = p.get("Precio") or 0
         if precio_min and precio < float(precio_min):
             continue
@@ -696,7 +720,8 @@ def enviar_ficha_liga(phone, liga):
     precio = p.get("Precio") or 0
     op_real = p.get("Operación", "VENTA")
     unidad = "/mes" if op_real == "RENTA" else ""
-    caption = (f"🏡 {p.get('Título/Colonia', 'Propiedad')}\n"
+    titulo_prop = (p.get("Título/Colonia") or "").strip() or f"{p.get('Tipo', 'Propiedad')} en {p.get('Municipio', 'ZMG')}"
+    caption = (f"🏡 {titulo_prop}\n"
                f"📍 {p.get('Municipio', 'ZMG')}\n"
                f"💰 ${precio:,.0f} MXN{unidad} en {op_real}")
     partes = []
@@ -746,6 +771,27 @@ def webhook():
             return jsonify(ok=True, duplicado=True)
         webhook._vistos[msg_id] = ahora
         webhook._vistos[f"{phone}:{text}"] = ahora
+
+    # REGLA DE CITA INSTANTÁNEA: si el cliente manda solo "*", tiene
+    # prioridad sobre cualquier otro flujo (salvo alertas de fraude,
+    # que el agente maneja aparte). Es determinístico, no depende del
+    # modelo, y da la liga real de Calendly de una vez.
+    if text.strip() == "*":
+        def responder_cita():
+            print(f"[MAX] Cita instantánea (*) solicitada por {phone}", flush=True)
+            if CALENDLY_URL:
+                wati_send_text(phone,
+                    "Con gusto 🙌 Vamos a programar una llamada con Acierta Max.\n\n"
+                    "Puedes apartar aquí mismo el día y la hora que mejor te acomoden:\n"
+                    f"{CALENDLY_URL}")
+            else:
+                wati_send_text(phone,
+                    "Con gusto 🙌 Un asesor certificado te contacta en breve para "
+                    "programar tu llamada. ¿Cuál es tu nombre?")
+            avisar_humano(phone, "Cliente solicitó cita directa con '*'")
+        threading.Thread(target=responder_cita, daemon=True).start()
+        return jsonify(ok=True, atajo="cita_instantanea")
+
     # FILA POR CLIENTE: si el cliente manda varios mensajes en ráfaga,
     # se juntan y MAX responde UNA sola vez a todo el paquete, en orden.
     with CONV_LOCK:
