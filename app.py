@@ -272,9 +272,10 @@ TOOLS = [
          "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara"]}},
       "required": ["desarrollo"]}},
     {"name": "buscar_inventario_zmg",
-     "description": "Busca en la BOLSA COMPLETA de la ZMG (~1,800 casas y departamentos en VENTA desde $3,000,000, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $3M — pero SOLO después de haber hecho al menos una pregunta de calidad (uso, urgencia, o preferencia específica) como coach, no como reflejo automático al primer mensaje del cliente. Si el cliente nombra una COLONIA o fraccionamiento específico (ej. 'Madeiras', 'Andares'), usa el parámetro 'texto' para filtrar de verdad por ese nombre — NO vuelvas a mostrar la lista genérica del municipio disfrazada de 'colonias vecinas'. Regresa título, precio, recámaras y liga.",
+     "description": "Busca en la BOLSA COMPLETA de la ZMG (venta desde $2,000,000 y renta desde $13,000/mes, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $2M o renta desde $13,000 — pero SOLO después de haber hecho al menos una pregunta de calidad (uso, urgencia, o preferencia específica) como coach, no como reflejo automático al primer mensaje del cliente. Usa 'operacion' (VENTA o RENTA) para no mezclar. Si el cliente nombra una COLONIA o fraccionamiento específico (ej. 'Madeiras', 'Andares'), usa el parámetro 'texto' para filtrar de verdad por ese nombre — NO vuelvas a mostrar la lista genérica del municipio disfrazada de 'colonias vecinas'. Regresa título, precio, recámaras y liga.",
      "input_schema": {"type": "object", "properties": {
          "municipio": {"type": "string", "description": "Guadalajara, Zapopan, Tlaquepaque, Tonalá o Tlajomulco"},
+         "operacion": {"type": "string", "enum": ["VENTA", "RENTA"], "description": "VENTA o RENTA — indícalo siempre que sepas cuál busca el cliente"},
          "precio_min": {"type": "number"}, "precio_max": {"type": "number"},
          "recamaras_min": {"type": "number"},
          "tipo": {"type": "string", "description": "casa o departamento"},
@@ -317,6 +318,7 @@ SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su CO
 3. SITUACIÓN: la cubre el modelo Querer-Poder-Cómo-Cuándo-Dónde (zona, presupuesto, recámaras, uso). No la repreguntes si el cliente ya la dio de golpe.
 4. PROBLEMA — ANTES DE TU PRIMERA BÚSQUEDA: agradece los datos que ya diste, pero SIEMPRE agrega UNA pregunta de problema/calidad que no sea pura situación — la que más ayude a acotar: ¿qué es lo que más te ha costado encontrar hasta ahora?, ¿es para vivir o invertir?, ¿algo que no pueda faltar (amenidad, colonia exacta, planta baja)? Nunca dispares buscar_inventario_zmg de inmediato solo con precio+zona+recámaras: esos tres datos rara vez acotan lo suficiente en una bolsa de miles.
 4b. VÁLVULA DE ESCAPE — deja de preguntar en cuanto veas cualquiera de estas señales: el cliente ya nombró una colonia/propiedad específica y clara, repite algo que ya dijo, muestra señales de impaciencia (mensajes cortos, "ya te dije", "dámelo", signos de exasperación), o pide explícitamente ver la ficha. En ese momento actúa de inmediato (busca con el filtro 'texto' de la colonia que dio, o manda la ficha) — NO hagas otra pregunta de calidad, y NO vuelvas a mostrar una lista genérica que el cliente ya vio. Una pregunta de más en el momento equivocado cuesta la venta.
+4d. NUNCA RE-OFREZCAS UNA ZONA O PROPIEDAD QUE EL CLIENTE YA RECHAZÓ EXPLÍCITAMENTE: si el cliente dijo "ya te dije que ahí no", "esa zona no", o similar, esa opción queda descartada por el resto de la conversación — no la vuelvas a sugerir ni con otras palabras. Si no tienes nada que cumpla lo que sí pide, dilo con honestidad ("no tengo opciones exactas en esa zona ahorita") y ofrece registrar su búsqueda o escalar a un asesor — NO insistas en la misma alternativa rechazada una y otra vez, eso agota al cliente más rápido que no tener inventario.
 4c. Si el cliente nombra una colonia o fraccionamiento (ej. "Madeiras", "colonias vecinas a X"), usa buscar_inventario_zmg con el parámetro 'texto' para filtrar de verdad — nunca repitas la lista genérica del municipio con otro nombre.
 5. SI LA BÚSQUEDA REGRESA MUCHOS RESULTADOS (más de ~15): NO listes las más baratas. Di cuántas hay y pide UNA preferencia más para acotar antes de mostrar la lista. Mejor 5 opciones bien dirigidas que 5 arbitrarias.
 6. SI LA BÚSQUEDA REGRESA POCOS O NINGÚN RESULTADO: dilo con honestidad y pregunta cuál criterio prefiere ceder (precio, zona vecina, recámaras) — no decidas tú solo.
@@ -350,7 +352,7 @@ REGLA CRÍTICA DE LAS PROPIEDADES EN CAMPAÑA: si el cliente pide la ficha, foto
 
 INVENTARIO — ORDEN DE BÚSQUEDA:
 1. Propiedades en campaña (datos aquí arriba) y buscar_propiedades (inventario propio, venta y renta de todos los precios).
-2. buscar_inventario_zmg: la BOLSA COMPLETA de la ZMG (~1,800 casas y deptos en VENTA desde $3M). Úsala siempre que el cliente compre desde $3M o cuando el inventario propio no alcance. ¡Con esta herramienta casi siempre HAY opciones: nunca digas "no tengo" sin consultarla!
+2. buscar_inventario_zmg: la BOLSA COMPLETA de la ZMG (venta desde $2M y renta desde $13,000/mes). Úsala siempre que el cliente compre desde $2M o rente desde $13,000, o cuando el inventario propio no alcance — especifica 'operacion' (VENTA/RENTA) para no mezclar. ¡Con esta herramienta casi siempre HAY opciones: nunca digas "no tengo" sin consultarla!
 3. Con propiedades de la bolsa: comparte SOLO los datos del registro (precio, recámaras, baños, m², municipio) + la liga con enviar_ficha_liga. NO inventes amenidades ni detalles: la ficha completa está en la liga. Máximo 3 fichas por turno.
 4. CUANDO EL CLIENTE SE REFIERE A UNA OPCIÓN YA MOSTRADA ("la 3", "esa", "la primera", "la de Ciudad Granja"): usa SIEMPRE seleccionar_de_lista con el número de posición — NUNCA repitas datos de memoria ni adivines cuál era. Si el cliente nombra una zona/colonia que NUNCA apareció en tus resultados (tú no la mencionaste ni el cliente la vio en una lista tuya), es una zona NUEVA que el cliente está pidiendo: haz una NUEVA búsqueda con buscar_inventario_zmg filtrando por esa zona. Si esa nueva búsqueda no trae nada, di la verdad ("no tengo opciones en esa colonia exacta ahorita") y ofrece alternativas reales — jamás inventes un nombre de fraccionamiento o desarrollo que ninguna herramienta te dio.
 
@@ -607,17 +609,20 @@ ULTIMA_BUSQUEDA = {}  # phone -> lista de propiedades mostradas en el último re
                       # (permite resolver "la 3", "esa" sin adivinar ni inventar)
 
 def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=None,
-                          recamaras_min=None, tipo=None, texto=None, limite=5):
-    """Busca en la bolsa compartida ZMG (venta >= $3M). Guarda el resultado
-    exacto mostrado a ESTE cliente para poder resolver referencias como
-    "la 3" con seleccionar_de_lista, sin inventar nada."""
+                          recamaras_min=None, tipo=None, texto=None, operacion=None, limite=5):
+    """Busca en la bolsa compartida ZMG (venta desde $2M, renta desde $13,000/mes).
+    Guarda el resultado exacto mostrado a ESTE cliente para poder resolver
+    referencias como "la 3" con seleccionar_de_lista, sin inventar nada."""
     if not INVENTARIO_ZMG:
         return {"aviso": "inventario compartido no disponible; usa buscar_propiedades"}
     res = []
     muni_l = (municipio or "").lower()
     tipo_l = (tipo or "").lower()
     texto_l = (texto or "").lower().strip()
+    op_l = (operacion or "").upper().strip()
     for p in INVENTARIO_ZMG:
+        if op_l and p.get("Operación", "").upper() != op_l:
+            continue
         if muni_l and muni_l not in p.get("Municipio", "").lower():
             continue
         if tipo_l:
@@ -689,9 +694,11 @@ def enviar_ficha_liga(phone, liga):
     except Exception:
         pass
     precio = p.get("Precio") or 0
+    op_real = p.get("Operación", "VENTA")
+    unidad = "/mes" if op_real == "RENTA" else ""
     caption = (f"🏡 {p.get('Título/Colonia', 'Propiedad')}\n"
                f"📍 {p.get('Municipio', 'ZMG')}\n"
-               f"💰 ${precio:,.0f} MXN en VENTA")
+               f"💰 ${precio:,.0f} MXN{unidad} en {op_real}")
     partes = []
     if p.get("Recámaras"): partes.append(f"🛏 {p['Recámaras']} rec")
     if p.get("Baños") not in (None, "", "nan"): partes.append(f"🛁 {p['Baños']} baños")
