@@ -21,6 +21,7 @@ import io
 import json
 import time
 import threading
+import re
 import requests
 from urllib.parse import quote
 from flask import Flask, request, jsonify
@@ -205,6 +206,32 @@ def enviar_ficha(phone, public_id):
 # GOOGLE SHEETS — registro de leads con folio ACIERTA-XXXX
 # ------------------------------------------------------------------
 REGISTRADOS = {}  # phone -> (folio, timestamp): evita folios duplicados
+BITACORA_REGISTRADOS = set()  # phones ya anotados en la bitácora esta sesión
+
+def registrar_contacto_bitacora(phone, primer_mensaje, detectado=""):
+    """Anota TODO contacto nuevo desde su primer mensaje, sin filtrar ni
+    esperar a que esté calificado. 'Leads MAX' sigue siendo solo los
+    calificados (nombre+operación+interés); esta pestaña es el 100%."""
+    if not (GOOGLE_CREDS_JSON and SHEET_ID):
+        return {"registrado": False, "motivo": "Sheets no configurado"}
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_info(
+            json.loads(GOOGLE_CREDS_JSON),
+            scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+        try:
+            sh = libro.worksheet("Bitácora Contactos")
+        except Exception:
+            sh = libro.add_worksheet(title="Bitácora Contactos", rows=5000, cols=6)
+            sh.append_row(["FECHA Y HORA", "WHATSAPP", "PRIMER MENSAJE",
+                           "CAMPAÑA/CÓDIGO DETECTADO", "¿LLEGÓ A LEAD MAX?", "NOTAS"])
+        sh.append_row([time.strftime("%Y-%m-%d %H:%M"), phone, primer_mensaje[:300],
+                       detectado, "", ""])
+        return {"registrado": True}
+    except Exception as e:
+        return {"registrado": False, "motivo": str(e)[:200]}
 
 def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
                    zona="", notas=""):
@@ -276,7 +303,7 @@ TOOLS = [
     {"name": "enviar_ficha_campana",
      "description": "Envía al cliente la ficha oficial (foto + datos + liga) de una de las 4 propiedades EN CAMPAÑA: block (The Block/ITESO), santa_ana (Santa Ana 360), bellavittoria (Bella Vittoria), villa_dhara (Villa Dhara/Parque Morelos). ÚSALA DE INMEDIATO cuando el cliente pida la ficha, fotos, brochure o diga 'sí/me interesa/esa' sobre una de estas propiedades.",
      "input_schema": {"type": "object", "properties": {
-         "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara"]}},
+         "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara", "eleve"]}},
       "required": ["desarrollo"]}},
     {"name": "buscar_inventario_zmg",
      "description": "Busca en la BOLSA COMPLETA de la ZMG (venta desde $2,000,000 y renta desde $13,000/mes, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $2M o renta desde $13,000 — pero SOLO después de haber hecho al menos una pregunta de calidad (uso, urgencia, o preferencia específica) como coach, no como reflejo automático al primer mensaje del cliente. Usa 'operacion' (VENTA o RENTA) para no mezclar. Si el cliente nombra una COLONIA o fraccionamiento específico (ej. 'Madeiras', 'Andares'), usa el parámetro 'texto' para filtrar de verdad por ese nombre — NO vuelvas a mostrar la lista genérica del municipio disfrazada de 'colonias vecinas'. Regresa título, precio, recámaras y liga.",
@@ -299,6 +326,11 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "numero": {"type": "number", "description": "Posición en la última lista mostrada (1, 2, 3...)"}},
       "required": ["numero"]}},
+    {"name": "enviar_guia",
+     "description": "Envía una guía de contenido educativo (AM-GUIA-XX) cuando el cliente escribe su código o pide explícitamente esa guía. Úsala de inmediato, no la resumas tú mismo — el texto oficial ya está aprobado.",
+     "input_schema": {"type": "object", "properties": {
+         "nombre": {"type": "string", "enum": ["renta"], "description": "Identificador interno de la guía"}},
+      "required": ["nombre"]}},
     {"name": "registrar_lead",
      "description": "Registra o actualiza el lead en el CRM cuando ya tengas al menos nombre + operación + interés. Úsala UNA vez por conversación cuando el prospecto esté calificado.",
      "input_schema": {"type": "object", "properties": {
@@ -336,6 +368,8 @@ SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su CO
 7. PROBLEMA otra vez, tras cada reacción del cliente a una opción ("no me convence", "me gusta"): pregunta AL MENOS UNA VEZ el porqué antes de solo buscar más ("¿qué le faltó — tamaño, ubicación, algo más?"). Esto es lo que te distingue de un buscador.
 8. IMPLICACIÓN — solo si el cliente YA reveló una urgencia real (renta que vence, familia creciendo, oferta que expira): amplifica con tacto, una sola vez, sin forzar: "y si no encuentras algo a tiempo, ¿qué pasaría con [lo que mencionó]?". Nunca la inventes ni la fuerces si no hay urgencia real en la conversación.
 9. NECESIDAD-BENEFICIO — cuando por fin una opción encaje o esté cerca: en vez de enumerar tú las ventajas, pregunta para que el cliente las diga: "si esta cumple con eso, ¿qué te resolvería?" o "¿qué tanto se acerca a lo que buscabas?". Que lo diga él, no tú.
+GUÍAS DE CONTENIDO EDUCATIVO (códigos AM-GUIA-XX): si el cliente pide una guía a media conversación (no en el primer mensaje), usa enviar_guia con el nombre correcto. Después de que el sistema ya envió una guía (verás en el historial "[Envié la guía...]"), tu siguiente mensaje debe usar la "pregunta_seguimiento" que trae para ofrecer las opciones y encaminar la conversación: "poner en renta" → flujo CAPTACIÓN-VENDEDOR; "buscar para rentar" → buscar_inventario_zmg con operacion="RENTA"; "ya tienes prospecto" o "administración" → avisar_humano (aún no hay flujo automatizado para estos, escálalos con honestidad). Nunca repitas ni resumas el texto de la guía con tus propias palabras — ya se envió completo y tal cual.
+
 CASOS ESPECIALES (no son leads normales — trátalos con tacto y escala siempre, con la categoría correcta en avisar_humano):
 - "Esta propiedad es mía" / reclamo de propietario sobre un anuncio: discúlpate, NO discutas ni confirmes ni niegues nada tú mismo. Di algo como "Gracias por avisarnos, esto lo debe atender directamente nuestro equipo." Usa avisar_humano con categoria="RECLAMO-PROPIETARIO" y resumen claro (qué anuncio, qué dijo).
 - "Soy agente inmobiliario" / quiere colaborar o co-brokear: agradece el interés profesional, sé cordial, y usa avisar_humano con categoria="COLABORACION-AGENTE" — esto lo atiende Javier o el equipo comercial, no lo resuelvas tú con detalles de comisión.
@@ -360,13 +394,14 @@ MODELO DE CALIFICACIÓN (obtén esto conversando con naturalidad, NO como interr
 4. CUÁNDO: ¿urge o está explorando?
 5. DÓNDE: zona de la ZMG (Guadalajara, Zapopan, Tlaquepaque, Tonalá, Tlajomulco).
 
-PROPIEDADES EN CAMPAÑA (el sistema ya envió la ficha oficial si el cliente la mencionó; tú continúa calificando y resolviendo dudas SOLO con estos datos):
+PROPIEDADES EN CAMPAÑA — LAS 5 SON EXCLUSIVAS DE ACIERTA MAX (no compartidas con otros asesores; el sistema ya envió la ficha oficial si el cliente la mencionó; tú continúa calificando y resolviendo dudas SOLO con estos datos). Por ser exclusivas, empuja con más confianza hacia la cita/visita — no hay competencia de otro asesor por la misma propiedad:
 1. THE BLOCK EASY LIVING (también le dicen "el de ITESO"): depto en RENTA $18,000/mes + mant. $2,800. 1 recámara, 2 baños, 65 m², piso 4, amueblado disponible. Periférico Sur 8331, El Mante, Tlaquepaque, junto a ITESO. No aceptan mascotas. Liga oficial: https://www.aciertamax.com/property/iteso-amplio-departamento-nuevo-vista-panoramica-roof-garden-ubicacion-premium?agent=javier373&lang=es
 2. SANTA ANA 360: depto en VENTA $1,820,000. 2 recámaras, 2 baños, 53 m², año 2022, estacionamiento techado. Santa Ana Tepetitlán, Zapopan, cerca de Bugambilias. Acepta crédito bancario, INFONAVIT y contado. Pet friendly. Liga oficial: https://www.aciertamax.com/property/departamento-equipado-de-2-recamaras-en-santa-ana-360-cerca-de-bugambilias?agent=javier373&lang=es
 3. BELLA VITTORIA: deptos en VENTA desde $3,400,000, A ESTRENAR. 2 recámaras, 2 baños, 70-75 m², 1-2 cajones. Cobre 4232, Lomas de la Victoria, Tlaquepaque, a minutos de Plaza del Sol. Créditos bancarios e INFONAVIT/COFINAVIT, entrega inmediata, registrado ante PROFECO. Liga oficial: https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es
 4. VILLA DHARA (Parque Morelos): loft ÚNICO de doble altura, 1 recámara, 1 baño, 74 m² + terraza privada de 55 m², amueblado, a estrenar (2025), piso 2. Frente al Parque Morelos, El Retiro, Guadalajara. RENTA $14,000/mes (mantenimiento $1,500) o VENTA $2,295,000 (acepta bancarios e INFONAVIT/COFINAVIT). Amenidades: gimnasio, biblioteca, salas de trabajo, ludoteca, huerto urbano, vigilancia 24/7. Cerca de Hospital Civil, Catedral, Línea 3. Ideal ejecutivos, médicos, nómadas digitales, Airbnb. Liga oficial: https://www.aciertamax.com/property/el-departamento-mas-exclusivo-de-villa-dhara-terraza-privada-74-m-amueblado?agent=javier373&lang=es
+5. ÉLEVÉ VALLE REAL (solo renta): depto de lujo, 3 recámaras (cada una con baño completo), 3 baños + medio baño, 247 m², 2 cajones + bodega, piso 6, a estrenar. RENTA $40,000/mes + mantenimiento $3,000. Vista al Campo de Golf Las Lomas, Valle Real, Zapopan. Torre de 15 niveles, amenidades: alberca, gimnasio, jacuzzi, salón de usos múltiples, seguridad 24h. Liga oficial: https://www.aciertamax.com/property/extraordinario-departamento-valle-real-torre-de-lujo-eleve-valle-real-zapopan?agent=javier373&lang=es
 Para PARQUE MORELOS y el resto del inventario: usa buscar_propiedades.
-REGLA CRÍTICA DE LAS PROPIEDADES EN CAMPAÑA: si el cliente pide la ficha, fotos o brochure de una de estas 4, o responde "sí / esa / me interesa" cuando se la ofreciste, usa INMEDIATAMENTE enviar_ficha_campana — NO hagas más preguntas antes, NO la describas de nuevo: mándala. Nota: estas 4 propiedades pueden NO aparecer en buscar_propiedades (el nombre de la zona no coincide); NUNCA digas "no aparece en el sistema": tú ya tienes sus datos aquí y su ficha en enviar_ficha_campana.
+REGLA CRÍTICA DE LAS PROPIEDADES EN CAMPAÑA: si el cliente pide la ficha, fotos o brochure de una de estas 5, o responde "sí / esa / me interesa" cuando se la ofreciste, usa INMEDIATAMENTE enviar_ficha_campana — NO hagas más preguntas antes, NO la describas de nuevo: mándala. Nota: estas 5 propiedades pueden NO aparecer en buscar_propiedades (el nombre de la zona no coincide); NUNCA digas "no aparece en el sistema": tú ya tienes sus datos aquí y su ficha en enviar_ficha_campana.
 
 INVENTARIO — ORDEN DE BÚSQUEDA:
 1. Propiedades en campaña (datos aquí arriba) y buscar_propiedades (inventario propio, venta y renta de todos los precios).
@@ -448,6 +483,8 @@ def run_tool(name, args, phone):
             out = enviar_ficha_liga(phone, args.get("liga", ""))
         elif name == "seleccionar_de_lista":
             out = seleccionar_de_lista(phone, args.get("numero"))
+        elif name == "enviar_guia":
+            out = enviar_guia(phone, args.get("nombre", ""))
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
         elif name == "avisar_humano":
@@ -488,6 +525,59 @@ def agent_reply(phone, user_text):
 # Cuando el mensaje menciona un desarrollo en campaña, MAX manda la
 # ficha (foto + datos + liga oficial) EN SEGUNDOS, y luego califica.
 # ------------------------------------------------------------------
+# ==================================================================
+# GUÍAS DE CONTENIDO EDUCATIVO (códigos AM-GUIA-XX)
+# Texto EXACTO aprobado por Javier — nunca parafrasear ni inventar.
+# ==================================================================
+GUIAS = {
+    "renta": {
+        "codigo": "AM-GUIA-07-RENTA",
+        "claves": ["am-guia-07-renta", "guia-07-renta"],
+        "texto": (
+            "🏠 *RENTAR TU PROPIEDAD SIN UN BUEN PROCESO PUEDE COSTARTE MUCHO MÁS QUE UNA MENSUALIDAD.*\n\n"
+            "Tener un inquilino no garantiza recibir la renta puntualmente, cuidar tu patrimonio o "
+            "recuperar la propiedad en buenas condiciones.\n\n"
+            "Antes de entregar las llaves, considera tres pasos fundamentales:\n"
+            "1️⃣ Investiga identidad, ingresos y referencias con la autorización correspondiente.\n"
+            "2️⃣ Utiliza un contrato adecuado y define claramente garantías, mantenimiento, servicios y obligaciones.\n"
+            "3️⃣ Documenta el inventario, el estado de entrega, los pagos y toda la comunicación.\n\n"
+            "En Acierta Max no sólo promovemos propiedades. Podemos ayudarte a investigar al prospecto, "
+            "formalizar el arrendamiento, documentar la entrega y dar seguimiento a la administración de tu inmueble.\n\n"
+            "🏠 ¿Quieres poner tu propiedad en renta?\n"
+            "🔑 ¿Estás buscando una propiedad para rentar?\n"
+            "📄 ¿Ya tienes un prospecto y necesitas apoyo?\n"
+            "📊 ¿Buscas administración profesional?\n\n"
+            "Para solicitar una llamada directa con un asesor, escribe: *\n\n"
+            "🌐 www.aciertamax.com — más de 3,000 propiedades disponibles en la ZMG, sujetas a confirmación.\n\n"
+            "_NO COMPRES, VENDAS O RENTES SIN TENER CERTEZA._\n"
+            "_La investigación de prospectos debe realizarse con su autorización y conforme a las disposiciones "
+            "aplicables en materia de privacidad y protección de datos personales._"
+        ),
+        "pregunta": "¿Cuál de las 4 describe mejor tu situación — poner en renta, buscar para rentar, ya tienes prospecto, o administración?",
+    },
+}
+
+GUIAS_ENVIADAS = {}  # phone -> set de guías ya enviadas en esta conversación
+
+def detectar_guia(texto):
+    t = texto.lower()
+    for nombre, g in GUIAS.items():
+        if any(k in t for k in g["claves"]):
+            return nombre, g
+    return None, None
+
+def enviar_guia(phone, nombre):
+    g = GUIAS.get(nombre)
+    if not g:
+        return {"error": f"guía desconocida: {nombre}"}
+    if nombre in GUIAS_ENVIADAS.get(phone, set()):
+        return {"enviada": False, "nota": "esta guía ya se envió en esta conversación; no la repitas"}
+    ok = wati_send_text(phone, g["texto"])
+    if not ok:
+        return {"enviada": False, "error": "el envío falló; no confirmes al cliente, avisa que hubo un problema"}
+    GUIAS_ENVIADAS.setdefault(phone, set()).add(nombre)
+    return {"enviada": True, "pregunta_seguimiento": g["pregunta"]}
+
 CAMPANAS = {
     "block": {
         "claves": ["block", "iteso", "the block", "eb-wg7125"],
@@ -501,7 +591,7 @@ CAMPANAS = {
                    "(HP, Flex, Continental, Tata), Punto Sur y Galerías Santa Anita.\n\n"
                    "🔗 Ficha completa con las 11 fotos:\n"
                    "https://www.aciertamax.com/property/iteso-amplio-departamento-nuevo-vista-panoramica-roof-garden-ubicacion-premium?agent=javier373&lang=es\n\n"
-                   "Acierta Max — Socio AMPI, certificado ✅"),
+                   "Acierta Max — EXCLUSIVA · Socio AMPI, certificado ✅"),
         "seguimiento": "¿La buscas para ti o para alguien más? Si gustas te agendo una visita esta misma semana 🙌",
     },
     "santa_ana": {
@@ -517,7 +607,7 @@ CAMPANAS = {
                    "Libre de gravamen, disponibilidad inmediata.\n\n"
                    "🔗 Ficha completa con las 22 fotos:\n"
                    "https://www.aciertamax.com/property/departamento-equipado-de-2-recamaras-en-santa-ana-360-cerca-de-bugambilias?agent=javier373&lang=es\n\n"
-                   "Acierta Max — Socio AMPI, certificado ✅"),
+                   "Acierta Max — EXCLUSIVA · Socio AMPI, certificado ✅"),
         "seguimiento": "¿Lo comprarías con crédito bancario, INFONAVIT o recursos propios? Con eso te digo el paso a paso y te agendo visita 🙌",
     },
     "bellavittoria": {
@@ -533,7 +623,7 @@ CAMPANAS = {
                    "Documentación 100% en regla, registrado ante PROFECO.\n\n"
                    "🔗 Ficha completa con fotos y video:\n"
                    "https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es\n\n"
-                   "Acierta Max — Socio AMPI, certificado ✅"),
+                   "Acierta Max — EXCLUSIVA · Socio AMPI, certificado ✅"),
         "seguimiento": "¿Lo buscas para vivir o como inversión? Hay unidades desde ese precio y te puedo agendar visita al desarrollo esta semana 🙌",
     },
     "villa_dhara": {
@@ -549,10 +639,316 @@ CAMPANAS = {
                    "💳 En venta acepta créditos bancarios e INFONAVIT/COFINAVIT. Mantenimiento $1,500.\n\n"
                    "🔗 Ficha completa con las 11 fotos:\n"
                    "https://www.aciertamax.com/property/el-departamento-mas-exclusivo-de-villa-dhara-terraza-privada-74-m-amueblado?agent=javier373&lang=es\n\n"
-                   "Acierta Max — Socio AMPI, certificado ✅"),
+                   "Acierta Max — EXCLUSIVA · Socio AMPI, certificado ✅"),
         "seguimiento": "Este loft es único en el desarrollo: ¿te interesa para RENTARLO y vivirlo, o para COMPRARLO como inversión (ideal Airbnb)? 🙌",
     },
+    "eleve": {
+        "claves": ["eleve", "élevé", "valle real", "torre eleve", "eb-wm2996"],
+        "foto": "https://assets.easybroker.com/property_images/6112996/108314367/EB-WM2996.jpg",
+        "caption": "🏙 ÉLEVÉ VALLE REAL — Exclusiva de Acierta Max en renta\n📍 Valle Real, Zapopan\n💰 RENTA $40,000/mes + mantenimiento $3,000",
+        "cuerpo": ("🛏 3 recámaras (cada una con baño completo) · 🛁 3 baños + 1 medio baño · "
+                   "📐 247 m² de construcción · 🚗 2 cajones + bodega en sótano · piso 6 · A ESTRENAR\n\n"
+                   "✨ Vista directa al Campo de Golf Las Lomas, ventanales de piso a techo, cocina "
+                   "con barra de granito equipada, terraza integrada a sala-comedor. Torre de 15 niveles.\n"
+                   "🏢 Amenidades: alberca, gimnasio, jacuzzi, salón de usos múltiples, seguridad 24h, "
+                   "elevador, circuito cerrado, portero.\n"
+                   "📍 Zona Valle Real, una de las más exclusivas de Zapopan.\n\n"
+                   "🔗 Ficha completa con las 36 fotos:\n"
+                   "https://www.aciertamax.com/property/extraordinario-departamento-valle-real-torre-de-lujo-eleve-valle-real-zapopan?agent=javier373&lang=es\n\n"
+                   "Acierta Max — EXCLUSIVA · Socio AMPI, certificado ✅"),
+        "seguimiento": "Es una de nuestras exclusivas de mayor nivel — ¿te gustaría agendar una visita esta semana? 🙌",
+    },
+    "cuarta500": {
+        "claves": ["cuarta 500", "eb-tm8375"],
+        "foto": None,
+        "caption": "🏡 CASA EN VENTA EN CUARTA 500 — Zapopan\n📍 Jardines de Nuevo México, Zapopan\n💰 VENTA $3,200,000 MXN",
+        "cuerpo": ("🛏 3 recámaras · 🛁 2 baños completos + 1 medio baño · 📐 129 m² · 🚗 2 estacionamientos\n\n"
+                   "✨ Casa en condominio, roof garden privado, excelente iluminación natural. "
+                   "El condominio cuenta con alberca, terraza para eventos, áreas recreativas y seguridad 24/7.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-en-venta-en-cuarta-500?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita, o prefieres que te platique de opciones similares en la zona? 🙌",
+    },
+    "paneles_solares": {
+        "claves": ["paneles solares", "capital norte casa", "eb-uo2612"],
+        "foto": None,
+        "caption": "⚡ CASA CON PANELES SOLARES — Capital Norte, Zapopan\n📍 Capital Norte, Zapopan\n💰 VENTA $4,000,000 MXN",
+        "cuerpo": ("🛏 3 recámaras · 🛁 4 baños · 📐 170 m² · 🚗 2 estacionamientos\n\n"
+                   "✨ 8 paneles solares, cargador para vehículo eléctrico, elementos de automatización "
+                   "para ahorro operativo. Zona residencial en crecimiento.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-con-paneles-solares-en-venta-a-super-precio?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y equipamiento sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita para conocerla? 🙌",
+    },
+    "coto_pamplona": {
+        "claves": ["coto pamplona", "la moraleja", "eb-vf2094"],
+        "foto": None,
+        "caption": "🔑 CASA EN COTO PAMPLONA — La Moraleja, Zapopan\n📍 Coto Pamplona, La Moraleja, Zapopan\n💰 VENTA $2,990,000 MXN",
+        "cuerpo": ("🛏 3 recámaras · 🛁 2 baños completos + 1 medio baño · 📐 116 m² · 🚗 2 estacionamientos\n\n"
+                   "✨ Casa reciente dentro de condominio, por menos de $3 millones. Buena opción para "
+                   "primer patrimonio. El desarrollo ofrece alberca y seguridad.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casas-en-venta-en-coto-pamplona-la-moraleja?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿La buscas para vivir o como primer patrimonio? Te puedo mostrar más opciones similares 🙌",
+    },
+    "san_gonzalo": {
+        "claves": ["bosques de san gonzalo", "san gonzalo", "eb-sh4027"],
+        "foto": None,
+        "caption": "🏠 CASA EN BOSQUES DE SAN GONZALO — Zapopan\n📍 Bosques de San Gonzalo, Zapopan\n💰 VENTA $2,950,000 MXN",
+        "cuerpo": ("🛏 3 recámaras · 🛁 2 baños completos + 1 medio baño · 📐 115 m² · 🚗 2 estacionamientos\n\n"
+                   "✨ Casa dentro de coto privado, terraza, vigilancia privada, lista para habitar.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-en-venta-3537e4d3-bf08-4758-b871-57f91038d222?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
+    "madeiras_casa": {
+        "claves": ["madeiras", "valle imperial casa venta", "eb-vh7108"],
+        "foto": None,
+        "caption": "✨ CASA NUEVA EN MADEIRAS — Capital Norte, Zapopan\n📍 Madeiras, Capital Norte / Valle Imperial, Zapopan\n💰 VENTA $4,290,000 MXN",
+        "cuerpo": ("🛏 3 recámaras · 🛁 2 baños completos + 2 medios baños · 📐 133 m² · 🚗 2 estacionamientos\n\n"
+                   "✨ A estrenar, con rooftop, cocina integral, dos áreas de TV, área de lavado. "
+                   "Al norte de Zapopan, cerca de colegios y vialidades importantes, acceso controlado.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-nueva-en-venta-fraccionamiento-madeiras-capital-norte-zapopan-jalisco?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita esta semana? 🙌",
+    },
+    "americana_renta": {
+        "claves": ["colonia americana renta", "americana depto", "eb-wd4269"],
+        "foto": None,
+        "caption": "🌆 DEPARTAMENTO AMUEBLADO EN RENTA — Colonia Americana\n📍 Colonia Americana, Guadalajara\n💰 RENTA $17,800/mes",
+        "cuerpo": ("🛏 1 recámara · 🛁 1 baño · 📐 52 m² · 🚗 2 estacionamientos · ✅ Mantenimiento incluido\n\n"
+                   "✨ Amueblado, cocina equipada, A/C, área de lavado, roof garden. No se aceptan mascotas. "
+                   "Cerca de restaurantes, cafeterías y vida cultural.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamento-en-renta-col-americana-guadalajara-jal-americana?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿La buscas para ti o para alguien más? ¿Te agendo una visita? 🙌",
+    },
+    "tres_lagos": {
+        "claves": ["tres lagos", "lomas de independencia", "eb-wi3326"],
+        "foto": None,
+        "caption": "🏊 DEPARTAMENTO AMUEBLADO EN RENTA — Tres Lagos\n📍 Tres Lagos, Lomas de Independencia, Guadalajara\n💰 RENTA $17,500/mes",
+        "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 70 m² · 🚗 1 estacionamiento techado · "
+                   "✅ Mantenimiento e internet incluidos · piso 10\n\n"
+                   "✨ Amenidades: alberca semiolímpica, gimnasio, casa club, terraza con asadores, "
+                   "salón de eventos, ludoteca.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamento-amueblado-en-renta-en-el-desarrollo-tres-lagos?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿La buscas para vivir en pareja o familia pequeña? ¿Te agendo una visita? 🙌",
+    },
+    "soare_solares": {
+        "claves": ["soaré solares", "soare solares", "eb-wc2454"],
+        "foto": None,
+        "caption": "✨ DEPARTAMENTO NUEVO EN RENTA — Soaré Solares\n📍 Soaré Solares, Zapopan\n💰 RENTA $23,900/mes",
+        "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 77 m² · 🚗 2 estacionamientos subterráneos · "
+                   "✅ Mantenimiento incluido · piso 4\n\n"
+                   "✨ A/C, persianas. Torre con gimnasio, coworking, wine bar, pet park, terraza social, "
+                   "juegos infantiles, seguridad 24/7.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamento-en-renta-soare-solares-solares?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita esta semana? 🙌",
+    },
+    "sendas_residencial": {
+        "claves": ["sendas residencial", "eb-wl4728"],
+        "foto": None,
+        "caption": "🏡 CASA EN RENTA — Sendas Residencial, Capital Norte\n📍 Sendas Residencial, Capital Norte, Zapopan\n💰 RENTA $25,000/mes",
+        "cuerpo": ("🛏 3 recámaras · 🛁 2 baños completos + 1 medio baño · 📐 209 m² · 🚗 2 estacionamientos · "
+                   "✅ Mantenimiento incluido\n\n"
+                   "✨ Jardín, estudio, preparación para roof garden. Se renta sin amueblar. "
+                   "Fraccionamiento con seguridad 24/7, casa club, alberca, gimnasio, terraza, áreas verdes y deportivas.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/la-casa-mas-linda-en-sendas-residencial-capital-norte?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
+    "valle_imperial_casa": {
+        "claves": ["imperio bizantino", "eb-wh8200"],
+        "foto": None,
+        "caption": "🌿 CASA EN RENTA — Valle Imperial\n📍 Coto Imperio Bizantino, Valle Imperial, Zapopan\n💰 RENTA $25,000/mes",
+        "cuerpo": ("🛏 3 recámaras · 🛁 3 baños · 📐 240 m² · 🚗 2 estacionamientos · ✅ Mantenimiento incluido · 3 niveles\n\n"
+                   "✨ Estudio adaptable (oficina, sala de TV o 4ta recámara), jardín privado, roof garden "
+                   "con barra y pérgola, A/C, seguridad 24 horas.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-en-renta-en-valle-imperial-dentro-de-coto-valle-imperial-casa-en-condominio?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita esta semana? 🙌",
+    },
+    "del_fresno": {
+        "claves": ["del fresno", "eb-sl4702"],
+        "foto": None,
+        "caption": "🏡 DEPARTAMENTO NUEVO EN DEL FRESNO — Guadalajara\n📍 Del Fresno, Guadalajara\n💰 VENTA $2,100,000 MXN",
+        "cuerpo": ("🛏 2 recámaras · 🛁 1 baño · 📐 49 m²\n\n"
+                   "✨ A estrenar, sala-comedor, cocina integral, conexión para centro de lavado, "
+                   "clósets. Buen precio de entrada, cerca de vialidades importantes.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamento-nuevo-a-estrenar-en-colonia-del-fresno?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Lo buscas para primer patrimonio o para invertir? 🙌",
+    },
+    "zona_centro_oblatos": {
+        "claves": ["zona centro", "oblatos", "eb-rr9019"],
+        "foto": None,
+        "caption": "🏙 DEPARTAMENTO NUEVO EN ZONA CENTRO — Guadalajara\n📍 Zona Centro-Oblatos, Guadalajara\n💰 VENTA $2,759,885 MXN",
+        "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 58.85 m²\n\n"
+                   "✨ Entrega inmediata, estacionamiento subterráneo, elevadores, chapas digitales. "
+                   "Amenidades: gimnasio, alberca, asoleaderos, asadores, coworking, seguridad.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamentos-en-zona-centro-de-guadalajara?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Lo buscas para vivir o como inversión de renta? 🙌",
+    },
+    "coto_sienna": {
+        "claves": ["coto sienna", "sienna", "eb-vh4793"],
+        "foto": None,
+        "caption": "🏡 CASA NUEVA EN CAPITAL NORTE — Coto Sienna, Zapopan\n📍 Capital Norte, Zapopan\n💰 VENTA $4,450,000 MXN",
+        "cuerpo": ("🛏 3 recámaras · 🛁 3 baños · 📐 177 m²\n\n"
+                   "✨ A estrenar dentro de coto, distribución funcional, estilo contemporáneo, "
+                   "zona residencial con crecimiento y plusvalía.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-a-estrenar-en-venta-en-capital-norte-coto-sienna-capital-norte?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
+    "lafayette": {
+        "claves": ["lafayette", "eb-wa3089"],
+        "foto": None,
+        "caption": "🌆 DEPARTAMENTO EN AMERICANA LAFAYETTE — Guadalajara\n📍 Americana Lafayette, Guadalajara\n💰 VENTA $4,150,000 MXN",
+        "cuerpo": ("🛏 2 recámaras · 🛁 1 baño · 📐 93 m²\n\n"
+                   "✨ Espacios amplios, sala-comedor, cocina integral, balcón, clósets, estacionamiento. "
+                   "Zona con gran actividad cultural, gastronómica y urbana.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/excelente-departamento-en-venta-en-colonia-americana-lafayette?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Lo buscas para vivir o para tu portafolio de inversión? 🙌",
+    },
+    "coto_avellana": {
+        "claves": ["coto avellana", "avellana", "eb-oy3981"],
+        "foto": None,
+        "caption": "🏡 CASA EN COTO AVELLANA — Zapopan\n📍 Coto Avellana, Zapopan (a un costado de Bugambilias)\n💰 VENTA $4,900,000 MXN",
+        "cuerpo": ("🛏 3 recámaras · 🛁 2 baños · 📐 200 m²\n\n"
+                   "✨ Casa dentro de coto, buena relación precio-ubicación-superficie, "
+                   "entorno residencial familiar.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-en-coto-avellana-zapopan?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
+    "americana_28k": {
+        "claves": ["eb-vw1515"],
+        "foto": None,
+        "caption": "✨ DEPARTAMENTO AMUEBLADO EN RENTA — Colonia Americana\n📍 Colonia Americana, Guadalajara\n💰 RENTA $28,000/mes",
+        "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 118.44 m²\n\n"
+                   "✨ Completamente amueblado, amplios espacios, sala-comedor, cocina integral. "
+                   "Ideal para ejecutivos, parejas o profesionistas.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamento-en-renta-amueblado-col-americana-guadalajara-jalisco?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
+    "coto_encino": {
+        "claves": ["coto encino", "eb-uu6717"],
+        "foto": None,
+        "caption": "🏡 CASA EN RENTA — Coto Encino, Valle Imperial\n📍 Coto Encino, Valle Imperial, Zapopan\n💰 RENTA $18,000/mes",
+        "cuerpo": ("🛏 3 recámaras · 🛁 3 baños · 📐 151 m²\n\n"
+                   "✨ Distribución funcional, comunidad residencial tranquila y segura.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-en-renta-dentro-de-coto-encino-en-valle-imperial?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
+    "loft_providencia": {
+        "claves": ["loft providencia", "eb-vs9049"],
+        "foto": None,
+        "caption": "✨ LOFT EN RENTA — Providencia, Guadalajara\n📍 Providencia, Guadalajara\n💰 RENTA $25,500/mes",
+        "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 108 m²\n\n"
+                   "✨ A estrenar, diseño contemporáneo, espacios amplios. Zona residencial y ejecutiva "
+                   "de las más reconocidas de Guadalajara.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamento-en-renta-a-estrenar-en-providencia-tipo-loft-prados-de-providencia?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
+    "solares_zona_real": {
+        "claves": ["zona real", "eb-wj9214"],
+        "foto": None,
+        "caption": "🌟 DEPARTAMENTO AMUEBLADO EN RENTA — Solares, Zona Real\n📍 Solares, Zona Real, Zapopan\n💰 RENTA $27,000/mes",
+        "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 125 m²\n\n"
+                   "✨ Completamente amueblado, espacios generosos, excelente presentación. "
+                   "Ideal para ejecutivos, parejas o familias pequeñas.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamento-amueblado-en-renta-en-solares-zona-real?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
+    "americana_18k": {
+        "claves": ["eb-tu9644"],
+        "foto": None,
+        "caption": "🌆 DEPARTAMENTO AMUEBLADO EN RENTA — Colonia Americana\n📍 Colonia Americana, Guadalajara\n💰 RENTA $18,500/mes",
+        "cuerpo": ("🛏 1 recámara · 🛁 1 baño · 📐 57 m²\n\n"
+                   "✨ Amueblado, ideal para ejecutivo, profesionista o pareja. Cerca de servicios, "
+                   "restaurantes y corredores importantes.\n\n"
+                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/departamento-amueblado-en-renta-en-la-americana-guadalajara?agent=javier373&lang=es\n\n"
+                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
+    },
 }
+
+# ------------------------------------------------------------------
+# CAMPAÑAS SEMANALES (desde campanas_semana.json — actualizar_campanas.py)
+# Se suman a las CAMPANAS curadas a mano arriba, sin pisarlas si el
+# mismo código EB ya existe. Solo usa datos reales extraídos de cada
+# ficha — nunca inventa amenidades ni descripciones.
+# ------------------------------------------------------------------
+def _cargar_campanas_semanales():
+    try:
+        with open("campanas_semana.json", encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print("[MAX] Sin campanas_semana.json: solo las campañas curadas a mano.", flush=True)
+        return
+    ebs_existentes = set()
+    for c in CAMPANAS.values():
+        for clave in c.get("claves", []):
+            if clave.startswith("eb-"):
+                ebs_existentes.add(clave)
+    agregadas = 0
+    for p in data.get("propiedades", []):
+        eb = (p.get("codigo_eb") or "").lower()
+        if not eb or eb in ebs_existentes:
+            continue
+        clave_interna = f"auto_{eb.replace('eb-', '')}"
+        precio = p.get("precio")
+        precio_fmt = f"${precio:,.0f} MXN" if precio else "consultar precio"
+        unidad = "/mes" if p.get("operacion") == "RENTA" else ""
+        partes = []
+        if p.get("recamaras"): partes.append(f"🛏 {p['recamaras']} rec")
+        if p.get("banos"): partes.append(f"🛁 {p['banos']} baños")
+        if p.get("m2"): partes.append(f"📐 {p['m2']} m²")
+        if p.get("estacionamientos"): partes.append(f"🚗 {p['estacionamientos']} estacionamientos")
+        titulo = p.get("titulo") or f"Propiedad en {p.get('municipio', 'ZMG')}"
+        CAMPANAS[clave_interna] = {
+            "claves": [eb],
+            "foto": p.get("foto"),
+            "caption": f"🏡 {titulo}\n📍 {p.get('municipio', 'ZMG')}\n💰 {precio_fmt}{unidad} en {p.get('operacion', '')}",
+            "cuerpo": (" · ".join(partes) +
+                      f"\n\n🔗 Ficha completa con fotos:\n{p.get('liga', '')}\n\n"
+                      f"🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                      f"Acierta Max — Socio AMPI, certificado ✅"),
+            "seguimiento": "¿Te gustaría agendar una visita, o buscamos opciones similares? 🙌",
+        }
+        agregadas += 1
+    print(f"[MAX] Campañas semanales cargadas: {agregadas} nuevas desde campanas_semana.json "
+          f"(generadas: {data.get('generado', '?')})", flush=True)
+
+_cargar_campanas_semanales()
 
 def detectar_campana(texto):
     t = texto.lower()
@@ -561,10 +957,32 @@ def detectar_campana(texto):
             return nombre, c
     return None, None
 
+def _resolver_foto(campana):
+    """Si la campaña no trae foto fija, la busca en vivo (og:image) de su
+    liga oficial — mismo mecanismo probado en enviar_ficha_liga."""
+    if campana.get("foto"):
+        return campana["foto"]
+    liga = campana.get("cuerpo", "")
+    m = re.search(r'https://www\.aciertamax\.com/property/\S+', liga)
+    if not m:
+        return None
+    url = m.group(0).rstrip(".,)")
+    try:
+        r = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        if r.status_code == 200:
+            mm = re.search(r'property="og:image"\s+content="([^"]+)"', r.text) or \
+                 re.search(r'content="([^"]+)"\s+property="og:image"', r.text)
+            if mm:
+                return mm.group(1).replace("&amp;", "&")
+    except Exception:
+        pass
+    return None
+
 def responder_campana(phone, texto, campana):
     """Ficha inmediata (foto + cuerpo + seguimiento) y deja registro
     en la memoria para que el agente continúe con contexto."""
-    ok_img = wati_send_image(phone, campana["foto"], campana["caption"])
+    foto = _resolver_foto(campana)
+    ok_img = wati_send_image(phone, foto, campana["caption"]) if foto else False
     if not ok_img:
         wati_send_text(phone, campana["caption"])
     wati_send_text(phone, campana["cuerpo"])
@@ -589,7 +1007,8 @@ def enviar_ficha_campana(phone, desarrollo):
     if desarrollo in FICHAS_ENVIADAS.get(phone, set()):
         return {"enviada": False,
                 "nota": "esta ficha YA se envió antes en esta conversación; NO la repitas, continúa la conversación respondiendo la duda del cliente"}
-    ok_img = wati_send_image(phone, c["foto"], c["caption"])
+    foto = _resolver_foto(c)
+    ok_img = wati_send_image(phone, foto, c["caption"]) if foto else False
     ok_caption = ok_img or wati_send_text(phone, c["caption"])
     ok_cuerpo = wati_send_text(phone, c["cuerpo"])
     if not (ok_caption and ok_cuerpo):
@@ -789,6 +1208,13 @@ def webhook():
                     "Con gusto 🙌 Un asesor certificado te contacta en breve para "
                     "programar tu llamada. ¿Cuál es tu nombre?")
             avisar_humano(phone, "Cliente solicitó cita directa con '*'")
+            # Registro permanente en el Sheet — nunca depende de que el
+            # aviso de WhatsApp se vea a tiempo; queda como historial.
+            res = registrar_lead(phone, nombre="(sin nombre, pidió '*')",
+                                 operacion="SOLICITÓ LLAMADA",
+                                 interes="Pidió cita directa con '*'",
+                                 notas="Atajo instantáneo — sin conversación previa")
+            print(f"[MAX] Registro de cita '*': {res}", flush=True)
         threading.Thread(target=responder_cita, daemon=True).start()
         return jsonify(ok=True, atajo="cita_instantanea")
 
@@ -811,13 +1237,32 @@ def webhook():
                     PENDING[phone] = []
                 try:
                     print(f"[MAX] Mensaje de {phone}: {texto[:200]}", flush=True)
+                    historial = get_history(phone)
+                    # BITÁCORA UNIVERSAL: registra TODO contacto desde su
+                    # primer mensaje, califique o no después. No depende
+                    # del criterio del modelo — es determinístico.
+                    if not historial and phone not in BITACORA_REGISTRADOS:
+                        nombre_c, _c = detectar_campana(texto)
+                        nombre_gu, _g = detectar_guia(texto)
+                        detectado = nombre_c or (f"guia:{nombre_gu}" if nombre_gu else "")
+                        registrar_contacto_bitacora(phone, texto, detectado)
+                        BITACORA_REGISTRADOS.add(phone)
                     # FAST-PATH de campañas: SOLO en el PRIMER mensaje de la
                     # conversación (así llegan los clics de anuncios).
                     nombre, campana = detectar_campana(texto)
-                    historial = get_history(phone)
                     if campana and not historial:
                         print(f"[MAX] Campaña detectada: {nombre}", flush=True)
                         responder_campana(phone, texto, campana)
+                        continue
+                    # FAST-PATH de guías (AM-GUIA-XX): igual, solo primer mensaje.
+                    nombre_g, guia = detectar_guia(texto)
+                    if guia and not historial:
+                        print(f"[MAX] Guía detectada: {nombre_g}", flush=True)
+                        wati_send_text(phone, guia["texto"])
+                        GUIAS_ENVIADAS.setdefault(phone, set()).add(nombre_g)
+                        append_history(phone, "user", texto)
+                        append_history(phone, "assistant",
+                            f"[Envié la guía {guia['codigo']}] {guia['pregunta']}")
                         continue
                     reply = agent_reply(phone, texto)
                     print(f"[MAX] Respuesta a {phone}: {reply[:200]}", flush=True)
