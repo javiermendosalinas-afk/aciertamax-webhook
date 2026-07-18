@@ -56,6 +56,8 @@ CONV_LOCK = threading.Lock()
 MAX_TURNS = 20
 PENDING = {}      # mensajes en ráfaga esperando turno, por número
 PHONE_LOCKS = {}  # un candado por número: una respuesta a la vez
+HUMANO_ACTIVO = {}  # phone -> timestamp de la última vez que un humano escribió
+COOLDOWN_HUMANO = 30 * 60  # 30 minutos de silencio de MAX tras intervención humana
 
 def get_history(phone):
     with CONV_LOCK:
@@ -313,7 +315,7 @@ TOOLS = [
          "precio_min": {"type": "number"}, "precio_max": {"type": "number"},
          "recamaras_min": {"type": "number"},
          "tipo": {"type": "string", "description": "casa o departamento"},
-         "texto": {"type": "string", "description": "colonia, fraccionamiento o palabra clave del título a buscar dentro del municipio, ej. 'Madeiras'"},
+         "texto": {"type": "string", "description": "colonia(s), fraccionamiento(s) o palabra(s) clave a buscar dentro del municipio. Si el cliente da VARIAS colonias aceptables, sepáralas por coma: 'Camino Real, Monraz, Virreyes' — encuentra propiedades que coincidan con CUALQUIERA de ellas."},
          "amueblado": {"type": "string", "enum": ["Sí", "No"], "description": "Solo filtra si el cliente lo pidió explícitamente. El dato no siempre está disponible en el registro; si no viene marcado, la propiedad SÍ se incluye (no se descarta por falta de dato)."},
          "limite": {"type": "number", "description": "máx 8, default 5"}},
       "required": []}},
@@ -415,6 +417,7 @@ REGLAS DE ORO:
 - NO auto-interpretes un "sí" ambiguo de un mensaje del cliente como consentimiento a una oferta que TÚ apenas estás haciendo en esa misma respuesta (ej. si preguntas "¿te mando las fichas?" y en la misma respuesta ya las diste por enviadas). Si no estás seguro de que el "sí" responde exactamente a tu oferta de fichas, pregunta o espera el siguiente turno del cliente antes de ejecutar el envío.
 - PROHIBIDO INVENTAR PROPIEDADES: cada nombre, precio, m² o característica que menciones debe venir literalmente de una respuesta de herramienta (buscar_propiedades, buscar_inventario_zmg, seleccionar_de_lista, o las fichas de campaña). Si el cliente insiste en un nombre que tú nunca dijiste y ninguna búsqueda lo confirma, jamás lo repitas como si existiera: aclara con calma que no tienes esa propiedad exacta disponible en este momento.
 - DATOS 100% VERIFICADOS SOLAMENTE: al describir una propiedad, menciona ÚNICAMENTE atributos que las herramientas devolvieron para ESA propiedad específica, o que estén en su ficha de PROPIEDADES EN CAMPAÑA. NUNCA mezcles características de una propiedad con otra (ej. el estacionamiento techado es de Santa Ana 360, NO de Bella Vittoria). Ante CUALQUIER dato del que no estés seguro, no lo afirmes: di "déjame mandarte la ficha oficial con los detalles exactos" y usa enviar_ficha. Un dato inventado destruye la confianza del cliente y de Acierta Max.
+- NUNCA MARQUES "✅ CUMPLE" UN REQUISITO QUE TU HERRAMIENTA NO CONFIRMÓ: la bolsa ZMG (buscar_inventario_zmg) solo trae precio, recámaras, baños, m², colonia y amueblado — NO trae terraza, cochera con portón, cuarto de servicio, bodega, seguridad privada ni amenidades. Si el cliente pidió alguno de esos requisitos, NUNCA digas que una propiedad "los cumple" — di algo como "en tamaño y precio calza, pero terraza/cochera/etc. no lo tengo confirmado en el sistema — te mando la ficha oficial para que lo verifiques" y usa enviar_ficha_liga. Afirmar un cumplimiento no verificado es tan grave como inventar la propiedad misma.
 - NUNCA pidas el teléfono del cliente: ya lo tienes (es este WhatsApp) y el sistema lo registra automáticamente. Solo pregunta si desea ser contactado en un número DIFERENTE.
 - Registra a cada cliente UNA sola vez; si la herramienta te dice que ya estaba registrado, usa ese folio y no lo repitas.
 - NUNCA prometas tiempos exactos de contacto ("en 30-60 minutos"); di "hoy mismo" o "a la brevedad".
@@ -1057,6 +1060,7 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
     muni_l = (municipio or "").lower()
     tipo_l = (tipo or "").lower()
     texto_l = (texto or "").lower().strip()
+    colonias = [c.strip() for c in texto_l.split(",") if c.strip()] if texto_l else []
     op_l = (operacion or "").upper().strip()
     for p in INVENTARIO_ZMG:
         if op_l and p.get("Operación", "").upper() != op_l:
@@ -1070,7 +1074,7 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                     continue
             elif "casa" in tipo_l and "casa" not in pt:
                 continue
-        if texto_l and texto_l not in p.get("Título/Colonia", "").lower():
+        if colonias and not any(c in p.get("Título/Colonia", "").lower() for c in colonias):
             continue
         if amueblado is not None:
             am = (p.get("Amueblado") or "").strip()
@@ -1170,13 +1174,32 @@ def enviar_ficha_liga(phone, liga):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
-    # Ignorar mensajes propios / eventos que no son texto entrante
+    # Si un HUMANO (tú o tu equipo) escribió directo desde Wati, MAX debe
+    # enterarse y quedarse en silencio un rato para ese cliente — para no
+    # pisar una conversación que ya está siendo atendida en persona.
     if data.get("owner") is True:
+        phone_humano = data.get("waId") or ""
+        if phone_humano:
+            HUMANO_ACTIVO[phone_humano] = time.time()
+            with CONV_LOCK:
+                pendientes_descartados = PENDING.pop(phone_humano, [])
+            if pendientes_descartados:
+                print(f"[MAX] Se descartaron {len(pendientes_descartados)} mensaje(s) en cola "
+                      f"de {phone_humano} por intervención humana.", flush=True)
+            print(f"[MAX] Intervención humana detectada con {phone_humano} — "
+                  f"pausando respuestas automáticas {COOLDOWN_HUMANO//60} min.", flush=True)
         return jsonify(ok=True)
     phone = data.get("waId") or ""
     text = (data.get("text") or "").strip()
     if not phone or not text:
         return jsonify(ok=True)
+    # Si hubo intervención humana reciente, MAX se queda callado — un
+    # asesor ya está en la conversación, no hay que competir con él.
+    ultima_humana = HUMANO_ACTIVO.get(phone)
+    if ultima_humana and (time.time() - ultima_humana) < COOLDOWN_HUMANO:
+        print(f"[MAX] Silencio por intervención humana reciente con {phone} "
+              f"(hace {(time.time()-ultima_humana)/60:.1f} min) — no respondo.", flush=True)
+        return jsonify(ok=True, silencio="humano_activo")
     # ANTI-DUPLICADOS: Wati a veces manda el mismo evento 2 veces.
     # Ignoramos si ya vimos el mismo id de mensaje, o el mismo
     # (teléfono + texto) en los últimos 30 segundos.
