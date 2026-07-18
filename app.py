@@ -616,10 +616,11 @@ CAMPANAS = {
     "bellavittoria": {
         "claves": ["bella", "vittoria", "bellavittoria", "eb-vi0277"],
         "foto": "https://assets.easybroker.com/property_images/5810277/101922700/EB-VI0277.png",
-        "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,400,000 MXN",
+        "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,400,000 MXN · 🔑 20 departamentos disponibles",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 70–75 m² · 🚗 1-2 cajones "
                    "(opción con preparación para auto eléctrico) · A ESTRENAR\n\n"
-                   "✨ Lobby tipo hotel, roof top panorámico equipado, terraza de eventos, "
+                   "✨ Tenemos *20 departamentos disponibles* — diferentes niveles y vistas, con "
+                   "lobby tipo hotel, roof top panorámico equipado, terraza de eventos, "
                    "asadores, juegos infantiles, sala de juegos, seguridad 24h.\n"
                    "📍 A minutos de Plaza del Sol, dentro de Periférico.\n"
                    "💳 Créditos bancarios e INFONAVIT/COFINAVIT · Entrega inmediata · "
@@ -937,15 +938,21 @@ def _cargar_campanas_semanales():
         if p.get("m2"): partes.append(f"📐 {p['m2']} m²")
         if p.get("estacionamientos"): partes.append(f"🚗 {p['estacionamientos']} estacionamientos")
         titulo = p.get("titulo") or f"Propiedad en {p.get('municipio', 'ZMG')}"
+        ubicacion = p.get("colonia") or p.get("municipio", "ZMG")
+        cp_txt = f" (CP {p['codigo_postal']})" if p.get("codigo_postal") else ""
+        amenidades_txt = ""
+        if p.get("amenidades"):
+            amenidades_txt = f"\n\n✨ {', '.join(p['amenidades'][:8])}"
         CAMPANAS[clave_interna] = {
             "claves": [eb],
             "foto": p.get("foto"),
-            "caption": f"🏡 {titulo}\n📍 {p.get('municipio', 'ZMG')}\n💰 {precio_fmt}{unidad} en {p.get('operacion', '')}",
-            "cuerpo": (" · ".join(partes) +
+            "caption": f"🏡 {titulo}\n📍 {ubicacion}{cp_txt}\n💰 {precio_fmt}{unidad} en {p.get('operacion', '')}",
+            "cuerpo": (" · ".join(partes) + amenidades_txt +
                       f"\n\n🔗 Ficha completa con fotos:\n{p.get('liga', '')}\n\n"
-                      f"🔵 Propiedad compartida. Precio y disponibilidad sujetos a confirmación.\n"
+                      f"🔵 Propiedad compartida. Precio, disponibilidad y amenidades sujetos a confirmación en la ficha oficial.\n"
                       f"Acierta Max — Socio AMPI, certificado ✅"),
             "seguimiento": "¿Te gustaría agendar una visita, o buscamos opciones similares? 🙌",
+            "colonia": p.get("colonia"), "codigo_postal": p.get("codigo_postal"),
         }
         agregadas += 1
     print(f"[MAX] Campañas semanales cargadas: {agregadas} nuevas desde campanas_semana.json "
@@ -1265,11 +1272,15 @@ def webhook():
                     # primer mensaje, califique o no después. No depende
                     # del criterio del modelo — es determinístico.
                     if not historial and phone not in BITACORA_REGISTRADOS:
-                        nombre_c, _c = detectar_campana(texto)
-                        nombre_gu, _g = detectar_guia(texto)
-                        detectado = nombre_c or (f"guia:{nombre_gu}" if nombre_gu else "")
-                        registrar_contacto_bitacora(phone, texto, detectado)
-                        BITACORA_REGISTRADOS.add(phone)
+                        try:
+                            nombre_c, _c = detectar_campana(texto)
+                            nombre_gu, _g = detectar_guia(texto)
+                            detectado = nombre_c or (f"guia:{nombre_gu}" if nombre_gu else "")
+                            registrar_contacto_bitacora(phone, texto, detectado)
+                            BITACORA_REGISTRADOS.add(phone)
+                        except Exception:
+                            import traceback
+                            print(f"[MAX-ERROR] Bitácora falló para {phone} (no interrumpe la respuesta):\n{traceback.format_exc()}", flush=True)
                     # FAST-PATH de campañas: SOLO en el PRIMER mensaje de la
                     # conversación (así llegan los clics de anuncios).
                     nombre, campana = detectar_campana(texto)
