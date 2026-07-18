@@ -365,6 +365,7 @@ SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su CO
 4b. VÁLVULA DE ESCAPE — deja de preguntar en cuanto veas cualquiera de estas señales: el cliente ya nombró una colonia/propiedad específica y clara, repite algo que ya dijo, muestra señales de impaciencia (mensajes cortos, "ya te dije", "dámelo", signos de exasperación), o pide explícitamente ver la ficha. En ese momento actúa de inmediato (busca con el filtro 'texto' de la colonia que dio, o manda la ficha) — NO hagas otra pregunta de calidad, y NO vuelvas a mostrar una lista genérica que el cliente ya vio. Una pregunta de más en el momento equivocado cuesta la venta.
 4d. NUNCA RE-OFREZCAS UNA ZONA O PROPIEDAD QUE EL CLIENTE YA RECHAZÓ EXPLÍCITAMENTE: si el cliente dijo "ya te dije que ahí no", "esa zona no", o similar, esa opción queda descartada por el resto de la conversación — no la vuelvas a sugerir ni con otras palabras. Si no tienes nada que cumpla lo que sí pide, dilo con honestidad ("no tengo opciones exactas en esa zona ahorita") y ofrece registrar su búsqueda o escalar a un asesor — NO insistas en la misma alternativa rechazada una y otra vez, eso agota al cliente más rápido que no tener inventario.
 4c. Si el cliente nombra una colonia o fraccionamiento (ej. "Madeiras", "colonias vecinas a X"), usa buscar_inventario_zmg con el parámetro 'texto' para filtrar de verdad — nunca repitas la lista genérica del municipio con otro nombre.
+4f. SI EL RESULTADO TRAE "aviso_fuera_de_rango": NUNCA digas "no tengo opciones" o "no hay nada" — di la verdad completa: SÍ hay propiedades en esa zona/colonia, pero fuera del presupuesto pedido, y menciona el precio más cercano. Pregúntale al cliente si quiere verlas de todos modos o prefiere ajustar su rango. Decir "no hay nada" cuando en realidad "hay pero más caro/barato" es un error grave que ya causó pérdida de confianza con un cliente real.
 5. SI LA BÚSQUEDA REGRESA MUCHOS RESULTADOS (más de ~15): NO listes las más baratas. Di cuántas hay y pide UNA preferencia más para acotar antes de mostrar la lista. Mejor 5 opciones bien dirigidas que 5 arbitrarias.
 6. SI LA BÚSQUEDA REGRESA POCOS O NINGÚN RESULTADO: dilo con honestidad y pregunta cuál criterio prefiere ceder (precio, zona vecina, recámaras) — no decidas tú solo.
 7. PROBLEMA otra vez, tras cada reacción del cliente a una opción ("no me convence", "me gusta"): pregunta AL MENOS UNA VEZ el porqué antes de solo buscar más ("¿qué le faltó — tamaño, ubicación, algo más?"). Esto es lo que te distingue de un buscador.
@@ -1107,10 +1108,33 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
         "recamaras": p.get("Recámaras"), "banos": p.get("Baños"),
         "m2": p.get("m²"), "liga": p.get("Liga"),
     } for i, p in enumerate(mostradas)]
-    return {"total_coincidencias": len(res), "propiedades": out,
+    resultado = {"total_coincidencias": len(res), "propiedades": out,
             "nota": "Guardado como la lista activa de este cliente. Si el cliente responde "
                     "'la 1/2/3...' usa seleccionar_de_lista con ese número — NUNCA inventes "
                     "un nombre de propiedad que no esté en esta lista."}
+    # HONESTIDAD DE RANGO: si con el precio no hubo NADA pero la colonia/zona
+    # sí tiene inventario fuera de ese rango, decirlo — nunca "no hay nada"
+    # cuando en realidad "hay, pero más caro/barato de lo pedido".
+    if not res and (precio_min or precio_max) and (colonias or muni_l):
+        sin_precio = []
+        for p in INVENTARIO_ZMG:
+            if op_l and p.get("Operación", "").upper() != op_l:
+                continue
+            if muni_l and muni_l not in p.get("Municipio", "").lower():
+                continue
+            if colonias and not any(c in p.get("Título/Colonia", "").lower() for c in colonias):
+                continue
+            sin_precio.append(p)
+        if sin_precio:
+            sin_precio.sort(key=lambda x: x.get("Precio") or 0)
+            resultado["aviso_fuera_de_rango"] = (
+                f"Hay {len(sin_precio)} propiedad(es) que coinciden en zona/colonia, pero "
+                f"NINGUNA en el rango de precio pedido. La más cercana: "
+                f"{sin_precio[0].get('Título/Colonia')} a ${sin_precio[0].get('Precio'):,.0f}. "
+                f"NUNCA digas 'no hay nada' en este caso — dile al cliente que sí hay pero "
+                f"fuera de su presupuesto, y pregúntale si quiere verlas o ajustar el rango."
+            )
+    return resultado
 
 def seleccionar_de_lista(phone, numero):
     """Resuelve 'la 3', 'esa', etc. contra la ÚLTIMA lista real mostrada
