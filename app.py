@@ -1224,6 +1224,13 @@ def webhook():
     text = (data.get("text") or "").strip()
     if not phone or not text:
         return jsonify(ok=True)
+    # DIAGNÓSTICO TEMPORAL: ver qué campos manda Wati en el payload real,
+    # para saber si trae source_url/source_id (el origen del anuncio de
+    # Instagram) que hoy no estamos usando. Quitar una vez confirmado.
+    print(f"[MAX-DIAGNOSTICO] Claves del payload de {phone}: {list(data.keys())}", flush=True)
+    if any(k for k in data.keys() if "source" in k.lower()):
+        print(f"[MAX-DIAGNOSTICO] Campos de origen encontrados: "
+              f"{ {k: v for k, v in data.items() if 'source' in k.lower()} }", flush=True)
     # Si hubo intervención humana reciente, MAX se queda callado — un
     # asesor ya está en la conversación, no hay que competir con él.
     ultima_humana = HUMANO_ACTIVO.get(phone)
