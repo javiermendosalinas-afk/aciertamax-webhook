@@ -58,6 +58,16 @@ PENDING = {}      # mensajes en ráfaga esperando turno, por número
 PHONE_LOCKS = {}  # un candado por número: una respuesta a la vez
 HUMANO_ACTIVO = {}  # phone -> timestamp de la última vez que un humano escribió
 COOLDOWN_HUMANO = 30 * 60  # 30 minutos de silencio de MAX tras intervención humana
+ORIGEN_POR_TELEFONO = {}  # phone -> sourceUrl (liga de Instagram) del primer contacto
+
+# Mapeo manual: liga exacta de la publicación de Instagram -> nombre de
+# campaña (debe coincidir con una clave real de CAMPANAS). Javier lo llena
+# cada vez que confirma qué publicación promociona qué propiedad — así,
+# aunque el botón de Instagram mande un mensaje genérico ("Quiero más
+# información"), MAX sabe identificar la propiedad exacta por el origen.
+MAPEO_POST_A_CAMPANA = {
+    # "https://www.instagram.com/p/XXXXXXX/": "block",
+}
 
 def get_history(phone):
     with CONV_LOCK:
@@ -407,6 +417,8 @@ SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su CO
 8. IMPLICACIÓN — solo si el cliente YA reveló una urgencia real (renta que vence, familia creciendo, oferta que expira): amplifica con tacto, una sola vez, sin forzar: "y si no encuentras algo a tiempo, ¿qué pasaría con [lo que mencionó]?". Nunca la inventes ni la fuerces si no hay urgencia real en la conversación.
 9. NECESIDAD-BENEFICIO — cuando por fin una opción encaje o esté cerca: en vez de enumerar tú las ventajas, pregunta para que el cliente las diga: "si esta cumple con eso, ¿qué te resolvería?" o "¿qué tanto se acerca a lo que buscabas?". Que lo diga él, no tú.
 GUÍAS DE CONTENIDO EDUCATIVO (códigos AM-GUIA-XX): si el cliente pide una guía a media conversación (no en el primer mensaje), usa enviar_guia con el nombre correcto. Después de que el sistema ya envió una guía (verás en el historial "[Envié la guía...]"), tu siguiente mensaje debe usar la "pregunta_seguimiento" que trae para ofrecer las opciones y encaminar la conversación: "poner en renta" → flujo CAPTACIÓN-VENDEDOR; "buscar para rentar" → buscar_inventario_zmg con operacion="RENTA"; "ya tienes prospecto" o "administración" → avisar_humano (aún no hay flujo automatizado para estos, escálalos con honestidad). Nunca repitas ni resumas el texto de la guía con tus propias palabras — ya se envió completo y tal cual.
+
+REFERENCIAS A "ESTA/ESE" PROPIEDAD SIN CONTEXTO CLARO: si el cliente dice algo como "de este depa", "de esta propiedad", "la que vi", "el anuncio que vi" — y TÚ no tienes ningún nombre, código EB, ni ficha ya mencionada en la conversación a la que eso pueda referirse — NUNCA lo ignores ni cambies de tema con un pitch genérico de la empresa. IMPORTANTE: casi siempre esto significa que el cliente quiere INFORMACIÓN de una propiedad que vio en un anuncio (quiere COMPRARLA o RENTARLA) — NO asumas que es dueño y quiere VENDERLA/rentarla él, ese es el error opuesto y también grave. El cliente cree que sabes de cuál depa habla (probablemente vio un anuncio específico en Instagram) y tú no. Responde con calidez reconociendo el hueco: "¡Claro! Para mandarte la info exacta, ¿me compartes el nombre de la propiedad, el código que viste en el anuncio (empieza con EB-), o me reenvías la publicación/liga que viste?" — Nunca finjas saber cuál es, ni des una descripción genérica de "un depa bonito", ni preguntes si quiere VENDER cuando lo más probable es que quiera COMPRAR/VER algo que ya vio anunciado.
 
 CASOS ESPECIALES (no son leads normales — trátalos con tacto y escala siempre, con la categoría correcta en avisar_humano):
 - "Esta propiedad es mía" / reclamo de propietario sobre un anuncio: discúlpate, NO discutas ni confirmes ni niegues nada tú mismo. Di algo como "Gracias por avisarnos, esto lo debe atender directamente nuestro equipo." Usa avisar_humano con categoria="RECLAMO-PROPIETARIO" y resumen claro (qué anuncio, qué dijo).
@@ -1138,7 +1150,7 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
     ULTIMA_BUSQUEDA[phone] = mostradas
     out = [{
         "numero": i + 1,
-        "titulo": p.get("Título/Colonia"), "municipio": p.get("Municipio"),
+        "titulo": p.get("Título/Colonia") or f"{p.get('Tipo','Propiedad')} en {p.get('Municipio','ZMG')}", "municipio": p.get("Municipio"),
         "tipo": p.get("Tipo"), "precio": p.get("Precio"),
         "recamaras": p.get("Recámaras"), "banos": p.get("Baños"),
         "m2": p.get("m²"), "liga": p.get("Liga"),
@@ -1184,7 +1196,7 @@ def seleccionar_de_lista(phone, numero):
                           "pide de nuevo la lista con buscar_inventario_zmg o pregunta "
                           "al cliente a cuál de las mostradas se refiere"}
     p = lista[idx]
-    return {"titulo": p.get("Título/Colonia"), "municipio": p.get("Municipio"),
+    return {"titulo": p.get("Título/Colonia") or f"{p.get('Tipo','Propiedad')} en {p.get('Municipio','ZMG')}", "municipio": p.get("Municipio"),
             "precio": p.get("Precio"), "recamaras": p.get("Recámaras"),
             "banos": p.get("Baños"), "m2": p.get("m²"), "liga": p.get("Liga")}
 
@@ -1245,6 +1257,11 @@ def webhook():
     # pisar una conversación que ya está siendo atendida en persona.
     if data.get("owner") is True:
         phone_humano = data.get("waId") or ""
+        # DIAGNÓSTICO: aquí es donde de verdad hacía falta — ver qué manda
+        # Wati cuando Javier interviene (asigna chat + responde), no solo
+        # cuando el cliente escribe. Esto explica por qué el silencio de
+        # ayer no se activó con este método de intervención.
+        print(f"[MAX-DIAGNOSTICO-HUMANO] Evento owner=true completo: {json.dumps(data, ensure_ascii=False)[:1500]}", flush=True)
         if phone_humano:
             HUMANO_ACTIVO[phone_humano] = time.time()
             with CONV_LOCK:
@@ -1266,6 +1283,13 @@ def webhook():
     if any(k for k in data.keys() if "source" in k.lower()):
         print(f"[MAX-DIAGNOSTICO] Campos de origen encontrados: "
               f"{ {k: v for k, v in data.items() if 'source' in k.lower()} }", flush=True)
+    # Guardar el origen (liga de Instagram) del PRIMER contacto — solo
+    # viene en ese mensaje, luego Wati ya no lo repite. Si conocemos ese
+    # post, podemos identificar la propiedad exacta que el cliente vio.
+    src_url = data.get("sourceUrl")
+    if src_url and phone not in ORIGEN_POR_TELEFONO:
+        ORIGEN_POR_TELEFONO[phone] = src_url
+        print(f"[MAX] Origen de Instagram guardado para {phone}: {src_url}", flush=True)
     # Si hubo intervención humana reciente, MAX se queda callado — un
     # asesor ya está en la conversación, no hay que competir con él.
     ultima_humana = HUMANO_ACTIVO.get(phone)
@@ -1350,6 +1374,16 @@ def webhook():
                     # FAST-PATH de campañas: SOLO en el PRIMER mensaje de la
                     # conversación (así llegan los clics de anuncios).
                     nombre, campana = detectar_campana(texto)
+                    # Respaldo: si el texto es genérico (botón default de
+                    # Instagram) pero SÍ sabemos de qué publicación vino
+                    # (ORIGEN_POR_TELEFONO), y esa publicación está mapeada
+                    # a una campaña conocida, usarla igual.
+                    if not campana and not historial:
+                        origen = ORIGEN_POR_TELEFONO.get(phone)
+                        nombre_mapeado = MAPEO_POST_A_CAMPANA.get(origen) if origen else None
+                        if nombre_mapeado and nombre_mapeado in CAMPANAS:
+                            nombre, campana = nombre_mapeado, CAMPANAS[nombre_mapeado]
+                            print(f"[MAX] Campaña detectada por origen de Instagram: {nombre}", flush=True)
                     if campana and not historial:
                         print(f"[MAX] Campaña detectada: {nombre}", flush=True)
                         responder_campana(phone, texto, campana)
