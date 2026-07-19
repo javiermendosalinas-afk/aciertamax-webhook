@@ -210,6 +210,37 @@ def enviar_ficha(phone, public_id):
 REGISTRADOS = {}  # phone -> (folio, timestamp): evita folios duplicados
 BITACORA_REGISTRADOS = set()  # phones ya anotados en la bitácora esta sesión
 
+def hora_gdl():
+    """Hora actual en Guadalajara (UTC-6) — evita la confusión de ver
+    horas en UTC (servidor) en el Sheet cuando se compara con Wati."""
+    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(time.time() - 6 * 3600))
+
+def _actualizar_bitacora_con_lead(phone, folio, operacion, interes):
+    """Cuando un contacto llega a folio en Leads MAX, regresa a su fila
+    original en Bitácora Contactos y anota qué pidió realmente — cierra
+    el círculo entre 'llegó' y 'qué quería', sin depender del primer
+    mensaje crudo (casi siempre genérico: 'quiero más información')."""
+    if not (GOOGLE_CREDS_JSON and SHEET_ID):
+        return
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_info(
+            json.loads(GOOGLE_CREDS_JSON),
+            scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+        sh = libro.worksheet("Bitácora Contactos")
+        celdas = sh.findall(phone, in_column=2)  # columna B = WHATSAPP
+        if not celdas:
+            return
+        fila = celdas[-1].row  # la más reciente si el número aparece varias veces
+        resumen = f"{operacion or '?'}: {interes or ''}"[:200]
+        sh.update_cell(fila, 5, f"Sí — {folio}")   # columna E: ¿LLEGÓ A LEAD MAX?
+        sh.update_cell(fila, 6, resumen)            # columna F: NOTAS
+    except Exception:
+        import traceback
+        print(f"[MAX-ERROR] No se pudo actualizar bitácora con lead {phone}:\n{traceback.format_exc()}", flush=True)
+
 def registrar_contacto_bitacora(phone, primer_mensaje, detectado=""):
     """Anota TODO contacto nuevo desde su primer mensaje, sin filtrar ni
     esperar a que esté calificado. 'Leads MAX' sigue siendo solo los
@@ -229,7 +260,7 @@ def registrar_contacto_bitacora(phone, primer_mensaje, detectado=""):
             sh = libro.add_worksheet(title="Bitácora Contactos", rows=5000, cols=6)
             sh.append_row(["FECHA Y HORA", "WHATSAPP", "PRIMER MENSAJE",
                            "CAMPAÑA/CÓDIGO DETECTADO", "¿LLEGÓ A LEAD MAX?", "NOTAS"])
-        sh.append_row([time.strftime("%Y-%m-%d %H:%M"), phone, primer_mensaje[:300],
+        sh.append_row([hora_gdl(), phone, primer_mensaje[:300],
                        detectado, "", ""])
         return {"registrado": True}
     except Exception as e:
@@ -263,9 +294,13 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
                            "NOTAS", "ESTATUS"])
         n = len(sh.get_all_values())  # incluye encabezado
         folio = f"ACIERTA-{n:04d}"
-        sh.append_row([folio, time.strftime("%Y-%m-%d %H:%M"), phone, nombre,
+        sh.append_row([folio, hora_gdl(), phone, nombre,
                        operacion, interes, presupuesto, zona, notas, "NUEVO"])
         REGISTRADOS[phone] = (folio, time.time())
+        try:
+            _actualizar_bitacora_con_lead(phone, folio, operacion, interes)
+        except Exception:
+            pass  # nunca dejar que esto tumbe el registro del lead ya exitoso
         return {"registrado": True, "folio": folio}
     except Exception as e:
         return {"registrado": False, "motivo": str(e)[:200]}
