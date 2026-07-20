@@ -1274,7 +1274,21 @@ def webhook():
         return jsonify(ok=True)
     phone = data.get("waId") or ""
     text = (data.get("text") or "").strip()
-    if not phone or not text:
+    if not phone:
+        return jsonify(ok=True)
+    if not text:
+        tipo_msg = (data.get("type") or "").lower()
+        print(f"[MAX-DIAGNOSTICO-MEDIA] Mensaje sin texto de {phone}, "
+              f"type={tipo_msg!r}, claves={list(data.keys())}", flush=True)
+        # Si parece ser una imagen/audio/video/documento real (no un evento
+        # de estado/entrega), responder con honestidad — NUNCA silencio
+        # total, eso se siente como ser ignorado.
+        if tipo_msg in ("image", "video", "audio", "document", "sticker", "photo"):
+            wati_send_text(phone,
+                "¡Hola! 👋 Veo que me compartiste algo (imagen o archivo), pero hoy no "
+                "puedo leerlo directamente 🙏. ¿Me escribes el nombre de la propiedad, "
+                "el código que empieza con EB-, o la liga del anuncio que viste? "
+                "Así te ayudo al instante con la ficha oficial.")
         return jsonify(ok=True)
     # DIAGNÓSTICO TEMPORAL: ver qué campos manda Wati en el payload real,
     # para saber si trae source_url/source_id (el origen del anuncio de
@@ -1366,6 +1380,14 @@ def webhook():
                             nombre_c, _c = detectar_campana(texto)
                             nombre_gu, _g = detectar_guia(texto)
                             detectado = nombre_c or (f"guia:{nombre_gu}" if nombre_gu else "")
+                            if not detectado:
+                                # El texto no reveló nada — al menos deja la
+                                # liga de origen cruda, para que Javier pueda
+                                # identificar manualmente la publicación
+                                # mientras se completa el mapeo.
+                                origen = ORIGEN_POR_TELEFONO.get(phone)
+                                if origen:
+                                    detectado = f"Sin código en texto — vino de: {origen}"
                             registrar_contacto_bitacora(phone, texto, detectado)
                             BITACORA_REGISTRADOS.add(phone)
                         except Exception:
