@@ -66,7 +66,8 @@ ORIGEN_POR_TELEFONO = {}  # phone -> sourceUrl (liga de Instagram) del primer co
 # aunque el botón de Instagram mande un mensaje genérico ("Quiero más
 # información"), MAX sabe identificar la propiedad exacta por el origen.
 MAPEO_POST_A_CAMPANA = {
-    # "https://www.instagram.com/p/XXXXXXX/": "block",
+    "https://www.instagram.com/p/Da33OUcA8nj/": "solares_zona_real",  # EB-WJ9214, confirmado 19/07/2026
+    "https://www.instagram.com/p/Da365rRg2VF/": "paneles_solares",     # EB-UO2612, confirmado 20/07/2026
 }
 
 def get_history(phone):
