@@ -464,6 +464,7 @@ REGLAS DE ORO:
 - PROHIBIDO CONFIRMAR ENVÍOS NO VERIFICADOS: NUNCA digas "ya te envié", "listo", "te mandé la ficha", "ya va la ficha", "en camino", "ahí te llega" o CUALQUIER variante que dé a entender que una ficha se está mandando o ya se mandó, a menos que acabes de recibir en ESTE MISMO turno el resultado de enviar_ficha_liga o enviar_ficha_campana con "enviada": true, PARA CADA UNA de las fichas de las que hables. El orden correcto es: llama la herramienta PRIMERO, espera su resultado, y SOLO ENTONCES escribe tu mensaje de confirmación (o de disculpa si falló). Nunca redactes el texto de confirmación antes de tener el resultado real. Si vas a mandar 2 o 3 fichas, DEBES llamar la herramienta esa misma cantidad de veces antes de confirmar nada. Si el resultado trae error o "enviada": false, dilo con honestidad ("tuve un problema mandándola, dame un segundo") — jamás confirmes ni anuncies un envío que no verificaste. Afirmar una acción que no ocurrió es tan grave como inventar un dato: rompe la confianza al instante.
 - SI PIDES VARIAS FICHAS EN UN TURNO, REVISA CADA RESULTADO POR SEPARADO antes de resumir: si de 2 fichas solo 1 regresó "enviada": true, NO digas "listo, las dos" — di exactamente cuál sí llegó y cuál no ("Te llegó la ficha de La Calma; la de Torre La Cantera tuve un problema, dame un segundo e inténtalo de nuevo"). Nunca generalices un éxito parcial como éxito total.
 - NO auto-interpretes un "sí" ambiguo de un mensaje del cliente como consentimiento a una oferta que TÚ apenas estás haciendo en esa misma respuesta (ej. si preguntas "¿te mando las fichas?" y en la misma respuesta ya las diste por enviadas). Si no estás seguro de que el "sí" responde exactamente a tu oferta de fichas, pregunta o espera el siguiente turno del cliente antes de ejecutar el envío.
+- REGLA DE ORO CONTRA LA FICHA FANTASMA: cuando el cliente pida una ficha ("ficha", "mándamela", "sí", "ficha técnica", "quiero verla"), tu PRIMERA acción es LLAMAR la herramienta enviar_ficha_liga (o enviar_ficha_campana) con la liga exacta. NUNCA respondas solo con texto diciendo que la enviaste: mencionar la ficha en palabras NO la envía — solo la herramienta la envía. Si te descubres a punto de escribir "ya te llegó" sin haber llamado la herramienta en este turno, DETENTE y llama la herramienta. El sistema ahora verifica esto automáticamente: si afirmas un envío que la herramienta no confirmó, tu mensaje será reemplazado por uno honesto y quedará registrado como fallo. Hacerlo bien es simple: herramienta primero, resultado después, confirmación al final.
 - PROHIBIDO INVENTAR PROPIEDADES: cada nombre, precio, m² o característica que menciones debe venir literalmente de una respuesta de herramienta (buscar_propiedades, buscar_inventario_zmg, seleccionar_de_lista, o las fichas de campaña). Si el cliente insiste en un nombre que tú nunca dijiste y ninguna búsqueda lo confirma, jamás lo repitas como si existiera: aclara con calma que no tienes esa propiedad exacta disponible en este momento.
 - DATOS 100% VERIFICADOS SOLAMENTE: al describir una propiedad, menciona ÚNICAMENTE atributos que las herramientas devolvieron para ESA propiedad específica, o que estén en su ficha de PROPIEDADES EN CAMPAÑA. NUNCA mezcles características de una propiedad con otra (ej. el estacionamiento techado es de Santa Ana 360, NO de Bella Vittoria). Ante CUALQUIER dato del que no estés seguro, no lo afirmes: di "déjame mandarte la ficha oficial con los detalles exactos" y usa enviar_ficha. Un dato inventado destruye la confianza del cliente y de Acierta Max.
 - NUNCA MARQUES "✅ CUMPLE" UN REQUISITO QUE TU HERRAMIENTA NO CONFIRMÓ: la bolsa ZMG (buscar_inventario_zmg) solo trae precio, recámaras, baños, m², colonia y amueblado — NO trae terraza, cochera con portón, cuarto de servicio, bodega, seguridad privada ni amenidades. Si el cliente pidió alguno de esos requisitos, NUNCA digas que una propiedad "los cumple" — di algo como "en tamaño y precio calza, pero terraza/cochera/etc. no lo tengo confirmado en el sistema — te mando la ficha oficial para que lo verifiques" y usa enviar_ficha_liga. Afirmar un cumplimiento no verificado es tan grave como inventar la propiedad misma.
@@ -548,10 +549,40 @@ def run_tool(name, args, phone):
     print(f"[MAX] Resultado {name}: {json.dumps(out, ensure_ascii=False)[:300]}", flush=True)
     return out
 
+# Herramientas que REALMENTE mandan una ficha por WhatsApp. Si MAX afirma
+# haber enviado una ficha pero ninguna de estas devolvió {"enviada": True}
+# en el turno, el mensaje es una alucinación y hay que interceptarlo.
+FICHA_TOOLS = ("enviar_ficha", "enviar_ficha_liga", "enviar_ficha_campana")
+
+# Frases con las que MAX afirma (falsamente o no) que una ficha ya salió.
+# Se usan para detectar confirmaciones de envío en el texto final.
+_FRASES_ENVIO = (
+    "ya te llegó", "ya te llego", "ya te la mandé", "ya te la mande",
+    "ya te envié", "ya te envie", "te mandé la ficha", "te mande la ficha",
+    "te envié la ficha", "te envie la ficha", "ya va la ficha", "ahí te llega",
+    "ahi te llega", "en camino", "te la acabo de mandar", "te la mando",
+    "ya te mandé", "ya te mande", "revisa tu whatsapp", "revisa tus mensajes",
+    "ya te compartí la ficha", "ya te comparti la ficha", "ya salió la ficha",
+    "ya salio la ficha",
+)
+
+def _afirma_envio_ficha(texto):
+    t = (texto or "").lower()
+    return any(f in t for f in _FRASES_ENVIO)
+
 def agent_reply(phone, user_text):
-    """Bucle agéntico: Claude decide, ejecuta herramientas, responde."""
+    """Bucle agéntico: Claude decide, ejecuta herramientas, responde.
+
+    Incluye un GUARDIA ANTI-ALUCINACIÓN: MAX no puede afirmar que envió una
+    ficha si ninguna herramienta de envío devolvió {"enviada": True} en este
+    turno. Si lo intenta, el mensaje se corrige por uno honesto — la confianza
+    del prospecto vale más que una confirmación bonita pero falsa.
+    """
     append_history(phone, "user", user_text)
     messages = get_history(phone)
+    fichas_enviadas_ok = 0   # fichas realmente confirmadas (enviada=True) este turno
+    fichas_intentadas = 0    # llamadas a herramientas de ficha, con o sin éxito
+    ultima_liga = None       # última liga vista, para recuperar el envío si hace falta
     for _ in range(6):  # máx 6 vueltas de herramientas
         resp = call_claude(messages)
         content = resp.get("content", [])
@@ -559,6 +590,33 @@ def agent_reply(phone, user_text):
         texts = [b.get("text", "") for b in content if b.get("type") == "text"]
         if resp.get("stop_reason") != "tool_use":
             final = "\n".join(t for t in texts if t).strip() or "¿Me repites por favor? 🙂"
+            # GUARDIA: si el mensaje afirma un envío de ficha que nunca ocurrió,
+            # no dejamos pasar la mentira. Intentamos el envío real o damos la liga.
+            if _afirma_envio_ficha(final) and fichas_enviadas_ok == 0:
+                print(f"[MAX-GUARDIA] Confirmación de ficha SIN envío real "
+                      f"(intentadas={fichas_intentadas}, liga={bool(ultima_liga)}). "
+                      f"Interceptando.", flush=True)
+                recuperada = False
+                if ultima_liga:
+                    # Reintento real de envío antes de rendirnos.
+                    try:
+                        r = enviar_ficha_liga(phone, ultima_liga)
+                        recuperada = bool(r.get("enviada"))
+                    except Exception as e:
+                        print(f"[MAX-GUARDIA] Reintento falló: {e}", flush=True)
+                if recuperada:
+                    final = ("¡Listo! Ya te compartí la ficha con foto y liga oficial. 📸\n"
+                             "¿Qué te parece? ¿La vemos con calma o te muestro otra opción?")
+                elif ultima_liga:
+                    final = ("Disculpa, tuve un problema técnico mandándote la ficha por aquí. "
+                             "Para que no te quedes sin verla, te paso la liga oficial directa:\n"
+                             f"{ultima_liga}\n\n"
+                             "¿Le echas un ojo y me dices si te late o te busco otra?")
+                else:
+                    final = ("Disculpa, tuve un problema técnico con la ficha. "
+                             "Dame un segundo y te la comparto bien, o si prefieres, "
+                             "un asesor certificado te la manda hoy mismo con todos los detalles. "
+                             "¿Cómo prefieres?")
             append_history(phone, "assistant", final)
             return final
         # registrar el turno del asistente con sus tool_use
@@ -566,6 +624,23 @@ def agent_reply(phone, user_text):
         results = []
         for tu in tool_uses:
             out = run_tool(tu["name"], tu.get("input", {}), phone)
+            # Rastrear ligas vistas (búsqueda / selección / envío) para poder
+            # recuperar el envío si MAX alucina la confirmación más adelante.
+            args = tu.get("input", {})
+            if isinstance(args, dict) and args.get("liga"):
+                ultima_liga = args["liga"]
+            if isinstance(out, dict):
+                liga_out = out.get("liga")
+                if liga_out:
+                    ultima_liga = liga_out
+                props = out.get("propiedades")
+                if isinstance(props, list) and props and isinstance(props[0], dict) and props[0].get("liga"):
+                    ultima_liga = props[0]["liga"]
+            # Contabilizar envíos de ficha reales.
+            if tu["name"] in FICHA_TOOLS:
+                fichas_intentadas += 1
+                if isinstance(out, dict) and out.get("enviada") is True:
+                    fichas_enviadas_ok += 1
             results.append({"type": "tool_result", "tool_use_id": tu["id"],
                             "content": json.dumps(out, ensure_ascii=False)})
         messages.append({"role": "user", "content": results})
