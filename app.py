@@ -39,7 +39,7 @@ if "/d/" in SHEET_ID:  # tolerancia: si pegaron la URL completa, extraer el ID
     SHEET_ID = SHEET_ID.split("/d/")[1].split("/")[0]
 HUMAN_HANDOFF       = os.environ.get("HUMAN_HANDOFF_NUMBER", "")
 CALENDLY_URL        = os.environ.get("CALENDLY_URL", "")
-CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
 EB_API = "https://api.easybroker.com/v1"
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
@@ -354,7 +354,7 @@ TOOLS = [
          "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara", "eleve"]}},
       "required": ["desarrollo"]}},
     {"name": "buscar_inventario_zmg",
-     "description": "Busca en la BOLSA COMPLETA de la ZMG (venta desde $2,000,000 y renta desde $13,000/mes, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $2M o renta desde $13,000 — pero SOLO después de haber hecho al menos una pregunta de calidad (uso, urgencia, o preferencia específica) como coach, no como reflejo automático al primer mensaje del cliente. Usa 'operacion' (VENTA o RENTA) para no mezclar. Si el cliente nombra una COLONIA o fraccionamiento específico (ej. 'Madeiras', 'Andares'), usa el parámetro 'texto' para filtrar de verdad por ese nombre — NO vuelvas a mostrar la lista genérica del municipio disfrazada de 'colonias vecinas'. Regresa título, precio, recámaras y liga.",
+     "description": "Busca en la BOLSA COMPLETA de la ZMG (venta desde $2,000,000 y renta desde $13,000/mes, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $2M o renta desde $13,000. Usa 'operacion' (VENTA o RENTA) para no mezclar. Si el cliente nombra una COLONIA, fraccionamiento, DESARROLLO/TORRE (ej. 'Madeiras', 'Andares', 'Torre Ágave') o da un CÓDIGO EB (ej. 'EB-VW0579'), usa el parámetro 'texto' con ese nombre o código para filtrar de verdad — el 'texto' busca en título, colonia, código EB y liga. SIEMPRE PUEDES verificar un código EB con esta herramienta: NUNCA le digas al cliente que 'no puedes verificar un código desde aquí' — sí puedes, pon el código EB en 'texto' y busca. NO vuelvas a mostrar la lista genérica del municipio disfrazada de 'colonias vecinas'. Regresa título, precio, recámaras y liga.",
      "input_schema": {"type": "object", "properties": {
          "municipio": {"type": "string", "description": "Guadalajara, Zapopan, Tlaquepaque, Tonalá o Tlajomulco"},
          "operacion": {"type": "string", "enum": ["VENTA", "RENTA"], "description": "VENTA o RENTA — indícalo siempre que sepas cuál busca el cliente"},
@@ -406,7 +406,7 @@ SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su CO
 1. Dale acceso al catálogo completo: "Puedes ver todo nuestro inventario en https://www.aciertamax.com" (compártelo temprano, es transparencia).
 2. Ofrece el diferenciador: "¿Prefieres explorar por tu cuenta, o te doy ATENCIÓN PERSONALIZADA aquí mismo? Puedo hacer contigo un COACHING INMOBILIARIO CON IA: te hago las preguntas correctas y busco exactamente lo que satisface tus necesidades."
 3. SITUACIÓN: la cubre el modelo Querer-Poder-Cómo-Cuándo-Dónde (zona, presupuesto, recámaras, uso). No la repreguntes si el cliente ya la dio de golpe.
-4. PROBLEMA — ANTES DE TU PRIMERA BÚSQUEDA: agradece los datos que ya diste, pero SIEMPRE agrega UNA pregunta de problema/calidad que no sea pura situación — la que más ayude a acotar: ¿qué es lo que más te ha costado encontrar hasta ahora?, ¿es para vivir o invertir?, ¿algo que no pueda faltar (amenidad, colonia exacta, planta baja)? Si es RENTA, pregunta también si lo busca amueblado o sin muebles (usa el parámetro 'amueblado'). Nunca dispares buscar_inventario_zmg de inmediato solo con precio+zona+recámaras: esos tres datos rara vez acotan lo suficiente en una bolsa de miles.
+4. PROBLEMA — ANTES DE TU PRIMERA BÚSQUEDA: agradece los datos que ya diste, pero SIEMPRE agrega UNA pregunta de problema/calidad que no sea pura situación — la que más ayude a acotar: ¿qué es lo que más te ha costado encontrar hasta ahora?, ¿es para vivir o invertir?, ¿algo que no pueda faltar (amenidad, colonia exacta, planta baja)? Si es RENTA, pregunta también si lo busca amueblado o sin muebles (usa el parámetro 'amueblado'). Nunca dispares buscar_inventario_zmg de inmediato solo con precio+zona+recámaras: esos tres datos rara vez acotan lo suficiente en una bolsa de miles. ⚠️ EXCEPCIÓN QUE MANDA SOBRE TODO LO ANTERIOR: esta regla de "pregunta antes de buscar" NO aplica cuando el cliente nombra un DESARROLLO/TORRE/PROPIEDAD específica (ej. "Torre Ágave", "Bella Vittoria") o da un CÓDIGO EB (ej. "EB-VW0579", o cualquier "EB-" seguido de letras/números). En esos casos NO preguntes NADA primero: tu PRIMERA y única acción es llamar buscar_inventario_zmg con el parámetro 'texto'=nombre-del-desarrollo (o el código EB). Preguntar presupuesto/recámaras cuando el cliente ya te dijo QUÉ propiedad quiere es el error más grave y más irritante que puedes cometer: el cliente ya fue específico, ejecuta la búsqueda. Buscar y no encontrar es honesto; preguntar en círculos sin buscar destruye la confianza al instante.
 4e. SI EL CLIENTE DA UN PUNTO DE REFERENCIA en vez de colonia/municipio (ej. "cerca del ITESO", "por Andares", "junto a Plaza del Sol"): pregunta hasta dónde está dispuesto a buscar ("¿solo esa zona, o abrimos a colonias vecinas / todo el municipio?") antes de buscar — no inventes un radio en kilómetros, esa precisión no existe en los datos; usa 'texto' o 'municipio' según lo que el cliente prefiera ampliar.
 4b. VÁLVULA DE ESCAPE — deja de preguntar en cuanto veas cualquiera de estas señales: el cliente ya nombró una colonia/propiedad específica y clara, repite algo que ya dijo, muestra señales de impaciencia (mensajes cortos, "ya te dije", "dámelo", signos de exasperación), o pide explícitamente ver la ficha. En ese momento actúa de inmediato (busca con el filtro 'texto' de la colonia que dio, o manda la ficha) — NO hagas otra pregunta de calidad, y NO vuelvas a mostrar una lista genérica que el cliente ya vio. Una pregunta de más en el momento equivocado cuesta la venta.
 4d. NUNCA RE-OFREZCAS UNA ZONA O PROPIEDAD QUE EL CLIENTE YA RECHAZÓ EXPLÍCITAMENTE: si el cliente dijo "ya te dije que ahí no", "esa zona no", o similar, esa opción queda descartada por el resto de la conversación — no la vuelvas a sugerir ni con otras palabras. Si no tienes nada que cumpla lo que sí pide, dilo con honestidad ("no tengo opciones exactas en esa zona ahorita") y ofrece registrar su búsqueda o escalar a un asesor — NO insistas en la misma alternativa rechazada una y otra vez, eso agota al cliente más rápido que no tener inventario.
@@ -1205,8 +1205,18 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                     continue
             elif "casa" in tipo_l and "casa" not in pt:
                 continue
-        if colonias and not any(c in p.get("Título/Colonia", "").lower() for c in colonias):
-            continue
+        if colonias:
+            # Buscar el término no solo en el título/colonia, sino también en el
+            # código EB y en la liga — así "EB-VW0579" o parte de la URL también
+            # encuentran la propiedad. Antes solo miraba Título/Colonia, por eso
+            # una búsqueda por código EB no hallaba nada aunque la propiedad existiera.
+            campos_busqueda = (
+                p.get("Título/Colonia", "").lower() + " " +
+                (p.get("codigo_eb") or "").lower() + " " +
+                (p.get("Liga") or "").lower()
+            )
+            if not any(c in campos_busqueda for c in colonias):
+                continue
         if amueblado is not None:
             am = (p.get("Amueblado") or "").strip()
             quiere_amueblado = str(amueblado).lower() in ("sí", "si", "true", "1", "yes")
@@ -1245,8 +1255,14 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                 continue
             if muni_l and muni_l not in p.get("Municipio", "").lower():
                 continue
-            if colonias and not any(c in p.get("Título/Colonia", "").lower() for c in colonias):
-                continue
+            if colonias:
+                campos_busqueda = (
+                    p.get("Título/Colonia", "").lower() + " " +
+                    (p.get("codigo_eb") or "").lower() + " " +
+                    (p.get("Liga") or "").lower()
+                )
+                if not any(c in campos_busqueda for c in colonias):
+                    continue
             sin_precio.append(p)
         if sin_precio:
             sin_precio.sort(key=lambda x: x.get("Precio") or 0)
