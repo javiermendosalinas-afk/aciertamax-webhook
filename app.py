@@ -1512,6 +1512,54 @@ def webhook():
                         append_history(phone, "assistant",
                             f"[Envié la guía {guia['codigo']}] {guia['pregunta']}")
                         continue
+                    # FAST-PATH EB: si el mensaje trae un codigo EB (EB-XXXXXX),
+                    # detectamos y mandamos la ficha de inmediato sin pasar por Claude.
+                    # Caso de uso: prospecto llega de Instagram/TikTok, ve la clave EB
+                    # en la ficha y la escribe al WhatsApp.
+                    import re as _re
+                    _eb_match = _re.search(r'\bEB-[A-Z0-9]{4,8}\b', texto.upper())
+                    if _eb_match:
+                        _eb_code = _eb_match.group(0)
+                        print(f"[MAX] Fast-path EB: {_eb_code} de {phone}", flush=True)
+                        _prop = next((p for p in INVENTARIO_ZMG
+                                      if (_eb_code.lower() in (p.get('codigo_eb') or '').lower()
+                                          or _eb_code.lower() in (p.get('Liga') or '').lower())), None)
+                        if _prop:
+                            _liga  = _prop.get('Liga','')
+                            _tit   = _prop.get('Titulo/Colonia') or _prop.get('Titulo/Colonia','Propiedad')
+                            _precio = _prop.get('Precio','')
+                            _rec   = _prop.get('Recamaras') or _prop.get('Recamaras','')
+                            _ban   = _prop.get('Banos') or _prop.get('Banos','')
+                            _m2    = _prop.get('m2') or _prop.get('m2','')
+                            _muni  = _prop.get('Municipio','')
+                            _op    = _prop.get('Operacion') or _prop.get('Operacion','')
+                            try:
+                                _precio_fmt = f"${int(float(_precio)):,}"
+                            except Exception:
+                                _precio_fmt = str(_precio)
+                            _saludo = (
+                                f"Hola! Soy MAX de Acierta Max. Vi que te interesa el codigo {_eb_code}.\n\n"
+                                f"Te mando la ficha completa ahora mismo!"
+                            )
+                            wati_send_text(phone, _saludo)
+                            _res = enviar_ficha_liga(phone, _liga)
+                            if not _res.get('enviada'):
+                                wati_send_text(phone,
+                                    f"Aqui tienes la ficha: {_liga}\n\n"
+                                    f"Tenemos mas de 3,000 propiedades en la ZMG. "
+                                    f"Cual es tu nombre y que buscas? Te ayudo!")
+                            else:
+                                wati_send_text(phone,
+                                    f"Tenemos mas de 3,000 propiedades en la ZMG. "
+                                    f"Si quieres ver mas opciones o tienes preguntas sobre creditos, "
+                                    f"escrituracion o visitas, aqui estoy! Cual es tu nombre?")
+                            append_history(phone, "user", texto)
+                            append_history(phone, "assistant",
+                                f"[Fast-path EB {_eb_code}] Mande saludo + ficha. {_op} {_precio_fmt} {_muni}.")
+                            continue
+                        else:
+                            print(f"[MAX] Fast-path EB: {_eb_code} no en inventario, pasando a Claude", flush=True)
+                    # FIN FAST-PATH EB
                     reply = agent_reply(phone, texto)
                     print(f"[MAX] Respuesta a {phone}: {reply[:200]}", flush=True)
                     for i in range(0, len(reply), 900):
