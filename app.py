@@ -464,6 +464,69 @@ REGLAS DE ORO:
 - PROHIBIDO CONFIRMAR ENVÍOS NO VERIFICADOS: NUNCA digas "ya te envie", "listo", "te mande la ficha", "ya va la ficha", "en camino", "ahi te llega" o CUALQUIER variante que dé a entender que una ficha se está mandando o ya se mandó, a menos que acabes de recibir en ESTE MISMO turno el resultado de enviar_ficha_liga o enviar_ficha_campana con "enviada": true, PARA CADA UNA de las fichas de las que hables. El orden correcto es: llama la herramienta PRIMERO, espera su resultado, y SOLO ENTONCES escribe tu mensaje de confirmación (o de disculpa si falló). Nunca redactes el texto de confirmación antes de tener el resultado real. Si vas a mandar 2 o 3 fichas, DEBES llamar la herramienta esa misma cantidad de veces antes de confirmar nada. Si el resultado trae error o "enviada": false, dilo con honestidad ("tuve un problema mandándola, dame un segundo") — jamás confirmes ni anuncies un envío que no verificaste. Afirmar una acción que no ocurrió es tan grave como inventar un dato: rompe la confianza al instante.
 - SI PIDES VARIAS FICHAS EN UN TURNO, REVISA CADA RESULTADO POR SEPARADO antes de resumir: si de 2 fichas solo 1 regresó "enviada": true, NO digas "listo, las dos" — di exactamente cuál sí llegó y cuál no ("Te llegó la ficha de La Calma; la de Torre La Cantera tuve un problema, dame un segundo e inténtalo de nuevo"). Nunca generalices un éxito parcial como éxito total.
 - NO auto-interpretes un "sí" ambiguo de un mensaje del cliente como consentimiento a una oferta que TÚ apenas estás haciendo en esa misma respuesta (ej. si preguntas "¿te mando las fichas?" y en la misma respuesta ya las diste por enviadas). Si no estás seguro de que el "sí" responde exactamente a tu oferta de fichas, pregunta o espera el siguiente turno del cliente antes de ejecutar el envío.
+
+== FINANCIAMIENTO: CREDITOS HIPOTECARIOS, INFONAVIT Y ESCRITURACION ==
+Cuando el cliente pregunte sobre creditos, financiamiento, Infonavit o escrituracion,
+responde con estos datos actualizados a julio 2026. SIEMPRE en 3-4 lineas maximo
+y SIEMPRE recomienda al final contactar directamente al banco o notario para cotizacion exacta.
+
+CREDITOS HIPOTECARIOS BANCARIOS (julio 2026):
+- Tasas fijas: desde 9.5% hasta 12.5% anual segun banco y perfil
+- Bancos lideres: Banamex (tasa desde 8.25%, CAT 9.9% - el mas barato),
+  Banorte (10.25%), Santander Hipoteca Ya (9.9%), BBVA (10.75%, CAT 14.5%)
+- Enganche minimo: 10% a 20% del valor del inmueble
+- Plazos: 5 a 20 anos (el mas comun: 15-20 anos)
+- Requisitos generales: ingresos comprobables, historial crediticio limpio
+  (sin atrasos ultimos 2 anos), 2+ anos de empleo formal
+- Indicador clave: comparar el CAT (Costo Anual Total), no solo la tasa nominal.
+  El CAT incluye seguros y comisiones — puede significar diferencia de $790,000+
+  entre el banco mas barato y el mas caro en un credito de $1.8M a 20 anos
+- Simulador oficial gratuito: condusef.gob.mx (compara todos los bancos)
+
+INFONAVIT 2026 (trabajadores afiliados al IMSS):
+- Credito tradicional individual: hasta $2,935,002 MXN
+- Unamos Creditos (2 derechohabientes): hasta $5,870,000 MXN
+- Cofinavit (Infonavit + banco): combina ambos creditos para mayor monto
+- Tasa: 10.45% fija anual para todos los niveles salariales
+- Plazo maximo: hasta 30 anos (edad + plazo no puede superar 70 anos hombres / 75 mujeres)
+- Modelo T100 (nuevo 2026): solo 100 puntos para calificar (antes 1,080).
+  Estar en Buro de Credito ya NO impide obtener el credito
+- Aplica para vivienda nueva O usada, siempre que este libre de gravamenes
+- Precalificacion: infonavit.org.mx (seccion Mi Cuenta Infonavit)
+- Credito conyugal: puede combinarse con conyugue que cotice en Fovissste
+
+ESCRITURACION EN JALISCO / GUADALAJARA (datos 2026):
+- Costo total: entre 4.21% y 5.78% del valor de la propiedad
+  (Jalisco es uno de los estados mas economicos del pais — CDMX cobra hasta 10%)
+- Para una propiedad de $1,500,000: aprox $63,000 a $86,700 MXN en gastos
+- Para una propiedad de $3,000,000: aprox $126,000 a $173,000 MXN
+- Se compone de:
+  * ITP/ISAI (Impuesto Traslado Dominio): 2.0% a 3.0% sobre valor catastral
+    (el catastral es 40-70% del valor comercial — ventaja fiscal de Jalisco)
+  * Honorarios notariales: 0.8% a 1.5% del valor
+  * Registro Publico de la Propiedad: 1.5% del valor
+  * Avaluo: $1,500 a $5,000 MXN
+  * Certificados (libertad de gravamen, predial, agua): $500 a $3,000 MXN
+- Quien paga: el COMPRADOR paga los gastos de escrituracion.
+  El VENDEDOR paga ISR por su ganancia (si aplica)
+- Tiempo estimado del proceso: 2 a 3 meses totales
+  (1 semana avaluo, 2-3 semanas escritura, 4-8 semanas inscripcion en Registro)
+- IVA: NO aplica en compraventa de vivienda
+- Sin escritura inscrita en Registro Publico de la Propiedad, NO eres dueno legal
+
+CUANDO TE PREGUNTEN DE MANTENIMIENTO O GASTOS ADICIONALES:
+- Predial anual: generalmente 0.1% a 0.3% del valor catastral (muy bajo en Jalisco)
+- Cuotas de mantenimiento (condominios): muy variables, tipicamente $500-$3,000/mes
+  segun amenidades (alberca, gimnasio, seguridad 24h elevan la cuota)
+- Seguro de casa: aprox 0.1% a 0.3% del valor asegurado por ano
+- Siempre preguntar al desarrollo o administracion la cuota exacta antes de comprar
+
+POSTURA DE MAX: MAX orienta y educa — NO es un asesor financiero ni notario.
+Siempre recomienda cotizar directamente con el banco (simulador Condusef),
+preguntar en Infonavit.org.mx, y consultar un notario para el costo exacto de escrituracion.
+Para credito hipotecario, ofrecer conectar con el asesor humano de Acierta Max
+que puede orientar segun el perfil especifico del cliente.
+
 - REGLA DE ORO CONTRA LA FICHA FANTASMA: cuando el cliente pida una ficha ("ficha", "mándamela", "sí", "ficha técnica", "quiero verla"), tu PRIMERA acción es LLAMAR la herramienta enviar_ficha_liga (o enviar_ficha_campana) con la liga exacta. NUNCA respondas solo con texto diciendo que la enviaste: mencionar la ficha en palabras NO la envía — solo la herramienta la envía. Si te descubres a punto de escribir "ya te llego" sin haber llamado la herramienta en este turno, DETENTE y llama la herramienta. El sistema ahora verifica esto automáticamente: si afirmas un envío que la herramienta no confirmó, tu mensaje será reemplazado por uno honesto y quedará registrado como fallo. Hacerlo bien es simple: herramienta primero, resultado después, confirmación al final.
 - PROHIBIDO INVENTAR PROPIEDADES: cada nombre, precio, m² o característica que menciones debe venir literalmente de una respuesta de herramienta (buscar_propiedades, buscar_inventario_zmg, seleccionar_de_lista, o las fichas de campaña). Si el cliente insiste en un nombre que tú nunca dijiste y ninguna búsqueda lo confirma, jamás lo repitas como si existiera: aclara con calma que no tienes esa propiedad exacta disponible en este momento.
 - DATOS 100% VERIFICADOS SOLAMENTE: al describir una propiedad, menciona ÚNICAMENTE atributos que las herramientas devolvieron para ESA propiedad específica, o que estén en su ficha de PROPIEDADES EN CAMPAÑA. NUNCA mezcles características de una propiedad con otra (ej. el estacionamiento techado es de Santa Ana 360, NO de Bella Vittoria). Ante CUALQUIER dato del que no estés seguro, no lo afirmes: di "déjame mandarte la ficha oficial con los detalles exactos" y usa enviar_ficha. Un dato inventado destruye la confianza del cliente y de Acierta Max.
@@ -1512,6 +1575,48 @@ def webhook():
                         append_history(phone, "assistant",
                             f"[Envié la guía {guia['codigo']}] {guia['pregunta']}")
                         continue
+                    # FAST-PATH ASTERISCO: si el cliente escribe * (o *humano, *asesor,
+                    # *ayuda, etc.), conectamos de inmediato con Javier sin pasar por Claude.
+                    _texto_strip = texto.strip()
+                    _es_asterisco = (
+                        _texto_strip == "*" or
+                        _texto_strip.lower() in ("* ", "*humano", "*asesor", "*ayuda",
+                                                  "*persona", "*javier", "* asesor",
+                                                  "quiero hablar con alguien",
+                                                  "hablar con humano", "hablar con persona",
+                                                  "me comunicas con alguien")
+                    )
+                    if _es_asterisco:
+                        print(f"[MAX] Fast-path ASTERISCO de {phone}", flush=True)
+                        # Obtener resumen del historial para enviarlo a Javier
+                        _hist = get_history(phone)
+                        _resumen_hist = []
+                        for _m in _hist[-10:]:  # ultimos 10 mensajes
+                            _rol = "Cliente" if _m.get("role") == "user" else "MAX"
+                            _txt = _m.get("content","")
+                            if isinstance(_txt, list):
+                                _txt = " ".join(t.get("text","") for t in _txt if isinstance(t,dict))
+                            if _txt and not _txt.startswith("["):
+                                _resumen_hist.append(f"{_rol}: {str(_txt)[:120]}")
+                        _resumen = "\n".join(_resumen_hist) if _resumen_hist else "Sin historial previo"
+                        # Avisar a Javier con el contexto completo
+                        if HUMAN_HANDOFF:
+                            wati_send_text(HUMAN_HANDOFF,
+                                f"*[SOLICITUD DE ASESOR]*\n"
+                                f"Cliente: {phone}\n"
+                                f"Escribio: {_texto_strip}\n\n"
+                                f"*Contexto de la conversacion:*\n{_resumen[:800]}")
+                        # Responder al cliente
+                        wati_send_text(phone,
+                            "Perfecto! Ya le avise a un asesor certificado de Acierta Max. "
+                            "Te contacta en breve para ayudarte personalmente. "
+                            "Un momento por favor!")
+                        append_history(phone, "user", texto)
+                        append_history(phone, "assistant",
+                            "[Fast-path *] Cliente pidio asesor humano. Se notifico a Javier con contexto.")
+                        continue
+                    # FIN FAST-PATH ASTERISCO
+
                     # FAST-PATH EB: si el mensaje trae un codigo EB (EB-XXXXXX),
                     # detectamos y mandamos la ficha de inmediato sin pasar por Claude.
                     # Caso de uso: prospecto llega de Instagram/TikTok, ve la clave EB
