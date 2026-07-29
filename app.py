@@ -38,6 +38,30 @@ SHEET_ID            = os.environ.get("SHEET_ID", "")
 if "/d/" in SHEET_ID:  # tolerancia: si pegaron la URL completa, extraer el ID
     SHEET_ID = SHEET_ID.split("/d/")[1].split("/")[0]
 HUMAN_HANDOFF       = os.environ.get("HUMAN_HANDOFF_NUMBER", "")
+
+# ------------------------------------------------------------------
+# EQUIPO DE VENDEDORES — rotacion round-robin
+# Javier recibe copia de TODOS los leads siempre.
+# Los demas reciben solo el que les toco en turno.
+# ------------------------------------------------------------------
+VENDEDORES = [
+    {"nombre": "Javier",  "phone": os.environ.get("VENDEDOR_JAVIER",  "3325773277")},
+    {"nombre": "Ubaldo",  "phone": os.environ.get("VENDEDOR_UBALDO",  "3319128128")},
+    {"nombre": "Leticia", "phone": os.environ.get("VENDEDOR_LETICIA", "3316183775")},
+    {"nombre": "Gloria",  "phone": os.environ.get("VENDEDOR_GLORIA",  "3331270050")},
+]
+JAVIER_PHONE = VENDEDORES[0]["phone"]  # siempre recibe copia de todo
+_TURNO_LOCK = threading.Lock()
+_turno_actual = [0]  # indice en VENDEDORES, compartido entre threads
+
+def _siguiente_vendedor():
+    """Retorna el vendedor al que le toca este lead (round-robin).
+    Javier es indice 0 — aparece cada 4 leads como parte del ciclo
+    Y ademas recibe copia de todos."""
+    with _TURNO_LOCK:
+        v = VENDEDORES[_turno_actual[0] % len(VENDEDORES)]
+        _turno_actual[0] += 1
+    return v
 CALENDLY_URL        = os.environ.get("CALENDLY_URL", "")
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
@@ -58,6 +82,13 @@ PENDING = {}      # mensajes en ráfaga esperando turno, por número
 PHONE_LOCKS = {}  # un candado por número: una respuesta a la vez
 HUMANO_ACTIVO = {}  # phone -> timestamp de la última vez que un humano escribió
 COOLDOWN_HUMANO = 30 * 60  # 30 minutos de silencio de MAX tras intervención humana
+
+# ------------------------------------------------------------------
+# MEMORIA PERSISTENTE Y SEGUIMIENTO PROACTIVO
+# ------------------------------------------------------------------
+MEMORIA_CACHE = {}   # phone -> dict con busqueda, nombre, etc. (cache en RAM)
+SEGUIMIENTO_PENDIENTE = {}  # phone -> {tipo, datos, timestamp}
+
 ORIGEN_POR_TELEFONO = {}  # phone -> sourceUrl (liga de Instagram) del primer contacto
 
 # Mapeo manual: liga exacta de la publicación de Instagram -> nombre de
@@ -216,6 +247,167 @@ def enviar_ficha(phone, public_id):
     return {"enviada": True, "propiedad": d.get("titulo"), "public_id": public_id}
 
 # ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# MEMORIA PERSISTENTE EN GOOGLE SHEETS
+# ------------------------------------------------------------------
+HOJA_MEMORIA = "Memoria Prospectos"
+HOJA_SEGUIMIENTO = "Seguimiento Vendedor"
+COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
+                "PRESUPUESTO","ZONA","RECAMARAS","PROPIEDADES_VISTAS",
+                "ULTIMA_INTERACCION","ESTADO","NOTAS_COACHING"]
+
+def _sheets_client():
+    """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
+    if not (GOOGLE_CREDS_JSON and SHEET_ID):
+        return None, None
+    import gspread
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_info(
+        json.loads(GOOGLE_CREDS_JSON),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+    return libro, creds
+
+def _get_o_crear_hoja(libro, titulo, cols):
+    try:
+        return libro.worksheet(titulo)
+    except Exception:
+        sh = libro.add_worksheet(title=titulo, rows=2000, cols=len(cols))
+        sh.append_row(cols)
+        return sh
+
+def memoria_leer(phone):
+    """Lee la memoria del prospecto desde Sheets. Usa cache en RAM."""
+    if phone in MEMORIA_CACHE:
+        return MEMORIA_CACHE[phone]
+    try:
+        libro, _ = _sheets_client()
+        if not libro:
+            return {}
+        sh = _get_o_crear_hoja(libro, HOJA_MEMORIA, COLS_MEMORIA)
+        celdas = sh.findall(phone, in_column=1)
+        if not celdas:
+            return {}
+        fila = sh.row_values(celdas[-1].row)
+        datos = dict(zip(COLS_MEMORIA, fila + [""]*(len(COLS_MEMORIA)-len(fila))))
+        MEMORIA_CACHE[phone] = datos
+        return datos
+    except Exception as e:
+        print(f"[MAX-MEM] Error leyendo memoria {phone}: {e}", flush=True)
+        return {}
+
+def memoria_guardar(phone, **kwargs):
+    """Crea o actualiza la fila de memoria del prospecto en Sheets."""
+    try:
+        libro, _ = _sheets_client()
+        if not libro:
+            return
+        sh = _get_o_crear_hoja(libro, HOJA_MEMORIA, COLS_MEMORIA)
+        celdas = sh.findall(phone, in_column=1)
+        kwargs["WHATSAPP"] = phone
+        kwargs["ULTIMA_INTERACCION"] = hora_gdl()
+        if celdas:
+            fila_num = celdas[-1].row
+            fila_actual = sh.row_values(fila_num)
+            datos = dict(zip(COLS_MEMORIA, fila_actual + [""]*(len(COLS_MEMORIA)-len(fila_actual))))
+            datos.update(kwargs)
+            nueva_fila = [datos.get(c,"") for c in COLS_MEMORIA]
+            sh.update(f"A{fila_num}", [nueva_fila])
+        else:
+            nueva_fila = [kwargs.get(c,"") for c in COLS_MEMORIA]
+            sh.append_row(nueva_fila)
+        MEMORIA_CACHE[phone] = kwargs
+        print(f"[MAX-MEM] Memoria guardada para {phone}: {list(kwargs.keys())}", flush=True)
+    except Exception as e:
+        print(f"[MAX-MEM] Error guardando memoria {phone}: {e}", flush=True)
+
+def memoria_resumen_para_max(phone):
+    """Genera un texto corto que MAX puede usar al inicio de una nueva sesion."""
+    m = memoria_leer(phone)
+    if not m or not m.get("ULTIMA_BUSQUEDA"):
+        return ""
+    partes = []
+    if m.get("NOMBRE"):
+        partes.append(f"Nombre: {m['NOMBRE']}")
+    if m.get("OPERACION"):
+        partes.append(f"Busca: {m['OPERACION']}")
+    if m.get("ZONA"):
+        partes.append(f"Zona: {m['ZONA']}")
+    if m.get("PRESUPUESTO"):
+        partes.append(f"Presupuesto: {m['PRESUPUESTO']}")
+    if m.get("RECAMARAS"):
+        partes.append(f"Recamaras: {m['RECAMARAS']}")
+    if m.get("PROPIEDADES_VISTAS"):
+        partes.append(f"Ya vio: {m['PROPIEDADES_VISTAS'][:100]}")
+    if m.get("NOTAS_COACHING"):
+        partes.append(f"Notas: {m['NOTAS_COACHING'][:100]}")
+    return " | ".join(partes) if partes else ""
+
+def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None):
+    """Asigna lead al vendedor en turno (round-robin), notifica al vendedor
+    asignado con el cuestionario de seguimiento, y manda copia informativa
+    a Javier si el asignado no es el mismo Javier."""
+    # Determinar vendedor en turno
+    v = vendedor_asignado or _siguiente_vendedor()
+    nombre_v = v["nombre"] if isinstance(v, dict) else v
+    phone_v  = v["phone"]  if isinstance(v, dict) else JAVIER_PHONE
+
+    # Registrar en Google Sheets
+    cols = ["FOLIO","FECHA","WHATSAPP","NOMBRE CLIENTE","VENDEDOR ASIGNADO",
+            "CONTACTO?","BUSQUEDA CONFIRMADA","URGENCIA",
+            "REQUIERE CREDITO","FECHA CITA","NOTAS"]
+    try:
+        libro, _ = _sheets_client()
+        if libro:
+            sh = _get_o_crear_hoja(libro, HOJA_SEGUIMIENTO, cols)
+            sh.append_row([folio, hora_gdl(), phone, nombre, nombre_v,
+                           "Pendiente","","","","",""])
+    except Exception as e:
+        print(f"[MAX-SEG] Error en Sheets: {e}", flush=True)
+
+    # Obtener contexto del prospecto
+    m = memoria_leer(phone)
+    busqueda  = m.get("ULTIMA_BUSQUEDA","No especificada")
+    zona      = m.get("ZONA","")
+    presupuesto = m.get("PRESUPUESTO","")
+    props     = m.get("PROPIEDADES_VISTAS","")
+
+    # Mensaje con cuestionario para el vendedor asignado
+    cuestionario = (
+        f"*[NUEVO LEAD — {folio}]*\n"
+        f"Te toco este prospecto. Ponte en contacto hoy.\n\n"
+        f"*Cliente:* {nombre}\n"
+        f"*WhatsApp:* {phone}\n"
+        f"*Busca:* {busqueda}\n"
+        f"*Zona:* {zona or 'No especificada'}\n"
+        f"*Presupuesto:* {presupuesto or 'No especificado'}\n"
+        f"*Propiedades vistas:* {props[:100] if props else 'Ninguna aun'}\n\n"
+        f"*Responde estas preguntas (numeradas) para el CRM:*\n"
+        f"1. Ya te comunicaste? (SI / NO / NO CONTESTA)\n"
+        f"2. Confirmaste su busqueda? (SI / CAMBIO / NO PUDE)\n"
+        f"3. Para cuando quiere? (INMEDIATO / 1-3M / 3-6M / EXPLORANDO)\n"
+        f"4. Requiere credito? (INFONAVIT / BANCO / NO / NO SE)\n"
+        f"5. Cuando lo vas a ver? (escribe la fecha)\n\n"
+        f"El cliente espera tu llamada. Folio: {folio}"
+    )
+    wati_send_text(phone_v, cuestionario)
+    print(f"[MAX-SEG] Lead {folio} asignado a {nombre_v} ({phone_v})", flush=True)
+
+    # Copia informativa a Javier (solo si el asignado no es Javier)
+    if phone_v != JAVIER_PHONE:
+        copia = (
+            f"*[COPIA — {folio}]*\n"
+            f"Lead asignado a *{nombre_v}*\n"
+            f"Cliente: {nombre} | WA: {phone}\n"
+            f"Busca: {busqueda}\n"
+            f"Zona: {zona or '-'} | Presupuesto: {presupuesto or '-'}\n"
+            f"Props vistas: {props[:80] if props else 'Ninguna'}\n"
+            f"(Solo informativo — {nombre_v} tiene el cuestionario)"
+        )
+        wati_send_text(JAVIER_PHONE, copia)
+        print(f"[MAX-SEG] Copia enviada a Javier", flush=True)
+
 # GOOGLE SHEETS — registro de leads con folio ACIERTA-XXXX
 # ------------------------------------------------------------------
 REGISTRADOS = {}  # phone -> (folio, timestamp): evita folios duplicados
@@ -595,6 +787,20 @@ def run_tool(name, args, phone):
             out = enviar_ficha_campana(phone, args.get("desarrollo", ""))
         elif name == "buscar_inventario_zmg":
             out = buscar_inventario_zmg(phone, **args)
+            # Guardar contexto de busqueda en memoria
+            if out.get("propiedades") or out.get("total_coincidencias"):
+                props = out.get("propiedades",[])
+                titulos = " | ".join(p.get("titulo","")[:40] for p in props[:3] if isinstance(p,dict))
+                threading.Thread(target=memoria_guardar, kwargs=dict(
+                    phone=phone,
+                    OPERACION=args.get("operacion",""),
+                    ZONA=args.get("municipio","") or args.get("texto",""),
+                    PRESUPUESTO=str(args.get("precio_max","")) if args.get("precio_max") else "",
+                    RECAMARAS=str(args.get("recamaras_min","")) if args.get("recamaras_min") else "",
+                    ULTIMA_BUSQUEDA=f"{args.get('operacion','')} {args.get('municipio','')} {args.get('texto','')}".strip(),
+                    PROPIEDADES_VISTAS=titulos,
+                    ESTADO="Buscando"
+                ), daemon=True).start()
         elif name == "enviar_ficha_liga":
             out = enviar_ficha_liga(phone, args.get("liga", ""))
         elif name == "seleccionar_de_lista":
@@ -603,6 +809,21 @@ def run_tool(name, args, phone):
             out = enviar_guia(phone, args.get("nombre", ""))
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
+            # Sincronizar con memoria persistente
+            if out.get("registrado"):
+                memoria_guardar(phone,
+                    NOMBRE=args.get("nombre",""),
+                    OPERACION=args.get("operacion",""),
+                    PRESUPUESTO=args.get("presupuesto",""),
+                    ZONA=args.get("zona",""),
+                    ULTIMA_BUSQUEDA=args.get("interes",""),
+                    NOTAS_COACHING=args.get("notas",""),
+                    ESTADO="Lead-registrado")
+                # Notificar al vendedor con cuestionario de seguimiento
+                threading.Thread(
+                    target=seguimiento_registrar_vendedor,
+                    args=(phone, args.get("nombre",""), out.get("folio","")),
+                    daemon=True).start()
         elif name == "avisar_humano":
             out = avisar_humano(phone, args.get("resumen", ""), args.get("categoria"))
         else:
@@ -643,6 +864,21 @@ def agent_reply(phone, user_text):
     """
     append_history(phone, "user", user_text)
     messages = get_history(phone)
+    # Si es la primera respuesta de esta sesion (historial de 1 turno),
+    # inyectar memoria previa del prospecto como contexto para MAX
+    if len(messages) == 1:
+        mem_resumen = memoria_resumen_para_max(phone)
+        if mem_resumen:
+            # Agregar como mensaje de sistema al inicio del historial
+            messages = [{"role": "user",
+                         "content": f"[CONTEXTO PREVIO DE ESTE PROSPECTO: {mem_resumen}] "
+                                    f"Recuerda esta informacion para personalizar la atencion "
+                                    f"sin repetir preguntas ya respondidas."},
+                        {"role": "assistant",
+                         "content": "Entendido, tengo el contexto de este prospecto y lo usare "
+                                    "para darle atencion personalizada sin repetir preguntas."}
+                       ] + messages
+            print(f"[MAX-MEM] Contexto previo inyectado para {phone}: {mem_resumen[:80]}", flush=True)
     fichas_enviadas_ok = 0   # fichas realmente confirmadas (enviada=True) este turno
     fichas_intentadas = 0    # llamadas a herramientas de ficha, con o sin exito
     ultima_liga = None       # ultima liga vista, para recuperar el envio si hace falta
@@ -1401,6 +1637,128 @@ def enviar_ficha_liga(phone, liga):
     return {"enviada": True, "titulo": p.get("Título/Colonia"),
             "nota": "ficha enviada; continúa la conversación"}
 
+
+# ------------------------------------------------------------------
+# MAX PROACTIVO — 3 momentos de seguimiento automatico
+# Corre en thread separado, revisa cada hora
+# ------------------------------------------------------------------
+SEGUIMIENTO_ENVIADO = {}  # phone -> set de tipos ya enviados (evita spam)
+
+def _max_enviar_seguimiento(phone, tipo, mensaje):
+    """Envia mensaje proactivo y lo registra para no repetir."""
+    enviados = SEGUIMIENTO_ENVIADO.get(phone, set())
+    if tipo in enviados:
+        return  # ya se envio este tipo de seguimiento
+    try:
+        ok = wati_send_text(phone, mensaje)
+        if ok:
+            enviados.add(tipo)
+            SEGUIMIENTO_ENVIADO[phone] = enviados
+            # Actualizar estado en memoria
+            memoria_guardar(phone, ESTADO=f"Seguimiento-{tipo}")
+            print(f"[MAX-PRO] Seguimiento '{tipo}' enviado a {phone}", flush=True)
+    except Exception as e:
+        print(f"[MAX-PRO] Error enviando seguimiento a {phone}: {e}", flush=True)
+
+def _revisar_seguimientos():
+    """Revisa todos los prospectos en memoria y dispara seguimientos."""
+    if not (GOOGLE_CREDS_JSON and SHEET_ID):
+        return
+    try:
+        libro, _ = _sheets_client()
+        if not libro:
+            return
+        sh = _get_o_crear_hoja(libro, HOJA_MEMORIA, COLS_MEMORIA)
+        filas = sh.get_all_records()
+        ahora = time.time()
+
+        for fila in filas:
+            phone = fila.get("WHATSAPP","").strip()
+            if not phone:
+                continue
+            estado = fila.get("ESTADO","").strip()
+            if estado in ("Cerrado","No-contactar","Compro","Rento"):
+                continue  # no molestar a prospectos cerrados
+
+            ultima = fila.get("ULTIMA_INTERACCION","")
+            if not ultima:
+                continue
+
+            # Convertir ultima interaccion a timestamp
+            try:
+                import datetime
+                dt = datetime.datetime.strptime(ultima, "%Y-%m-%d %H:%M")
+                ts_ultima = dt.timestamp()
+            except Exception:
+                continue
+
+            horas_sin_contacto = (ahora - ts_ultima) / 3600
+            nombre = fila.get("NOMBRE","") or "amigo"
+            busqueda = fila.get("ULTIMA_BUSQUEDA","")
+            zona = fila.get("ZONA","")
+            props_vistas = fila.get("PROPIEDADES_VISTAS","")
+            operacion = fila.get("OPERACION","")
+
+            # MOMENTO 1: 24h sin respuesta tras una busqueda activa
+            if (24 <= horas_sin_contacto < 48
+                    and busqueda
+                    and estado not in ("Seguimiento-24h",)):
+                msg = (
+                    f"Hola {nombre}! Soy MAX de Acierta Max. "
+                    f"Quedé pensando en tu busqueda de {busqueda or 'propiedad'}"
+                    f"{' en ' + zona if zona else ''}. "
+                    f"Han entrado propiedades nuevas al inventario — "
+                    f"quieres que te muestre opciones frescas? "
+                    f"O si prefieres hablar con un asesor, solo escribe *"
+                )
+                _max_enviar_seguimiento(phone, "24h", msg)
+
+            # MOMENTO 2: vio propiedades pero no pidio ficha (48h)
+            elif (48 <= horas_sin_contacto < 96
+                    and props_vistas
+                    and "ficha" not in estado.lower()
+                    and estado not in ("Seguimiento-48h",)):
+                prop_preview = props_vistas.split("|")[0].strip()[:60] if props_vistas else ""
+                msg = (
+                    f"Hola {nombre}! Te escribo de Acierta Max. "
+                    f"Vi que estuviste viendo opciones"
+                    f"{' como ' + prop_preview if prop_preview else ''}. "
+                    f"Quieres que te mande la ficha completa con fotos y detalles? "
+                    f"Solo dime cual te llamo la atencion. "
+                    f"Tenemos mas de 3,000 propiedades — seguro encontramos la ideal!"
+                )
+                _max_enviar_seguimiento(phone, "48h", msg)
+
+            # MOMENTO 3: pidio visita pero no confirmo (72h)
+            elif (horas_sin_contacto >= 72
+                    and "visita" in estado.lower()
+                    and estado not in ("Seguimiento-visita",)):
+                msg = (
+                    f"Hola {nombre}! MAX de Acierta Max. "
+                    f"Quedamos en organizar una visita — "
+                    f"como te va con los tiempos? "
+                    f"Podemos agendar cuando te acomode: "
+                    f"escribe * y te conecto con un asesor "
+                    f"o usa este link para apartar fecha: "
+                    f"{CALENDLY_URL if CALENDLY_URL else 'aciertamax.com'}"
+                )
+                _max_enviar_seguimiento(phone, "visita", msg)
+
+    except Exception as e:
+        print(f"[MAX-PRO] Error en revision de seguimientos: {e}", flush=True)
+
+def _loop_proactivo():
+    """Thread que revisa seguimientos cada hora."""
+    while True:
+        time.sleep(3600)  # esperar 1 hora
+        print("[MAX-PRO] Revisando seguimientos proactivos...", flush=True)
+        _revisar_seguimientos()
+
+# Arrancar el thread proactivo al iniciar
+_thread_proactivo = threading.Thread(target=_loop_proactivo, daemon=True)
+_thread_proactivo.start()
+print("[MAX-PRO] Thread proactivo iniciado (revisa cada hora)", flush=True)
+
 # ------------------------------------------------------------------
 # WEBHOOK WATI
 # ------------------------------------------------------------------
@@ -1599,13 +1957,18 @@ def webhook():
                             if _txt and not _txt.startswith("["):
                                 _resumen_hist.append(f"{_rol}: {str(_txt)[:120]}")
                         _resumen = "\n".join(_resumen_hist) if _resumen_hist else "Sin historial previo"
-                        # Avisar a Javier con el contexto completo
-                        if HUMAN_HANDOFF:
-                            wati_send_text(HUMAN_HANDOFF,
-                                f"*[SOLICITUD DE ASESOR]*\n"
+                        # Avisar al vendedor en turno + copia a Javier
+                        _v_ast = _siguiente_vendedor()
+                        wati_send_text(_v_ast["phone"],
+                                f"*[SOLICITUD DE ASESOR — te toco]*\n"
                                 f"Cliente: {phone}\n"
                                 f"Escribio: {_texto_strip}\n\n"
-                                f"*Contexto de la conversacion:*\n{_resumen[:800]}")
+                                f"*Contexto:*\n{_resumen[:600]}")
+                        if _v_ast["phone"] != JAVIER_PHONE:
+                            wati_send_text(JAVIER_PHONE,
+                                f"*[COPIA — solicitud de asesor]*\n"
+                                f"Asignado a *{_v_ast['nombre']}*\n"
+                                f"Cliente: {phone} | Escribio: {_texto_strip}")
                         # Responder al cliente
                         wati_send_text(phone,
                             "Perfecto! Ya le avise a un asesor certificado de Acierta Max. "
