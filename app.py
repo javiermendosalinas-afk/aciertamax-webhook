@@ -571,7 +571,87 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "nombre": {"type": "string", "enum": ["renta"], "description": "Identificador interno de la guía"}},
       "required": ["nombre"]}},
-    {"name": "registrar_lead",
+    {
+    "name": "precalificar_credito",
+    "description": "Precalifica al prospecto para credito hipotecario y orienta sobre su capacidad real de compra. Usar cuando el cliente mencione credito, Infonavit, mensualidades, enganche, o cuando el presupuesto supere $1,500,000. Devuelve orientacion personalizada: tipo de credito viable, monto estimado, mensualidad aproximada, y si necesita asesor especializado.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "ingreso_mensual": {
+                "type": "number",
+                "description": "Ingreso mensual neto del cliente en pesos MXN (preguntar si no lo sabes)"
+            },
+            "tiene_imss": {
+                "type": "boolean",
+                "description": "True si es empleado formal con IMSS activo"
+            },
+            "tiene_infonavit": {
+                "type": "boolean",
+                "description": "True si tiene Infonavit activo (subcuenta con saldo)"
+            },
+            "saldo_infonavit": {
+                "type": "number",
+                "description": "Saldo aproximado de subcuenta Infonavit en pesos (opcional)"
+            },
+            "enganche_disponible": {
+                "type": "number",
+                "description": "Monto de enganche disponible en pesos MXN"
+            },
+            "precio_objetivo": {
+                "type": "number",
+                "description": "Precio de la propiedad que le interesa"
+            },
+            "es_conyugal": {
+                "type": "boolean",
+                "description": "True si aplica con conyugue o segundo titular"
+            }
+        },
+        "required": ["ingreso_mensual", "precio_objetivo"]
+    }
+},
+{
+    "name": "calcular_roi_inversion",
+    "description": "Calcula el ROI (retorno de inversion) estimado para una propiedad de inversion. Usar cuando el cliente diga que es para invertir, rentar, o pregunte por rendimiento. Busca rentas similares en el inventario para estimar el ingreso mensual real y calcula ROI, flujo de caja y tiempo de recuperacion.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "precio_compra": {
+                "type": "number",
+                "description": "Precio de compra de la propiedad"
+            },
+            "municipio": {
+                "type": "string",
+                "description": "Municipio de la propiedad (Zapopan, Guadalajara, etc)"
+            },
+            "recamaras": {
+                "type": "integer",
+                "description": "Numero de recamaras de la propiedad"
+            },
+            "m2": {
+                "type": "number",
+                "description": "Metros cuadrados de la propiedad"
+            },
+            "tiene_amenidades": {
+                "type": "boolean",
+                "description": "True si tiene alberca, gimnasio u otras amenidades premium"
+            },
+            "con_credito": {
+                "type": "boolean",
+                "description": "True si el cliente va a comprar con credito hipotecario (afecta el flujo de caja)"
+            },
+            "tasa_anual": {
+                "type": "number",
+                "description": "Tasa anual del credito si aplica (ej. 10.75 para BBVA)"
+            },
+            "plazo_anos": {
+                "type": "integer",
+                "description": "Plazo del credito en anos si aplica"
+            }
+        },
+        "required": ["precio_compra", "municipio"]
+    }
+},
+{"name": "registrar_lead",
      "description": "Registra o actualiza el lead en el CRM cuando ya tengas al menos nombre + operación + interés. Úsala UNA vez por conversación cuando el prospecto esté calificado.",
      "input_schema": {"type": "object", "properties": {
          "nombre": {"type": "string"}, "interes": {"type": "string"},
@@ -719,6 +799,31 @@ preguntar en Infonavit.org.mx, y consultar un notario para el costo exacto de es
 Para credito hipotecario, ofrecer conectar con el asesor humano de Acierta Max
 que puede orientar segun el perfil especifico del cliente.
 
+
+== PRECALIFICACION Y ROI — CUANDO Y COMO USAR ==
+PRECALIFICAR_CREDITO: Usar cuando el cliente mencione credito, Infonavit, mensualidades,
+enganche, o cuando su presupuesto supere $1,500,000. Antes de buscar propiedades, pregunta
+de forma natural (maximo 3 preguntas en el mismo mensaje):
+- Cuanto ganas aproximadamente al mes? (para saber tu capacidad de credito)
+- Tienes Infonavit activo?
+- Tienes enganche disponible? (cuanto aproximadamente)
+Con esas 3 respuestas llama a precalificar_credito y oriento al cliente sobre su capacidad REAL
+antes de mostrarle propiedades que no puede pagar. Nunca preguntes los 3 datos en mensajes separados.
+
+CALCULAR_ROI_INVERSION: Usar SIEMPRE que el cliente diga "es para invertir", "quiero rentarlo",
+"que rendimiento da", "cuanto me genera". Llama calcular_roi_inversion con los datos de la
+propiedad que le interesa. Presenta el resultado de forma simple:
+- Renta estimada mensual
+- ROI anual en porcentaje
+- Flujo libre mensual (si compra con credito)
+- Tiempo de recuperacion
+- Semaforo de viabilidad
+NUNCA presentes el JSON crudo — convierte los numeros en una explicacion conversacional de
+3-4 lineas maximo. Ejemplo: "Para ese depto de $3M, la renta estimada es $18,000/mes,
+lo que da un ROI del 7.1% anual. Si compras con credito, tendrias un flujo libre de
+$2,400/mes despues de pagar la hipoteca. Muy buen numero para inversion. Quieres que
+exploremos los creditos disponibles?"
+
 - REGLA DE ORO CONTRA LA FICHA FANTASMA: cuando el cliente pida una ficha ("ficha", "mándamela", "sí", "ficha técnica", "quiero verla"), tu PRIMERA acción es LLAMAR la herramienta enviar_ficha_liga (o enviar_ficha_campana) con la liga exacta. NUNCA respondas solo con texto diciendo que la enviaste: mencionar la ficha en palabras NO la envía — solo la herramienta la envía. Si te descubres a punto de escribir "ya te llego" sin haber llamado la herramienta en este turno, DETENTE y llama la herramienta. El sistema ahora verifica esto automáticamente: si afirmas un envío que la herramienta no confirmó, tu mensaje será reemplazado por uno honesto y quedará registrado como fallo. Hacerlo bien es simple: herramienta primero, resultado después, confirmación al final.
 - PROHIBIDO INVENTAR PROPIEDADES: cada nombre, precio, m² o característica que menciones debe venir literalmente de una respuesta de herramienta (buscar_propiedades, buscar_inventario_zmg, seleccionar_de_lista, o las fichas de campaña). Si el cliente insiste en un nombre que tú nunca dijiste y ninguna búsqueda lo confirma, jamás lo repitas como si existiera: aclara con calma que no tienes esa propiedad exacta disponible en este momento.
 - DATOS 100% VERIFICADOS SOLAMENTE: al describir una propiedad, menciona ÚNICAMENTE atributos que las herramientas devolvieron para ESA propiedad específica, o que estén en su ficha de PROPIEDADES EN CAMPAÑA. NUNCA mezcles características de una propiedad con otra (ej. el estacionamiento techado es de Santa Ana 360, NO de Bella Vittoria). Ante CUALQUIER dato del que no estés seguro, no lo afirmes: di "déjame mandarte la ficha oficial con los detalles exactos" y usa enviar_ficha. Un dato inventado destruye la confianza del cliente y de Acierta Max.
@@ -807,6 +912,23 @@ def run_tool(name, args, phone):
             out = seleccionar_de_lista(phone, args.get("numero"))
         elif name == "enviar_guia":
             out = enviar_guia(phone, args.get("nombre", ""))
+        elif name == "precalificar_credito":
+            out = precalificar_credito(phone, **args)
+            # Guardar en memoria que el cliente esta en proceso de credito
+            if out.get("viable") is not None:
+                threading.Thread(target=memoria_guardar, kwargs=dict(
+                    phone=phone,
+                    NOTAS_COACHING=f"Credito: {out.get('mejor_opcion','')} | Cap: ${out.get('capacidad_maxima',0):,}",
+                    ESTADO="Precalificando"
+                ), daemon=True).start()
+        elif name == "calcular_roi_inversion":
+            out = calcular_roi_inversion(phone, **args)
+            # Guardar en memoria que el cliente es inversor
+            threading.Thread(target=memoria_guardar, kwargs=dict(
+                phone=phone,
+                NOTAS_COACHING=f"Inversor | ROI estimado: {out.get('roi_bruto_anual_pct',0)}% | Renta: ${out.get('renta_estimada_mensual',0):,}/mes",
+                ESTADO="Perfil-Inversor"
+            ), daemon=True).start()
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
             # Sincronizar con memoria persistente
@@ -1758,6 +1880,230 @@ def _loop_proactivo():
 _thread_proactivo = threading.Thread(target=_loop_proactivo, daemon=True)
 _thread_proactivo.start()
 print("[MAX-PRO] Thread proactivo iniciado (revisa cada hora)", flush=True)
+
+# ------------------------------------------------------------------
+# PRECALIFICACION CREDITICIA
+# ------------------------------------------------------------------
+def precalificar_credito(phone, ingreso_mensual, precio_objetivo,
+                          tiene_imss=False, tiene_infonavit=False,
+                          saldo_infonavit=0, enganche_disponible=0,
+                          es_conyugal=False):
+    """Calcula capacidad de credito hipotecario y orienta al prospecto."""
+    ingreso = float(ingreso_mensual or 0)
+    precio  = float(precio_objetivo or 0)
+    enganche = float(enganche_disponible or 0)
+    saldo_info = float(saldo_infonavit or 0)
+
+    # Regla bancaria: mensualidad max = 30% del ingreso neto
+    mensualidad_max = ingreso * 0.30
+    # Con tasa promedio 10.75% a 20 anos, factor de pago ~$10.10 por cada $1,000
+    FACTOR_PAGO = 10.10 / 1000  # mensualidad por peso de credito
+    credito_banco_max = mensualidad_max / FACTOR_PAGO if mensualidad_max > 0 else 0
+
+    # Credito maximo Infonavit 2026
+    INFONAVIT_MAX_INDIVIDUAL = 2935002
+    INFONAVIT_MAX_CONYUGAL   = 5870000
+    infonavit_max = INFONAVIT_MAX_CONYUGAL if es_conyugal else INFONAVIT_MAX_INDIVIDUAL
+
+    # Capacidad total segun escenario
+    resultados = []
+    viable = False
+
+    # --- ESCENARIO 1: Solo banco ---
+    if ingreso > 0:
+        cap_banco = credito_banco_max + enganche
+        pct_precio = (cap_banco / precio * 100) if precio > 0 else 0
+        mens_estimada = (precio - enganche) * FACTOR_PAGO if precio > enganche else 0
+        resultados.append({
+            "tipo": "Credito bancario",
+            "credito_max": round(credito_banco_max),
+            "capacidad_total": round(cap_banco),
+            "mensualidad": round(mens_estimada),
+            "viable": cap_banco >= precio * 0.85,
+            "nota": f"Enganche minimo requerido: ${precio*0.15:,.0f} (15%)"
+        })
+        if cap_banco >= precio * 0.85:
+            viable = True
+
+    # --- ESCENARIO 2: Infonavit (si aplica) ---
+    if tiene_infonavit and tiene_imss:
+        cap_info = infonavit_max + saldo_info + enganche
+        resultados.append({
+            "tipo": "Infonavit" + (" Unamos Creditos" if es_conyugal else ""),
+            "credito_max": round(infonavit_max),
+            "capacidad_total": round(cap_info),
+            "mensualidad": round((min(precio, infonavit_max) * 0.01045 / 12) * 12 / 12),
+            "viable": cap_info >= precio * 0.90,
+            "nota": "Tasa fija 10.45% anual. Aplica para vivienda nueva o usada."
+        })
+        if cap_info >= precio * 0.90:
+            viable = True
+
+    # --- ESCENARIO 3: Cofinavit (banco + Infonavit) ---
+    if tiene_infonavit and tiene_imss and ingreso > 0:
+        cap_cofinavit = min(infonavit_max * 0.5, saldo_info + 500000) + credito_banco_max + enganche
+        resultados.append({
+            "tipo": "Cofinavit (Infonavit + Banco)",
+            "credito_max": round(cap_cofinavit - enganche),
+            "capacidad_total": round(cap_cofinavit),
+            "mensualidad": round(mensualidad_max * 0.85),
+            "viable": cap_cofinavit >= precio * 0.90,
+            "nota": "Combina ambos creditos. Mayor poder de compra. Requiere aprobacion de ambas instituciones."
+        })
+        if cap_cofinavit >= precio * 0.90:
+            viable = True
+
+    # Construir respuesta
+    brecha = precio - max((r["capacidad_total"] for r in resultados), default=0)
+    mejor = max(resultados, key=lambda x: x["capacidad_total"]) if resultados else None
+
+    return {
+        "viable": viable,
+        "precio_objetivo": precio,
+        "ingreso_mensual": ingreso,
+        "escenarios": resultados,
+        "mejor_opcion": mejor["tipo"] if mejor else "Requiere mas informacion",
+        "capacidad_maxima": round(mejor["capacidad_total"]) if mejor else 0,
+        "brecha": round(max(brecha, 0)),
+        "recomendacion": (
+            "Con tu perfil, esta propiedad es viable. Te recomiendo cotizar en Condusef (condusef.gob.mx) para comparar bancos y elegir la mejor tasa. Un asesor de Acierta Max puede acompanarte en el proceso."
+            if viable else
+            f"Con tu perfil actual la propiedad de ${precio:,.0f} tiene una brecha de ${max(brecha,0):,.0f}. Te puedo mostrar opciones en tu rango real o explorar como ampliar tu capacidad (segundo titular, mayor enganche, o plazo mas largo)."
+        ),
+        "simulador_condusef": "https://simulador.condusef.gob.mx/credito-hipotecario/",
+        "nota": "Esta es una orientacion inicial — no sustituye la evaluacion formal del banco o Infonavit."
+    }
+
+# ------------------------------------------------------------------
+# CALCULADORA ROI INVERSION INMOBILIARIA
+# ------------------------------------------------------------------
+def calcular_roi_inversion(phone, precio_compra, municipio,
+                            recamaras=2, m2=None, tiene_amenidades=False,
+                            con_credito=False, tasa_anual=10.75, plazo_anos=20):
+    """Estima ROI de inversion inmobiliaria buscando rentas similares en el inventario."""
+    precio = float(precio_compra or 0)
+    muni_l = (municipio or "").lower()
+    rec    = int(recamaras or 2)
+    m2_val = float(m2 or 0)
+    if precio == 0:
+        return {"error": "Precio de compra requerido"}
+
+    # Buscar rentas similares en el inventario para estimar renta real de mercado
+    rentas_similares = []
+    for p in INVENTARIO_ZMG:
+        if p.get("Operacion","").upper() != "RENTA":
+            op = p.get("Operacion","") or p.get("Operación","")
+            if op.upper() != "RENTA":
+                continue
+        muni_p = (p.get("Municipio","") or "").lower()
+        if muni_l and muni_l not in muni_p:
+            continue
+        rec_p = p.get("Recamaras") or p.get("Recámaras")
+        try:
+            rec_p = int(float(str(rec_p)))
+        except Exception:
+            rec_p = 0
+        if abs(rec_p - rec) > 1:
+            continue
+        precio_r = p.get("Precio",0)
+        try:
+            precio_r = float(str(precio_r).replace(",",""))
+        except Exception:
+            continue
+        if precio_r > 0:
+            rentas_similares.append(precio_r)
+
+    # Calcular renta estimada
+    if rentas_similares:
+        rentas_similares.sort()
+        # Usar percentil 50 (mediana) para ser conservador
+        n = len(rentas_similares)
+        renta_estimada = rentas_similares[n // 2]
+        fuente = f"mediana de {n} rentas similares en {municipio}"
+    else:
+        # Estimacion por m² si no hay datos (tipico ZMG: $180-$220/m²/mes)
+        if m2_val > 0:
+            renta_estimada = m2_val * (220 if tiene_amenidades else 180)
+        else:
+            renta_estimada = precio * 0.006  # regla empirica: 0.6% mensual
+        fuente = "estimacion por metro cuadrado (sin rentas similares en inventario)"
+
+    # Ajuste por amenidades premium
+    if tiene_amenidades:
+        renta_estimada *= 1.10  # 10% premium por amenidades
+
+    renta_estimada = round(renta_estimada)
+    renta_anual = renta_estimada * 12
+
+    # Gastos operativos anuales (conservador)
+    gastos_admin       = renta_anual * 0.08   # administracion/comision 8%
+    gastos_mantto      = precio * 0.005       # mantenimiento 0.5% valor
+    predial            = precio * 0.002       # predial aprox
+    vacancia           = renta_anual * 0.08   # 1 mes sin rentar = 8%
+    gastos_totales     = gastos_admin + gastos_mantto + predial + vacancia
+    flujo_neto_anual   = renta_anual - gastos_totales
+
+    # ROI sobre capital propio
+    if con_credito:
+        enganche = precio * 0.20  # 20% enganche tipico
+        tasa     = float(tasa_anual or 10.75) / 100
+        plazo    = int(plazo_anos or 20)
+        # Mensualidad hipotecaria
+        credito  = precio - enganche
+        tasa_m   = tasa / 12
+        n_pagos  = plazo * 12
+        if tasa_m > 0:
+            mensualidad_hip = credito * (tasa_m * (1+tasa_m)**n_pagos) / ((1+tasa_m)**n_pagos - 1)
+        else:
+            mensualidad_hip = credito / n_pagos
+        costo_credito_anual = mensualidad_hip * 12
+        flujo_con_credito   = flujo_neto_anual - costo_credito_anual
+        roi_capital         = (flujo_con_credito / enganche * 100) if enganche > 0 else 0
+        roi_bruto           = (renta_anual / precio * 100)
+        capital_invertido   = enganche
+    else:
+        roi_bruto     = (renta_anual / precio * 100)
+        roi_capital   = (flujo_neto_anual / precio * 100)
+        flujo_con_credito = flujo_neto_anual
+        capital_invertido = precio
+        mensualidad_hip = 0
+
+    recuperacion_anos = (capital_invertido / flujo_neto_anual) if flujo_neto_anual > 0 else 99
+
+    # Semaforo de viabilidad
+    if roi_bruto >= 7:
+        semaforo = "EXCELENTE — rendimiento superior al promedio ZMG"
+    elif roi_bruto >= 5:
+        semaforo = "BUENO — rendimiento competitivo para la zona"
+    elif roi_bruto >= 3.5:
+        semaforo = "REGULAR — considerar plusvalia a largo plazo"
+    else:
+        semaforo = "BAJO — revisar si la plusvalia justifica la inversion"
+
+    return {
+        "precio_compra": precio,
+        "municipio": municipio,
+        "recamaras": rec,
+        "renta_estimada_mensual": renta_estimada,
+        "fuente_renta": fuente,
+        "renta_anual_bruta": round(renta_anual),
+        "gastos_anuales_estimados": round(gastos_totales),
+        "flujo_neto_anual": round(flujo_neto_anual),
+        "roi_bruto_anual_pct": round(roi_bruto, 2),
+        "roi_sobre_capital_pct": round(roi_capital, 2),
+        "recuperacion_anos": round(recuperacion_anos, 1),
+        "semaforo": semaforo,
+        "con_credito": con_credito,
+        "mensualidad_hipotecaria": round(mensualidad_hip) if con_credito else 0,
+        "flujo_mensual_libre": round(flujo_con_credito / 12),
+        "recomendacion": (
+            f"Renta estimada ${renta_estimada:,}/mes basada en {fuente}. "
+            f"ROI bruto {roi_bruto:.1f}% anual. "
+            f"{'Flujo positivo de $' + f'{flujo_con_credito/12:,.0f}' + '/mes despues de hipoteca y gastos.' if flujo_con_credito > 0 else 'Flujo negativo con credito — considerar mayor enganche o propiedad de menor precio.'} "
+            f"Recuperacion estimada en {recuperacion_anos:.0f} anos."
+        ),
+        "nota": "Estimacion orientativa con datos del inventario ZMG. Los resultados reales dependen de ocupacion, condiciones del mercado y gastos reales de la propiedad."
+    }
 
 # ------------------------------------------------------------------
 # WEBHOOK WATI
