@@ -197,13 +197,23 @@ def eb_detalle(public_id):
 def wati_headers():
     return {"Authorization": f"Bearer {WATI_API_KEY}"}
 
+def _normalizar_phone_wati(phone):
+    """Wati necesita el numero con codigo de pais completo para mensajes salientes.
+    Si el numero tiene 10 digitos (formato local), agrega 521 al inicio."""
+    p = str(phone).strip().replace(" ","").replace("-","").replace("+","")
+    if len(p) == 10:
+        return "521" + p
+    return p
+
 def wati_send_text(phone, text):
-    url = f"{WATI_BASE_URL}/api/v1/sendSessionMessage/{phone}"
+    phone_norm = _normalizar_phone_wati(phone)
+    url = f"{WATI_BASE_URL}/api/v1/sendSessionMessage/{phone_norm}"
     r = requests.post(url, headers=wati_headers(),
                       params={"messageText": text}, timeout=20)
     return r.status_code in (200, 201)
 
 def wati_send_image(phone, image_url, caption=""):
+    phone = _normalizar_phone_wati(phone)
     """Descarga la foto de EasyBroker y la sube a Wati como archivo de sesión."""
     try:
         img = requests.get(image_url, timeout=25)
@@ -475,7 +485,7 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
     # regresar el mismo folio en vez de crear otro.
     previo = REGISTRADOS.get(phone)
     if previo and time.time() - previo[1] < 86400:
-        return {"registrado": True, "folio": previo[0],
+        return {"registrado": False, "folio": previo[0],
                 "nota": "ya estaba registrado; usa este folio, no lo registres de nuevo"}
     if not (GOOGLE_CREDS_JSON and SHEET_ID):
         return {"registrado": False, "motivo": "Sheets no configurado"}
