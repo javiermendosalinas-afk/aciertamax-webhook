@@ -354,10 +354,46 @@ def memoria_resumen_para_max(phone):
         partes.append(f"Notas: {m['NOTAS_COACHING'][:100]}")
     return " | ".join(partes) if partes else ""
 
+def _enriquecer_perfil_vendedor(phone, m):
+    """Genera texto de perfil enriquecido con precalificacion y ROI si aplica."""
+    lineas = []
+
+    # Perfil basico
+    op = m.get("OPERACION","")
+    zona = m.get("ZONA","")
+    presupuesto = m.get("PRESUPUESTO","")
+    rec = m.get("RECAMARAS","")
+    busqueda = m.get("ULTIMA_BUSQUEDA","")
+    props = m.get("PROPIEDADES_VISTAS","")
+    notas = m.get("NOTAS_COACHING","")
+    estado = m.get("ESTADO","")
+
+    if op:       lineas.append(f"Operacion: {op}")
+    if zona:     lineas.append(f"Zona: {zona}")
+    if presupuesto: lineas.append(f"Presupuesto: {presupuesto}")
+    if rec:      lineas.append(f"Recamaras: {rec}")
+    if busqueda: lineas.append(f"Ultima busqueda: {busqueda[:80]}")
+    if props:    lineas.append(f"Propiedades vistas: {props[:100]}")
+
+    # Precalificacion crediticia si hay datos
+    if notas and ("credito" in notas.lower() or "banco" in notas.lower()
+                  or "infonavit" in notas.lower() or "cap:" in notas.lower()):
+        lineas.append(f"Credito: {notas[:120]}")
+
+    # Perfil de inversor
+    if notas and ("roi" in notas.lower() or "inversor" in notas.lower()
+                  or "renta" in notas.lower() and "%" in notas):
+        lineas.append(f"Perfil inversor: {notas[:120]}")
+
+    # Estado del prospecto
+    if estado:   lineas.append(f"Estado MAX: {estado}")
+
+    return "\n".join(lineas) if lineas else "Sin datos adicionales aun"
+
 def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None):
     """Asigna lead al vendedor en turno (round-robin), notifica al vendedor
-    asignado con el cuestionario de seguimiento, y manda copia informativa
-    a Javier si el asignado no es el mismo Javier."""
+    asignado con el cuestionario de seguimiento ENRIQUECIDO con perfil
+    de credito y ROI, y manda copia informativa a Javier."""
     # Determinar vendedor en turno
     v = vendedor_asignado or _siguiente_vendedor()
     nombre_v = v["nombre"] if isinstance(v, dict) else v
@@ -376,30 +412,47 @@ def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None)
     except Exception as e:
         print(f"[MAX-SEG] Error en Sheets: {e}", flush=True)
 
-    # Obtener contexto del prospecto
+    # Obtener contexto enriquecido del prospecto
     m = memoria_leer(phone)
-    busqueda  = m.get("ULTIMA_BUSQUEDA","No especificada")
-    zona      = m.get("ZONA","")
+    busqueda    = m.get("ULTIMA_BUSQUEDA","No especificada")
+    zona        = m.get("ZONA","")
     presupuesto = m.get("PRESUPUESTO","")
-    props     = m.get("PROPIEDADES_VISTAS","")
+    props       = m.get("PROPIEDADES_VISTAS","")
+    notas       = m.get("NOTAS_COACHING","")
+    estado      = m.get("ESTADO","")
+    perfil_enriquecido = _enriquecer_perfil_vendedor(phone, m)
 
-    # Mensaje con cuestionario para el vendedor asignado
+    # Icono segun perfil
+    if "inversor" in estado.lower() or "roi" in notas.lower():
+        icono = "INVERSOR"
+        tipo_cliente = "Cliente inversor — enfoca en ROI y rendimiento"
+    elif "credito" in notas.lower() or "infonavit" in notas.lower():
+        icono = "CREDITO"
+        tipo_cliente = "Cliente con credito — verificar capacidad y banco"
+    elif "renta" in (m.get("OPERACION","")).upper():
+        icono = "RENTA"
+        tipo_cliente = "Busca renta — verificar documentos y requisitos"
+    else:
+        icono = "COMPRA"
+        tipo_cliente = "Busca compra — verificar enganche y financiamiento"
+
+    # Mensaje con cuestionario ENRIQUECIDO para el vendedor asignado
     cuestionario = (
-        f"*[NUEVO LEAD — {folio}]*\n"
-        f"Te toco este prospecto. Ponte en contacto hoy.\n\n"
-        f"*Cliente:* {nombre}\n"
-        f"*WhatsApp:* {phone}\n"
-        f"*Busca:* {busqueda}\n"
-        f"*Zona:* {zona or 'No especificada'}\n"
-        f"*Presupuesto:* {presupuesto or 'No especificado'}\n"
-        f"*Propiedades vistas:* {props[:100] if props else 'Ninguna aun'}\n\n"
-        f"*Responde estas preguntas (numeradas) para el CRM:*\n"
+        f"*[NUEVO LEAD {icono} — {folio}]*\n"
+        f"Te toco este prospecto. Ponte en contacto HOY.\n"
+        f"Tipo: {tipo_cliente}\n\n"
+        f"*PERFIL DEL CLIENTE:*\n"
+        f"Nombre: {nombre}\n"
+        f"WhatsApp: {phone}\n"
+        f"{perfil_enriquecido}\n\n"
+        f"*CUESTIONARIO CRM (responde numerado):*\n"
         f"1. Ya te comunicaste? (SI / NO / NO CONTESTA)\n"
         f"2. Confirmaste su busqueda? (SI / CAMBIO / NO PUDE)\n"
         f"3. Para cuando quiere? (INMEDIATO / 1-3M / 3-6M / EXPLORANDO)\n"
         f"4. Requiere credito? (INFONAVIT / BANCO / NO / NO SE)\n"
-        f"5. Cuando lo vas a ver? (escribe la fecha)\n\n"
-        f"El cliente espera tu llamada. Folio: {folio}"
+        f"5. Cuando lo vas a ver? (escribe la fecha)\n"
+        f"6. Nivel de interes? (CALIENTE / TIBIO / FRIO)\n\n"
+        f"Folio: {folio} | MAX ya hizo el primer contacto."
     )
     wati_send_text(phone_v, cuestionario)
     print(f"[MAX-SEG] Lead {folio} asignado a {nombre_v} ({phone_v})", flush=True)
@@ -407,16 +460,14 @@ def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None)
     # Copia informativa a Javier (solo si el asignado no es Javier)
     if phone_v != JAVIER_PHONE:
         copia = (
-            f"*[COPIA — {folio}]*\n"
-            f"Lead asignado a *{nombre_v}*\n"
+            f"*[COPIA {icono} — {folio}]*\n"
+            f"Asignado a *{nombre_v}*\n\n"
             f"Cliente: {nombre} | WA: {phone}\n"
-            f"Busca: {busqueda}\n"
-            f"Zona: {zona or '-'} | Presupuesto: {presupuesto or '-'}\n"
-            f"Props vistas: {props[:80] if props else 'Ninguna'}\n"
-            f"(Solo informativo — {nombre_v} tiene el cuestionario)"
+            f"{perfil_enriquecido}\n\n"
+            f"(Informativo — {nombre_v} tiene el cuestionario y el contacto)"
         )
         wati_send_text(JAVIER_PHONE, copia)
-        print(f"[MAX-SEG] Copia enviada a Javier", flush=True)
+        print(f"[MAX-SEG] Copia enriquecida enviada a Javier", flush=True)
 
 # GOOGLE SHEETS — registro de leads con folio ACIERTA-XXXX
 # ------------------------------------------------------------------
@@ -877,6 +928,48 @@ Si el cliente insiste en que ya mando algo y MAX no puede verlo, MAX debe:
 
 NUNCA repetir 3 veces que "no recibio nada" — eso frustra al cliente y
 destruye la confianza en el sistema.
+
+
+== PROPIEDADES ANTIGUAS, REMODELADAS Y MANTENIMIENTO ==
+
+SEÑALES DE QUE UNA PROPIEDAD PUEDE SER ANTIGUA:
+- El titulo dice "remodelado/a", "a remodelar", "oportunidad", "precio negociable",
+  precio/m2 muy bajo vs la zona, construccion de los 80s-90s-2000s,
+  colonia consolidada sin desarrollos nuevos.
+- El cliente pregunta "que tan nueva es?", "tiene instalaciones nuevas?",
+  "cuanto tiene de construida?", "necesita trabajo?"
+
+CUANDO EL CLIENTE PREGUNTA POR ANTIGÜEDAD O ESTADO DE LA PROPIEDAD:
+MAX responde con honestidad y agrega valor orientando sobre que revisar:
+"Buena pregunta. Para propiedades con anos de uso, siempre recomiendo
+verificar antes de comprar o rentar:
+- Instalacion electrica (capacidad, tierra fisica, tablero)
+- Sistema hidraulico (presion, tuberias de cobre vs PVC vs galvanizado)
+- Impermeabilizacion y azotea
+- Estructura (humedad, fisuras, asentamiento)
+La buena noticia: Acierta Max tiene aliados especializados en mantenimiento
+y reparacion que pueden hacer un dictamen previo a la compra. Te puedo
+conectar con ellos si te interesa la propiedad."
+
+SERVICIOS DE MANTENIMIENTO Y REPARACION QUE OFRECE ACIERTA MAX:
+Cuando el cliente mencione: mantenimiento, reparacion, remodelacion,
+instalacion electrica, plomeria, impermeabilizacion, pintura, acabados,
+o cuando la propiedad sea claramente antigua — MAX debe mencionar:
+"Acierta Max no solo te ayuda a encontrar la propiedad ideal —
+tambien tenemos aliados en mantenimiento, remodelacion y servicios
+para tu hogar. Si necesitas un dictamen, reparacion o remodelacion,
+te conecto con el equipo correcto. Es parte de nuestro servicio integral."
+
+CUANDO AVISAR DE MANTENIMIENTO:
+1. Cliente pregunta por propiedad "remodelada" o "a remodelar"
+2. Cliente menciona que quiere hacer cambios a la propiedad
+3. Cliente pregunta si necesita trabajo la propiedad
+4. Precio muy por debajo del mercado (posible propiedad en mal estado)
+5. Cliente ya compro/rento y pregunta por servicios de mantenimiento
+
+NO INVENTAR fechas de construccion que no esten en la ficha.
+SI puedes inferir por el nombre de la colonia, el precio/m2 y las amenidades
+si es probable que sea una propiedad con anos de uso.
 
 - REGLA DE ORO CONTRA LA FICHA FANTASMA: cuando el cliente pida una ficha ("ficha", "mándamela", "sí", "ficha técnica", "quiero verla"), tu PRIMERA acción es LLAMAR la herramienta enviar_ficha_liga (o enviar_ficha_campana) con la liga exacta. NUNCA respondas solo con texto diciendo que la enviaste: mencionar la ficha en palabras NO la envía — solo la herramienta la envía. Si te descubres a punto de escribir "ya te llego" sin haber llamado la herramienta en este turno, DETENTE y llama la herramienta. El sistema ahora verifica esto automáticamente: si afirmas un envío que la herramienta no confirmó, tu mensaje será reemplazado por uno honesto y quedará registrado como fallo. Hacerlo bien es simple: herramienta primero, resultado después, confirmación al final.
 - PROHIBIDO INVENTAR PROPIEDADES: cada nombre, precio, m² o característica que menciones debe venir literalmente de una respuesta de herramienta (buscar_propiedades, buscar_inventario_zmg, seleccionar_de_lista, o las fichas de campaña). Si el cliente insiste en un nombre que tú nunca dijiste y ninguna búsqueda lo confirma, jamás lo repitas como si existiera: aclara con calma que no tienes esa propiedad exacta disponible en este momento.
