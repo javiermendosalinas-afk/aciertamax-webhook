@@ -1838,9 +1838,20 @@ def _revisar_seguimientos():
                 continue
 
             # Convertir ultima interaccion a timestamp
+            # Sheets puede devolver int, float o string — normalizar primero
             try:
                 import datetime
-                dt = datetime.datetime.strptime(ultima, "%Y-%m-%d %H:%M")
+                ultima_str = str(ultima).strip() if ultima else ""
+                if not ultima_str:
+                    continue
+                # Intentar formato "YYYY-MM-DD HH:MM"
+                try:
+                    dt = datetime.datetime.strptime(ultima_str, "%Y-%m-%d %H:%M")
+                except ValueError:
+                    try:
+                        dt = datetime.datetime.strptime(ultima_str[:16], "%Y-%m-%d %H:%M")
+                    except ValueError:
+                        continue
                 ts_ultima = dt.timestamp()
             except Exception:
                 continue
