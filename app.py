@@ -1942,14 +1942,19 @@ def _revisar_seguimientos():
         ahora = time.time()
 
         for fila in filas:
-            phone = fila.get("WHATSAPP","").strip()
+            # Normalizar a string — Sheets puede devolver int/float en cualquier celda
+            phone   = str(fila.get("WHATSAPP","") or "").strip()
             if not phone:
                 continue
-            estado = fila.get("ESTADO","").strip()
+            estado  = str(fila.get("ESTADO","") or "").strip()
             if estado in ("Cerrado","No-contactar","Compro","Rento"):
-                continue  # no molestar a prospectos cerrados
-
-            ultima = fila.get("ULTIMA_INTERACCION","")
+                continue
+            nombre   = str(fila.get("NOMBRE","") or "").strip()
+            busqueda = str(fila.get("ULTIMA_BUSQUEDA","") or "").strip()
+            zona     = str(fila.get("ZONA","") or "").strip()
+            props    = str(fila.get("PROPIEDADES_VISTAS","") or "").strip()
+            operacion = str(fila.get("OPERACION","") or "").strip()
+            ultima   = fila.get("ULTIMA_INTERACCION","")
             if not ultima:
                 continue
 
@@ -1973,11 +1978,9 @@ def _revisar_seguimientos():
                 continue
 
             horas_sin_contacto = (ahora - ts_ultima) / 3600
-            nombre = fila.get("NOMBRE","") or "amigo"
-            busqueda = fila.get("ULTIMA_BUSQUEDA","")
-            zona = fila.get("ZONA","")
-            props_vistas = fila.get("PROPIEDADES_VISTAS","")
-            operacion = fila.get("OPERACION","")
+            # Ya normalizados arriba como str — usar directamente
+            nombre      = nombre or "amigo"
+            props_vistas = props
 
             # MOMENTO 1: 24h sin respuesta tras una busqueda activa
             if (24 <= horas_sin_contacto < 48
