@@ -227,6 +227,62 @@ def wati_send_image(phone, image_url, caption=""):
     except Exception:
         return False
 
+
+def wati_send_to_vendedor(phone, text):
+    """Envia mensaje a un vendedor (numero externo).
+    Intenta sendSessionMessage primero; si falla por ventana cerrada,
+    usa sendTemplateMessage con plantilla de texto libre.
+    Registra el resultado en logs para diagnostico."""
+    phone_norm = _normalizar_phone_wati(phone)
+
+    # Intento 1: sendSessionMessage (funciona si hubo sesion reciente)
+    try:
+        url1 = f"{WATI_BASE_URL}/api/v1/sendSessionMessage/{phone_norm}"
+        r1 = requests.post(url1, headers=wati_headers(),
+                           params={"messageText": text}, timeout=20)
+        if r1.status_code in (200, 201):
+            print(f"[MAX-SEG] Mensaje enviado a vendedor {phone_norm} via session", flush=True)
+            return True
+        print(f"[MAX-SEG] Session fallida ({r1.status_code}): {r1.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"[MAX-SEG] Error session: {e}", flush=True)
+
+    # Intento 2: sendTemplateMessage con plantilla aprobada "notificacion_lead"
+    # Plantilla: "Acierta Max\nTienes un nuevo prospecto asignado. Detalles:\n{{1}}\nGracias por atender este lead."
+    try:
+        url2 = f"{WATI_BASE_URL}/api/v1/sendTemplateMessage"
+        payload = {
+            "template_name": "notificacion_lead",
+            "broadcast_name": f"lead_{phone_norm[-6:]}",
+            "receivers": [{"whatsappNumber": phone_norm,
+                           "customParams": [{"name": "1", "value": text[:900]}]}]
+        }
+        r2 = requests.post(url2, headers=wati_headers(), json=payload, timeout=20)
+        if r2.status_code in (200, 201):
+            print(f"[MAX-SEG] Mensaje enviado a vendedor {phone_norm} via template notificacion_lead", flush=True)
+            return True
+        print(f"[MAX-SEG] Template fallido ({r2.status_code}): {r2.text[:200]}", flush=True)
+    except Exception as e:
+        print(f"[MAX-SEG] Error template: {e}", flush=True)
+
+    # Intento 3: sendInteractiveButtonsMessage — ultimo recurso
+    try:
+        url3 = f"{WATI_BASE_URL}/api/v1/sendInteractiveButtonsMessage/{phone_norm}"
+        payload3 = {
+            "body": text[:1000],
+            "buttons": [{"text": "OK"}]
+        }
+        r3 = requests.post(url3, headers=wati_headers(), json=payload3, timeout=20)
+        if r3.status_code in (200, 201):
+            print(f"[MAX-SEG] Mensaje enviado a vendedor {phone_norm} via buttons", flush=True)
+            return True
+        print(f"[MAX-SEG] Buttons fallido ({r3.status_code}): {r3.text[:100]}", flush=True)
+    except Exception as e:
+        print(f"[MAX-SEG] Error buttons: {e}", flush=True)
+
+    print(f"[MAX-SEG] FALLO TOTAL enviando a vendedor {phone_norm}", flush=True)
+    return False
+
 def enviar_ficha(phone, public_id):
     """Ficha comercial: foto con caption + mensaje de detalle."""
     d = eb_detalle(public_id)
@@ -454,7 +510,7 @@ def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None)
         f"6. Nivel de interes? (CALIENTE / TIBIO / FRIO)\n\n"
         f"Folio: {folio} | MAX ya hizo el primer contacto."
     )
-    wati_send_text(phone_v, cuestionario)
+    wati_send_to_vendedor(phone_v, cuestionario)
     print(f"[MAX-SEG] Lead {folio} asignado a {nombre_v} ({phone_v})", flush=True)
 
     # Copia informativa a Javier (solo si el asignado no es Javier)
@@ -466,7 +522,7 @@ def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None)
             f"{perfil_enriquecido}\n\n"
             f"(Informativo — {nombre_v} tiene el cuestionario y el contacto)"
         )
-        wati_send_text(JAVIER_PHONE, copia)
+        wati_send_to_vendedor(JAVIER_PHONE, copia)
         print(f"[MAX-SEG] Copia enriquecida enviada a Javier", flush=True)
 
 # GOOGLE SHEETS — registro de leads con folio ACIERTA-XXXX
@@ -1919,7 +1975,7 @@ def _max_enviar_seguimiento(phone, tipo, mensaje):
     if tipo in enviados:
         return  # ya se envio este tipo de seguimiento
     try:
-        ok = wati_send_text(phone, mensaje)
+        ok = wati_send_text(phone, mensaje)  # proactivo al cliente — sesion activa requerida
         if ok:
             enviados.add(tipo)
             SEGUIMIENTO_ENVIADO[phone] = enviados
@@ -2466,13 +2522,13 @@ def webhook():
                         _resumen = "\n".join(_resumen_hist) if _resumen_hist else "Sin historial previo"
                         # Avisar al vendedor en turno + copia a Javier
                         _v_ast = _siguiente_vendedor()
-                        wati_send_text(_v_ast["phone"],
+                        wati_send_to_vendedor(_v_ast["phone"],
                                 f"*[SOLICITUD DE ASESOR — te toco]*\n"
                                 f"Cliente: {phone}\n"
                                 f"Escribio: {_texto_strip}\n\n"
                                 f"*Contexto:*\n{_resumen[:600]}")
                         if _v_ast["phone"] != JAVIER_PHONE:
-                            wati_send_text(JAVIER_PHONE,
+                            wati_send_to_vendedor(JAVIER_PHONE,
                                 f"*[COPIA — solicitud de asesor]*\n"
                                 f"Asignado a *{_v_ast['nombre']}*\n"
                                 f"Cliente: {phone} | Escribio: {_texto_strip}")
