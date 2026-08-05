@@ -1134,21 +1134,29 @@ def run_tool(name, args, phone):
             ), daemon=True).start()
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
-            # Sincronizar con memoria persistente
-            if out.get("registrado"):
-                memoria_guardar(phone,
-                    NOMBRE=args.get("nombre",""),
+            # Sincronizar con memoria persistente Y notificar al vendedor
+            # SIN importar si es lead nuevo o ya existia — el vendedor siempre debe saber
+            nombre_reg = args.get("nombre","")
+            folio_reg = out.get("folio","")
+            if nombre_reg and folio_reg:
+                # Guardar en memoria
+                threading.Thread(target=memoria_guardar, kwargs=dict(
+                    phone=phone,
+                    NOMBRE=nombre_reg,
                     OPERACION=args.get("operacion",""),
                     PRESUPUESTO=args.get("presupuesto",""),
                     ZONA=args.get("zona",""),
                     ULTIMA_BUSQUEDA=args.get("interes",""),
                     NOTAS_COACHING=args.get("notas",""),
-                    ESTADO="Lead-registrado")
-                # Notificar al vendedor con cuestionario de seguimiento
+                    ESTADO="Lead-registrado"
+                ), daemon=True).start()
+                # Notificar al vendedor SIEMPRE que haya nombre y folio
+                # (incluso si el lead ya existia — puede haber nueva informacion)
                 threading.Thread(
                     target=seguimiento_registrar_vendedor,
-                    args=(phone, args.get("nombre",""), out.get("folio","")),
+                    args=(phone, nombre_reg, folio_reg),
                     daemon=True).start()
+                print(f"[MAX-SEG] Notificacion vendedor disparada para {phone} / {folio_reg}", flush=True)
         elif name == "avisar_humano":
             out = avisar_humano(phone, args.get("resumen", ""), args.get("categoria"))
         else:
