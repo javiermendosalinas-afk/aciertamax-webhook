@@ -38,6 +38,8 @@ SHEET_ID            = os.environ.get("SHEET_ID", "")
 if "/d/" in SHEET_ID:  # tolerancia: si pegaron la URL completa, extraer el ID
     SHEET_ID = SHEET_ID.split("/d/")[1].split("/")[0]
 HUMAN_HANDOFF       = os.environ.get("HUMAN_HANDOFF_NUMBER", "")
+GMAIL_USER          = os.environ.get("GMAIL_USER", "")
+GMAIL_PASS          = os.environ.get("GMAIL_PASS", "")
 
 # ------------------------------------------------------------------
 # EQUIPO DE VENDEDORES — rotacion round-robin
@@ -227,6 +229,43 @@ def wati_send_image(phone, image_url, caption=""):
     except Exception:
         return False
 
+
+
+# ------------------------------------------------------------------
+# NOTIFICACION POR EMAIL — canal garantizado para vendedores
+# ------------------------------------------------------------------
+def enviar_email_vendedor(destinatario, asunto, cuerpo):
+    """Envia email al vendedor via Gmail SMTP.
+    No depende de sesiones de WhatsApp ni templates de Meta."""
+    if not GMAIL_USER or not GMAIL_PASS:
+        print("[MAX-EMAIL] Gmail no configurado — omitiendo email", flush=True)
+        return False
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+        msg = MIMEMultipart()
+        msg["From"]    = f"MAX Acierta Max <{GMAIL_USER}>"
+        msg["To"]      = destinatario
+        msg["Subject"] = asunto
+        msg.attach(MIMEText(cuerpo, "plain", "utf-8"))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as s:
+            s.login(GMAIL_USER, GMAIL_PASS)
+            s.send_message(msg)
+        print(f"[MAX-EMAIL] Email enviado a {destinatario}: {asunto}", flush=True)
+        return True
+    except Exception as e:
+        print(f"[MAX-EMAIL] Error enviando email a {destinatario}: {e}", flush=True)
+        return False
+
+def emails_vendedores():
+    """Retorna dict nombre->email de los vendedores configurados."""
+    return {
+        "Javier":  os.environ.get("EMAIL_JAVIER",  "javiermendosalinas@gmail.com"),
+        "Ubaldo":  os.environ.get("EMAIL_UBALDO",  ""),
+        "Leticia": os.environ.get("EMAIL_LETICIA", ""),
+        "Gloria":  os.environ.get("EMAIL_GLORIA",  ""),
+    }
 
 def wati_send_to_vendedor(phone, text):
     """Envia mensaje a un vendedor (numero externo).
@@ -510,7 +549,20 @@ def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None)
         f"6. Nivel de interes? (CALIENTE / TIBIO / FRIO)\n\n"
         f"Folio: {folio} | MAX ya hizo el primer contacto."
     )
+    # Enviar por WhatsApp (intenta sesion + template)
     wati_send_to_vendedor(phone_v, cuestionario)
+    # Enviar por EMAIL — canal garantizado, no depende de sesion WhatsApp
+    emails = emails_vendedores()
+    email_v = emails.get(nombre_v, "")
+    asunto_v = f"[AciertaMax] Nuevo Lead {icono} — {folio} | {nombre}"
+    if email_v:
+        enviar_email_vendedor(email_v, asunto_v, cuestionario)
+    # Siempre enviar copia por email a Javier
+    email_javier = emails.get("Javier", "javiermendosalinas@gmail.com")
+    if email_javier and email_v != email_javier:
+        asunto_copia = f"[AciertaMax COPIA] {icono} {folio} asignado a {nombre_v} | {nombre}"
+        enviar_email_vendedor(email_javier, asunto_copia,
+            f"Copia informativa — asignado a {nombre_v}\n\n{perfil_enriquecido}")
     print(f"[MAX-SEG] Lead {folio} asignado a {nombre_v} ({phone_v})", flush=True)
 
     # Copia informativa a Javier (solo si el asignado no es Javier)
