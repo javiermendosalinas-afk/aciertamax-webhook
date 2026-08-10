@@ -1093,7 +1093,7 @@ si es probable que sea una propiedad con anos de uso.
 - Un saludo inicial cálido con tu nombre (MAX de Acierta Max) solo la primera vez.
 - Usa buscar_propiedades en cuanto sepas operación + una pista más (zona o presupuesto). No esperes a tener todo.
 - Ofrece fichas: "¿Te mando la ficha con fotos?" y usa enviar_ficha si acepta (máx 3 por turno).
-- Cuando tengas nombre + operación + interés → registrar_lead (una sola vez).
+- En cuanto el cliente diga su NOMBRE (aunque no tenga zona ni presupuesto aun), llama registrar_lead DE INMEDIATO con lo que tengas. No esperes tener operacion+interes+zona completos — un registro parcial (nombre + telefono) es mejor que perder el lead. Si despues da mas datos, avisar_humano los incluira.
 - Cliente quiere visita, ofertar, o pide humano → avisar_humano Y dile que un asesor le escribe en breve.
 - NUNCA des asesoría legal, fiscal o hipotecaria definitiva; NUNCA negocies precios; NUNCA inventes propiedades ni datos: solo lo que devuelven las herramientas.
 - Si preguntan algo fuera de bienes raíces, redirige con amabilidad.
@@ -2651,6 +2651,22 @@ def webhook():
                         else:
                             print(f"[MAX] Fast-path EB: {_eb_code} no en inventario, pasando a Claude", flush=True)
                     # FIN FAST-PATH EB
+                    # FAST-PATH NOMBRE: detectar si el cliente acaba de dar su nombre
+                    # y no esta registrado aun — registrar inmediatamente sin esperar a Claude
+                    _hist_actual = get_history(phone)
+                    _ya_registrado = phone in REGISTRADOS
+                    if (not _ya_registrado and len(_hist_actual) >= 2
+                            and len(texto.strip().split()) <= 4  # mensaje corto = posible nombre
+                            and not any(c in texto for c in ['?','http','EB-','$'])
+                            and texto.strip()[0].isupper()):  # empieza con mayuscula = nombre
+                        _nombre_detectado = texto.strip().split()[0]
+                        print(f"[MAX] Fast-path nombre detectado: {_nombre_detectado} de {phone}", flush=True)
+                        threading.Thread(
+                            target=lambda: registrar_lead(phone, nombre=_nombre_detectado,
+                                interes="Primer contacto", operacion="", presupuesto="",
+                                zona="", notas="Registro automatico por fast-path de nombre"),
+                            daemon=True
+                        ).start()
                     reply = agent_reply(phone, texto)
                     print(f"[MAX] Respuesta a {phone}: {reply[:200]}", flush=True)
                     for i in range(0, len(reply), 900):
