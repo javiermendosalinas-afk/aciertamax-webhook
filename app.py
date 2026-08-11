@@ -722,7 +722,7 @@ TOOLS = [
          "precio_min": {"type": "number"}, "precio_max": {"type": "number"},
          "recamaras_min": {"type": "number"},
          "tipo": {"type": "string", "description": "casa o departamento"},
-         "texto": {"type": "string", "description": "colonia(s), fraccionamiento(s) o palabra(s) clave a buscar dentro del municipio. Si el cliente da VARIAS colonias aceptables, sepáralas por coma: 'Camino Real, Monraz, Virreyes' — encuentra propiedades que coincidan con CUALQUIERA de ellas."},
+         "texto": {"type": "string", "description": "colonia(s), fraccionamiento(s), nombre de DESARROLLO/TORRE, o código EB a buscar dentro del municipio. Si el cliente da VARIAS colonias aceptables, sepáralas por coma: 'Camino Real, Monraz, Virreyes' — encuentra propiedades que coincidan con CUALQUIERA de ellas. ⚠️ NUNCA pongas aquí características genéricas como 'coto', 'privada', 'alberca', 'seguridad', 'amueblado', 'jardín', 'roof garden' — esas NO son nombres propios de lugar, y este filtro busca la palabra LITERAL dentro del título/colonia, así que casi nunca hay coincidencia exacta y el resultado sale vacío aunque SÍ exista inventario real que cumple. Si el cliente pide una característica genérica (no un nombre propio de colonia/desarrollo), deja 'texto' vacío y filtra solo con municipio/tipo/precio — luego aclara que esa característica específica no está confirmada en el registro y se verifica en la ficha."},
          "amueblado": {"type": "string", "enum": ["Sí", "No"], "description": "Solo filtra si el cliente lo pidió explícitamente. El dato no siempre está disponible en el registro; si no viene marcado, la propiedad SÍ se incluye (no se descarta por falta de dato)."},
          "limite": {"type": "number", "description": "máx 8, default 5"}},
       "required": []}},
@@ -1886,6 +1886,9 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
             pt = p.get("Tipo", "").lower()
             if "depa" in tipo_l or "depart" in tipo_l:
                 if "departamento" not in pt:
+                    continue
+            elif "terreno" in tipo_l or "lote" in tipo_l:
+                if "terreno" not in pt:
                     continue
             elif "casa" in tipo_l and "casa" not in pt:
                 continue
