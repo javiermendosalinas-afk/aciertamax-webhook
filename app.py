@@ -1865,6 +1865,26 @@ except FileNotFoundError:
 ULTIMA_BUSQUEDA = {}  # phone -> lista de propiedades mostradas en el último resultado
                       # (permite resolver "la 3", "esa" sin adivinar ni inventar)
 
+_STOPWORDS_BUSQUEDA = {"el","la","los","las","de","del","en","y","a","con","por","para","un","una"}
+
+def _colonia_coincide(colonia_frase, campos_busqueda):
+    """Coincidencia por PALABRAS clave, no por frase exacta.
+    'el palomar bosques' SI debe encontrar 'EL PALOMAR, SECCIÓN BOSQUES'
+    aunque el orden, la puntuacion o palabras de enlace ('sección') sean
+    distintas. Se ignoran palabras de relleno (stopwords); todas las
+    palabras significativas restantes deben aparecer en el texto buscado.
+    Si la frase es muy corta o son puros codigos (ej. 'EB-VW0579'), se
+    revisa tambien como substring completo por si acaso."""
+    frase = (colonia_frase or "").strip()
+    if not frase:
+        return False
+    if frase in campos_busqueda:
+        return True  # coincidencia exacta directa (ej. codigos EB, ligas)
+    palabras = [w for w in frase.split() if w not in _STOPWORDS_BUSQUEDA and len(w) > 1]
+    if not palabras:
+        return False
+    return all(w in campos_busqueda for w in palabras)
+
 def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=None,
                           recamaras_min=None, tipo=None, texto=None, operacion=None,
                           amueblado=None, limite=5, m2_min=None, m2_max=None):
@@ -1904,7 +1924,7 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                 (p.get("codigo_eb") or "").lower() + " " +
                 (p.get("Liga") or "").lower()
             )
-            if not any(c in campos_busqueda for c in colonias):
+            if not any(_colonia_coincide(c, campos_busqueda) for c in colonias):
                 continue
         if amueblado is not None:
             am = (p.get("Amueblado") or "").strip()
@@ -1960,7 +1980,7 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                 (p.get("codigo_eb") or "").lower() + " " +
                 (p.get("Liga") or "").lower()
             )
-            if not any(c in campos_busqueda for c in colonias):
+            if not any(_colonia_coincide(c, campos_busqueda) for c in colonias):
                 continue
             sin_municipio.append(p)
         if sin_municipio:
@@ -1990,7 +2010,7 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                     (p.get("codigo_eb") or "").lower() + " " +
                     (p.get("Liga") or "").lower()
                 )
-                if not any(c in campos_busqueda for c in colonias):
+                if not any(_colonia_coincide(c, campos_busqueda) for c in colonias):
                     continue
             sin_precio.append(p)
         if sin_precio:
