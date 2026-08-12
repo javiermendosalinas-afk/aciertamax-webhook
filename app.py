@@ -1902,7 +1902,13 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
     for p in INVENTARIO_ZMG:
         if op_l and p.get("Operación", "").upper() != op_l:
             continue
-        if muni_l and muni_l not in p.get("Municipio", "").lower():
+        # El municipio SOLO filtra si NO se dio un nombre de colonia/desarrollo
+        # específico. Si el cliente nombró un desarrollo puntual (ej. "El Palomar",
+        # un código EB), ese nombre YA identifica la propiedad sin ambigüedad —
+        # aplicar también el municipio puede excluirla por error (fraccionamientos
+        # en la frontera entre municipios, o el municipio arrastrado de un mensaje
+        # anterior de la conversación que ya no aplica a esta búsqueda nueva).
+        if muni_l and not colonias and muni_l not in p.get("Municipio", "").lower():
             continue
         if tipo_l:
             pt = p.get("Tipo", "").lower()
