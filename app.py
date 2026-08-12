@@ -2456,6 +2456,30 @@ def calcular_roi_inversion(phone, precio_compra, municipio,
 # ------------------------------------------------------------------
 # WEBHOOK WATI
 # ------------------------------------------------------------------
+def _buscar_eb_en_payload(obj, _profundidad=0):
+    """Busca un código EB-XXXXXX en CUALQUIER parte del payload de Wati,
+    sin importar el nombre del campo. Esto cubre el caso de mensajes
+    citados/reply (el cliente responde a un anuncio anterior): Wati puede
+    mandar el texto original citado bajo un campo distinto a 'text' (el
+    nombre exacto no está documentado de forma confiable y puede variar),
+    así que en vez de adivinarlo, se recorre todo el JSON recibido."""
+    if _profundidad > 6:
+        return None
+    if isinstance(obj, str):
+        m = re.search(r'\bEB-[A-Z0-9]{4,8}\b', obj.upper())
+        return m.group(0) if m else None
+    if isinstance(obj, dict):
+        for v in obj.values():
+            r = _buscar_eb_en_payload(v, _profundidad + 1)
+            if r:
+                return r
+    if isinstance(obj, list):
+        for v in obj:
+            r = _buscar_eb_en_payload(v, _profundidad + 1)
+            if r:
+                return r
+    return None
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
@@ -2487,16 +2511,26 @@ def webhook():
         tipo_msg = (data.get("type") or "").lower()
         print(f"[MAX-DIAGNOSTICO-MEDIA] Mensaje sin texto de {phone}, "
               f"type={tipo_msg!r}, claves={list(data.keys())}", flush=True)
-        # Si parece ser una imagen/audio/video/documento real (no un evento
-        # de estado/entrega), responder con honestidad — NUNCA silencio
-        # total, eso se siente como ser ignorado.
-        if tipo_msg in ("image", "video", "audio", "document", "sticker", "photo"):
-            wati_send_text(phone,
-                "¡Hola! 👋 Veo que me compartiste algo (imagen o archivo), pero hoy no "
-                "puedo leerlo directamente 🙏. ¿Me escribes el nombre de la propiedad, "
-                "el código que empieza con EB-, o la liga del anuncio que viste? "
-                "Así te ayudo al instante con la ficha oficial.")
-        return jsonify(ok=True)
+        # Antes de rendirnos: puede ser un REPLY a un anuncio anterior, donde
+        # Wati manda el código EB citado en algún campo distinto a 'text'
+        # (nombre variable, no documentado con certeza). Buscamos en TODO
+        # el payload en vez de adivinar el nombre exacto del campo.
+        _eb_en_payload = _buscar_eb_en_payload(data)
+        if _eb_en_payload:
+            print(f"[MAX] Código EB encontrado fuera de 'text' (probable mensaje "
+                  f"citado/reply a un anuncio): {_eb_en_payload} — de {phone}", flush=True)
+            text = _eb_en_payload
+        else:
+            # Si parece ser una imagen/audio/video/documento real (no un evento
+            # de estado/entrega), responder con honestidad — NUNCA silencio
+            # total, eso se siente como ser ignorado.
+            if tipo_msg in ("image", "video", "audio", "document", "sticker", "photo"):
+                wati_send_text(phone,
+                    "¡Hola! 👋 Veo que me compartiste algo (imagen o archivo), pero hoy no "
+                    "puedo leerlo directamente 🙏. ¿Me escribes el nombre de la propiedad, "
+                    "el código que empieza con EB-, o la liga del anuncio que viste? "
+                    "Así te ayudo al instante con la ficha oficial.")
+            return jsonify(ok=True)
     # DIAGNÓSTICO TEMPORAL: ver qué campos manda Wati en el payload real,
     # para saber si trae source_url/source_id (el origen del anuncio de
     # Instagram) que hoy no estamos usando. Quitar una vez confirmado.
@@ -2680,21 +2714,30 @@ def webhook():
                     # en la ficha y la escribe al WhatsApp.
                     import re as _re
                     _eb_match = _re.search(r'\bEB-[A-Z0-9]{4,8}\b', texto.upper())
-                    if _eb_match:
-                        _eb_code = _eb_match.group(0)
+                    _eb_code = _eb_match.group(0) if _eb_match else None
+                    if not _eb_code:
+                        # Respaldo: el cliente escribió algo propio ("sí, quiero info")
+                        # pero citó/respondió un anuncio anterior — el código EB puede
+                        # venir solo en la parte citada del payload de Wati, no en 'text'.
+                        _eb_payload = _buscar_eb_en_payload(data)
+                        if _eb_payload:
+                            print(f"[MAX] Código EB encontrado en payload citado (no en texto "
+                                  f"escrito por el cliente): {_eb_payload} — de {phone}", flush=True)
+                            _eb_code = _eb_payload
+                    if _eb_code:
                         print(f"[MAX] Fast-path EB: {_eb_code} de {phone}", flush=True)
                         _prop = next((p for p in INVENTARIO_ZMG
                                       if (_eb_code.lower() in (p.get('codigo_eb') or '').lower()
                                           or _eb_code.lower() in (p.get('Liga') or '').lower())), None)
                         if _prop:
                             _liga  = _prop.get('Liga','')
-                            _tit   = _prop.get('Titulo/Colonia') or _prop.get('Titulo/Colonia','Propiedad')
+                            _tit   = _prop.get('Título/Colonia') or 'Propiedad'
                             _precio = _prop.get('Precio','')
-                            _rec   = _prop.get('Recamaras') or _prop.get('Recamaras','')
-                            _ban   = _prop.get('Banos') or _prop.get('Banos','')
-                            _m2    = _prop.get('m2') or _prop.get('m2','')
+                            _rec   = _prop.get('Recámaras') or ''
+                            _ban   = _prop.get('Baños') or ''
+                            _m2    = _prop.get('m²') or ''
                             _muni  = _prop.get('Municipio','')
-                            _op    = _prop.get('Operacion') or _prop.get('Operacion','')
+                            _op    = _prop.get('Operación') or ''
                             try:
                                 _precio_fmt = f"${int(float(_precio)):,}"
                             except Exception:
