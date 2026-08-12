@@ -1945,6 +1945,35 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
             "nota": "Guardado como la lista activa de este cliente. Si el cliente responde "
                     "'la 1/2/3...' usa seleccionar_de_lista con ese número — NUNCA inventes "
                     "un nombre de propiedad que no esté en esta lista."}
+    # HONESTIDAD DE MUNICIPIO: si el cliente dio un municipio + nombre de colonia/
+    # desarrollo y no hubo NADA, puede ser que el cliente (o el propio MAX) haya
+    # asumido mal el municipio -- fraccionamientos como "El Palomar" quedan en la
+    # frontera Zapopan/Tlajomulco y la gente los ubica mal. Reintentar SOLO por
+    # texto, sin filtro de municipio, y avisar en cuál municipio sí está.
+    if not res and colonias and muni_l:
+        sin_municipio = []
+        for p in INVENTARIO_ZMG:
+            if op_l and p.get("Operación", "").upper() != op_l:
+                continue
+            campos_busqueda = (
+                p.get("Título/Colonia", "").lower() + " " +
+                (p.get("codigo_eb") or "").lower() + " " +
+                (p.get("Liga") or "").lower()
+            )
+            if not any(c in campos_busqueda for c in colonias):
+                continue
+            sin_municipio.append(p)
+        if sin_municipio:
+            municipios_reales = sorted(set(p.get("Municipio","") for p in sin_municipio if p.get("Municipio")))
+            resultado["aviso_municipio_no_coincide"] = (
+                f"Hay {len(sin_municipio)} propiedad(es) con ese nombre de colonia/desarrollo, "
+                f"pero NINGUNA en el municipio '{municipio}' que se filtró. En realidad están en: "
+                f"{', '.join(municipios_reales)}. Es probable que el cliente (o tú) haya asumido mal "
+                f"el municipio de ese fraccionamiento — algunos quedan en la frontera entre municipios. "
+                f"NUNCA digas 'no tengo nada ahí' en este caso — dile al cliente con calidez que ese "
+                f"desarrollo en realidad está en {municipios_reales[0]}, no en {municipio}, y vuelve a "
+                f"buscar con buscar_inventario_zmg usando el municipio correcto."
+            )
     # HONESTIDAD DE RANGO: si con el precio no hubo NADA pero la colonia/zona
     # sí tiene inventario fuera de ese rango, decirlo — nunca "no hay nada"
     # cuando en realidad "hay, pero más caro/barato de lo pedido".
