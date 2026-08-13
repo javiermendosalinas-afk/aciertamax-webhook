@@ -340,6 +340,7 @@ def enviar_ficha(phone, public_id):
     if d.get("url_publica"):
         cuerpo += f"\n\n🔗 Ficha completa y fotos: {d['url_publica']}"
     cuerpo += "\n\n_Acierta Max — 20 años haciendo que suceda_ ✅"
+    cuerpo += linea_enganche(d.get("precio"), d.get("operacion"))
     ok_img = False
     if d.get("foto"):
         ok_img = wati_send_image(phone, d["foto"], caption)
@@ -993,6 +994,18 @@ que puede orientar segun el perfil especifico del cliente.
 
 
 == PRECALIFICACION Y ROI — CUANDO Y COMO USAR ==
+
+LINEA DE ENGANCHE PROACTIVA: cada ficha de una propiedad en VENTA que envías
+(enviar_ficha, enviar_ficha_liga) ya trae agregada automáticamente una línea
+con el enganche estimado (10%) y una pregunta de seguimiento. NO la repitas
+ni la reescribas — ya se mandó tal cual dentro de la ficha. Tu trabajo es
+SOLO reaccionar cuando el cliente responda a esa pregunta:
+- Si dice que sí le interesa / pregunta más → sigue con PRECALIFICAR_CREDITO
+  (las 3 preguntas de abajo) de forma natural, sin repetir el enganche que
+  ya vio.
+- Si el cliente ignora esa línea y sigue pidiendo otras propiedades →
+  no insistas, continúa normal. Es un gancho, no una obligación de respuesta.
+
 PRECALIFICAR_CREDITO: Usar cuando el cliente mencione credito, Infonavit, mensualidades,
 enganche, o cuando su presupuesto supere $1,500,000. Antes de buscar propiedades, pregunta
 de forma natural (maximo 3 preguntas en el mismo mensaje):
@@ -2080,7 +2093,8 @@ def enviar_ficha_liga(phone, liga):
               f"\n\n🔗 Ficha completa con fotos y detalles:\n{liga}"
               f"\n\nAcierta Max — Socio AMPI, certificado ✅"
               f"\n\n🔵 _Propiedad compartida mediante colaboración inmobiliaria profesional. "
-              f"Precio y disponibilidad sujetos a confirmación._")
+              f"Precio y disponibilidad sujetos a confirmación._"
+              + linea_enganche(precio, op_real))
     ok_img = wati_send_image(phone, foto, caption) if foto else False
     time.sleep(0.4)
     ok_caption = ok_img or wati_send_text(phone, caption)
@@ -2228,6 +2242,33 @@ def _loop_proactivo():
 _thread_proactivo = threading.Thread(target=_loop_proactivo, daemon=True)
 _thread_proactivo.start()
 print("[MAX-PRO] Thread proactivo iniciado (revisa cada hora)", flush=True)
+
+# ------------------------------------------------------------------
+# LINEA DE ENGANCHE PROACTIVA (se agrega automaticamente a fichas de VENTA)
+# ------------------------------------------------------------------
+def linea_enganche(precio, operacion):
+    """Genera una linea breve de enganche estimado (10%) para propiedades
+    en VENTA con precio valido. Se agrega automaticamente al final de las
+    fichas para abrir la conversacion de credito de forma proactiva, en
+    vez de esperar a que el cliente pregunte. Vacio para RENTA o precio
+    invalido -- nunca inventa un numero sin base real.
+    Acepta tanto 'VENTA' (bolsa ZMG) como 'sale' (EasyBroker crudo)."""
+    op_l = (operacion or "").strip().lower()
+    if op_l not in ("venta", "sale"):
+        return ""
+    m = re.search(r'[\d,]+\.?\d*', str(precio or ""))
+    if not m:
+        return ""
+    try:
+        precio_val = float(m.group(0).replace(",", ""))
+    except (TypeError, ValueError):
+        return ""
+    if precio_val <= 0:
+        return ""
+    enganche = precio_val * 0.10
+    return (f"\n\n💳 Con crédito bancario, el enganche estimado sería desde "
+            f"${enganche:,.0f} MXN (10% aprox., puede variar según banco). "
+            f"¿Te gustaría que veamos juntos si te alcanza?")
 
 # ------------------------------------------------------------------
 # PRECALIFICACION CREDITICIA
