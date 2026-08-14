@@ -1206,23 +1206,29 @@ def run_tool(name, args, phone):
             nombre_reg = args.get("nombre","")
             folio_reg = out.get("folio","")
             if nombre_reg and folio_reg:
-                # Guardar en memoria
-                threading.Thread(target=memoria_guardar, kwargs=dict(
-                    phone=phone,
-                    NOMBRE=nombre_reg,
-                    OPERACION=args.get("operacion",""),
-                    PRESUPUESTO=args.get("presupuesto",""),
-                    ZONA=args.get("zona",""),
-                    ULTIMA_BUSQUEDA=args.get("interes",""),
-                    NOTAS_COACHING=args.get("notas",""),
-                    ESTADO="Lead-registrado"
-                ), daemon=True).start()
-                # Notificar al vendedor SIEMPRE que haya nombre y folio
-                # (incluso si el lead ya existia — puede haber nueva informacion)
-                threading.Thread(
-                    target=seguimiento_registrar_vendedor,
-                    args=(phone, nombre_reg, folio_reg),
-                    daemon=True).start()
+                # IMPORTANTE: guardar en memoria y notificar en el MISMO thread,
+                # en ese orden. Antes eran dos threads paralelos independientes
+                # sin garantia de orden -- si la notificacion corria ANTES de que
+                # terminara el guardado, leia memoria vieja/incompleta y el correo
+                # salia contradictorio (ej. "COMPRA" en el titulo pero "Operacion:
+                # renta" en el perfil, porque leyo el OPERACION de un momento
+                # anterior de la conversacion). Con un solo thread secuencial,
+                # memoria_guardar SIEMPRE termina (incluyendo el cache) antes de
+                # que seguimiento_registrar_vendedor lea la memoria.
+                def _guardar_y_notificar(_phone=phone, _nombre=nombre_reg,
+                                          _folio=folio_reg, _args=dict(args)):
+                    memoria_guardar(
+                        phone=_phone,
+                        NOMBRE=_nombre,
+                        OPERACION=_args.get("operacion",""),
+                        PRESUPUESTO=_args.get("presupuesto",""),
+                        ZONA=_args.get("zona",""),
+                        ULTIMA_BUSQUEDA=_args.get("interes",""),
+                        NOTAS_COACHING=_args.get("notas",""),
+                        ESTADO="Lead-registrado"
+                    )
+                    seguimiento_registrar_vendedor(_phone, _nombre, _folio)
+                threading.Thread(target=_guardar_y_notificar, daemon=True).start()
                 print(f"[MAX-SEG] Notificacion vendedor disparada para {phone} / {folio_reg}", flush=True)
         elif name == "avisar_humano":
             out = avisar_humano(phone, args.get("resumen", ""), args.get("categoria"))
