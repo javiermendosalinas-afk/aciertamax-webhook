@@ -1260,7 +1260,7 @@ def _afirma_envio_ficha(texto):
     t = (texto or "").lower()
     return any(f in t for f in _FRASES_ENVIO)
 
-def agent_reply(phone, user_text):
+def agent_reply(phone, user_text, sender_name=None):
     """Bucle agentico: Claude decide, ejecuta herramientas, responde.
 
     Incluye un GUARDIA ANTI-ALUCINACION: MAX no puede afirmar que envio una
@@ -1285,6 +1285,28 @@ def agent_reply(phone, user_text):
                                     "para darle atencion personalizada sin repetir preguntas."}
                        ] + messages
             print(f"[MAX-MEM] Contexto previo inyectado para {phone}: {mem_resumen[:80]}", flush=True)
+        # Nombre de perfil de WhatsApp (lo manda Wati automaticamente). NO es
+        # verdad absoluta -- a veces es un nombre real (ej. "Oscar Vargas"),
+        # a veces es el nombre de un negocio/rol generico (ej. "Gerencia de
+        # Ventas"). Se pasa como PISTA, no como dato confirmado, para que MAX
+        # decida: si parece nombre de persona, lo puede usar directo o
+        # confirmarlo con un "¿Angel, verdad?" en vez de preguntar de cero;
+        # si parece generico, lo ignora y pregunta normal. Esto evita el caso
+        # real donde un cliente respondio la palabra clave de un anuncio
+        # ("BELLA") a la pregunta de nombre, y MAX la tomo como nombre propio
+        # sin cruzarla contra el nombre real de WhatsApp que ya se tenia.
+        if sender_name and sender_name.strip():
+            messages = [{"role": "user",
+                         "content": f"[PERFIL DE WHATSAPP: el nombre que aparece en el perfil de "
+                                    f"este contacto es '{sender_name.strip()}'. Puede ser su nombre "
+                                    f"real o el nombre de un negocio/rol generico -- usa tu criterio. "
+                                    f"Si más adelante el cliente da un nombre distinto (ej. respondiendo "
+                                    f"a tu pregunta de '¿cómo te llamas?'), y ese nombre coincide con una "
+                                    f"palabra clave de un anuncio/campaña en vez de sonar a nombre propio, "
+                                    f"sospecha que no es su nombre real y confírmalo o usa el del perfil.]"},
+                        {"role": "assistant",
+                         "content": "Entendido, tomo nota del nombre de perfil como referencia."}
+                       ] + messages
     fichas_enviadas_ok = 0   # fichas realmente confirmadas (enviada=True) este turno
     fichas_intentadas = 0    # llamadas a herramientas de ficha, con o sin exito
     ultima_liga = None       # ultima liga vista, para recuperar el envio si hace falta
@@ -2539,6 +2561,10 @@ def _buscar_eb_en_payload(obj, _profundidad=0):
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
+    # Nombre de perfil de WhatsApp que manda Wati (puede ser nombre real o
+    # nombre generico de negocio/rol) -- se usa mas abajo como PISTA para
+    # agent_reply, nunca como verdad absoluta.
+    sender_name = (data.get("senderName") or "").strip()
     # Si un HUMANO (tú o tu equipo) escribió directo desde Wati, MAX debe
     # enterarse y quedarse en silencio un rato para ese cliente — para no
     # pisar una conversación que ya está siendo atendida en persona.
@@ -2690,8 +2716,15 @@ def webhook():
                         except Exception:
                             import traceback
                             print(f"[MAX-ERROR] Bitácora falló para {phone} (no interrumpe la respuesta):\n{traceback.format_exc()}", flush=True)
-                    # FAST-PATH de campañas: SOLO en el PRIMER mensaje de la
-                    # conversación (así llegan los clics de anuncios).
+                    # FAST-PATH de campañas: se revisa en CUALQUIER mensaje de la
+                    # conversación, no solo el primero. Antes solo se checaba el
+                    # primer mensaje ("if campana and not historial"), lo que hacía
+                    # que MAX "perdiera" el contexto del anuncio si el cliente
+                    # mencionaba la propiedad/código en su 2do o 3er mensaje (ej.
+                    # "¿me ayudas con la ubicación?" sobre un anuncio ya visible en
+                    # el chat, o la palabra clave del anuncio como respuesta tardía
+                    # a "¿cómo te llamas?"). La protección contra reenvío duplicado
+                    # ya existe (FICHAS_ENVIADAS), así que es seguro revisar siempre.
                     nombre, campana = detectar_campana(texto)
                     # Respaldo: si el texto es genérico (botón default de
                     # Instagram) pero SÍ sabemos de qué publicación vino
@@ -2703,13 +2736,16 @@ def webhook():
                         if nombre_mapeado and nombre_mapeado in CAMPANAS:
                             nombre, campana = nombre_mapeado, CAMPANAS[nombre_mapeado]
                             print(f"[MAX] Campaña detectada por origen de Instagram: {nombre}", flush=True)
-                    if campana and not historial:
-                        print(f"[MAX] Campaña detectada: {nombre}", flush=True)
+                    campana_ya_enviada = nombre in FICHAS_ENVIADAS.get(phone, set()) if nombre else False
+                    if campana and not campana_ya_enviada:
+                        print(f"[MAX] Campaña detectada: {nombre} (historial previo: {bool(historial)})", flush=True)
                         responder_campana(phone, texto, campana)
                         continue
-                    # FAST-PATH de guías (AM-GUIA-XX): igual, solo primer mensaje.
+                    # FAST-PATH de guías (AM-GUIA-XX): igual, en cualquier mensaje,
+                    # con proteccion anti-duplicado via GUIAS_ENVIADAS.
                     nombre_g, guia = detectar_guia(texto)
-                    if guia and not historial:
+                    guia_ya_enviada = nombre_g in GUIAS_ENVIADAS.get(phone, set()) if nombre_g else False
+                    if guia and not guia_ya_enviada:
                         print(f"[MAX] Guía detectada: {nombre_g}", flush=True)
                         wati_send_text(phone, guia["texto"])
                         GUIAS_ENVIADAS.setdefault(phone, set()).add(nombre_g)
@@ -2837,7 +2873,7 @@ def webhook():
                                 zona="", notas="Registro automatico por fast-path de nombre"),
                             daemon=True
                         ).start()
-                    reply = agent_reply(phone, texto)
+                    reply = agent_reply(phone, texto, sender_name=sender_name)
                     print(f"[MAX] Respuesta a {phone}: {reply[:200]}", flush=True)
                     for i in range(0, len(reply), 900):
                         ok = wati_send_text(phone, reply[i:i+900])
