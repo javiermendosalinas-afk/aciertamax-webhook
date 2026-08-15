@@ -1402,7 +1402,7 @@ GUIAS = {
             "📄 ¿Ya tienes un prospecto y necesitas apoyo?\n"
             "📊 ¿Buscas administración profesional?\n\n"
             "Para solicitar una llamada directa con un asesor, escribe: *\n\n"
-            "🌐 www.aciertamax.com — más de 3,000 propiedades disponibles en la ZMG, sujetas a confirmación.\n\n"
+            "🌐 www.aciertamax.com — miles de propiedades disponibles en la ZMG, sujetas a confirmación.\n\n"
             "_NO COMPRES, VENDAS O RENTES SIN TENER CERTEZA._\n"
             "_La investigación de prospectos debe realizarse con su autorización y conforme a las disposiciones "
             "aplicables en materia de privacidad y protección de datos personales._"
@@ -2246,7 +2246,7 @@ def _revisar_seguimientos():
                     f"{' como ' + prop_preview if prop_preview else ''}. "
                     f"Quieres que te mande la ficha completa con fotos y detalles? "
                     f"Solo dime cual te llamo la atencion. "
-                    f"Tenemos mas de 3,000 propiedades — seguro encontramos la ideal!"
+                    f"Tenemos miles de propiedades — seguro encontramos la ideal!"
                 )
                 _max_enviar_seguimiento(phone, "48h", msg)
 
@@ -2843,11 +2843,11 @@ def webhook():
                             if not _res.get('enviada'):
                                 wati_send_text(phone,
                                     f"Aqui tienes la ficha: {_liga}\n\n"
-                                    f"Tenemos mas de 3,000 propiedades en la ZMG. "
+                                    f"Tenemos miles de propiedades en la ZMG. "
                                     f"Cual es tu nombre y que buscas? Te ayudo!")
                             else:
                                 wati_send_text(phone,
-                                    f"Tenemos mas de 3,000 propiedades en la ZMG. "
+                                    f"Tenemos miles de propiedades en la ZMG. "
                                     f"Si quieres ver mas opciones o tienes preguntas sobre creditos, "
                                     f"escrituracion o visitas, aqui estoy! Cual es tu nombre?")
                             append_history(phone, "user", texto)
