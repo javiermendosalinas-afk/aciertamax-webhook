@@ -532,7 +532,7 @@ def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None)
     elif "credito" in notas.lower() or "infonavit" in notas.lower():
         icono = "CREDITO"
         tipo_cliente = "Cliente con credito — verificar capacidad y banco"
-    elif "renta" in (m.get("OPERACION","")).upper():
+    elif "RENTA" in (m.get("OPERACION","")).upper():
         icono = "RENTA"
         tipo_cliente = "Busca renta — verificar documentos y requisitos"
     else:
@@ -2898,10 +2898,23 @@ def webhook():
                     # y no esta registrado aun — registrar inmediatamente sin esperar a Claude
                     _hist_actual = get_history(phone)
                     _ya_registrado = phone in REGISTRADOS
+                    # Palabras comunes que empiezan con mayuscula al inicio de una
+                    # respuesta pero NUNCA son un nombre propio -- sin esta lista,
+                    # respuestas como "Comprar" a "que buscas?" se registraban como
+                    # si fueran el nombre del cliente, dejando el CRM con datos
+                    # incorrectos que nunca se corregian despues.
+                    _NO_SON_NOMBRES = {
+                        "comprar","rentar","vender","comprar.","rentar.","vender.",
+                        "renta","venta","si","sí","no","hola","gracias","ok","okay",
+                        "claro","perfecto","bueno","bien","tal","vez","aja","ajam",
+                        "casa","departamento","depa","terreno","cualquiera","cualquier",
+                        "urgente","pronto","ya","hoy","mañana","comprando","rentando",
+                    }
                     if (not _ya_registrado and len(_hist_actual) >= 2
                             and len(texto.strip().split()) <= 4  # mensaje corto = posible nombre
                             and not any(c in texto for c in ['?','http','EB-','$'])
-                            and texto.strip()[0].isupper()):  # empieza con mayuscula = nombre
+                            and texto.strip()[0].isupper()  # empieza con mayuscula = nombre
+                            and texto.strip().split()[0].lower() not in _NO_SON_NOMBRES):
                         _nombre_detectado = texto.strip().split()[0]
                         print(f"[MAX] Fast-path nombre detectado: {_nombre_detectado} de {phone}", flush=True)
                         threading.Thread(
