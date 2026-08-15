@@ -103,6 +103,12 @@ MAPEO_POST_A_CAMPANA = {
     "https://www.instagram.com/p/Da365rRg2VF/": "paneles_solares",     # EB-UO2612, confirmado 20/07/2026
 }
 
+# phone -> nombre de campaña activa detectada en esta conversación (por texto
+# o por origen de Instagram). Se usa para darle contexto a Claude en turnos
+# posteriores cuando el cliente pregunta algo vago ("la ubicación", "cuánto
+# cuesta") sin repetir el código EB o la palabra clave.
+CAMPANA_ACTIVA_POR_TELEFONO = {}
+
 def get_history(phone):
     with CONV_LOCK:
         return list(CONVERSATIONS.get(phone, []))
@@ -1270,9 +1276,30 @@ def agent_reply(phone, user_text, sender_name=None):
     """
     append_history(phone, "user", user_text)
     messages = get_history(phone)
+    es_primer_turno = (len(messages) == 1)  # guardado ANTES de inyectar contexto extra
     # Si es la primera respuesta de esta sesion (historial de 1 turno),
     # inyectar memoria previa del prospecto como contexto para MAX
-    if len(messages) == 1:
+    # Si este telefono tiene una CAMPAÑA ACTIVA detectada (por palabra clave o
+    # por origen de Instagram, en este turno o en uno anterior), se inyecta
+    # como contexto en CADA turno -- no solo el primero -- para que Claude
+    # pueda responder preguntas vagas del cliente ("la ubicación", "cuánto
+    # cuesta", "tiene alberca") usando los datos reales de esa propiedad, sin
+    # necesitar que el cliente repita el código EB o la palabra clave.
+    _campana_activa_nombre = CAMPANA_ACTIVA_POR_TELEFONO.get(phone)
+    if _campana_activa_nombre and _campana_activa_nombre in CAMPANAS:
+        _c = CAMPANAS[_campana_activa_nombre]
+        _detalle_campana = f"{_c.get('caption','')} {_c.get('cuerpo','')}".strip()
+        messages = [{"role": "user",
+                     "content": f"[CAMPAÑA ACTIVA DE ESTE CLIENTE: la conversación viene de un anuncio "
+                                f"sobre esta propiedad específica — úsala para responder preguntas vagas "
+                                f"del cliente (ubicación, precio, características) sin que tenga que "
+                                f"repetir el código o nombre. Datos reales de la propiedad:\n{_detalle_campana[:800]}]"},
+                    {"role": "assistant",
+                     "content": "Entendido, tengo los datos de esa propiedad a la mano para responder "
+                                "cualquier pregunta sobre ella."}
+                   ] + messages
+
+    if es_primer_turno:
         mem_resumen = memoria_resumen_para_max(phone)
         if mem_resumen:
             # Agregar como mensaje de sistema al inicio del historial
@@ -2729,8 +2756,11 @@ def webhook():
                     # Respaldo: si el texto es genérico (botón default de
                     # Instagram) pero SÍ sabemos de qué publicación vino
                     # (ORIGEN_POR_TELEFONO), y esa publicación está mapeada
-                    # a una campaña conocida, usarla igual.
-                    if not campana and not historial:
+                    # a una campaña conocida, usarla igual. Ya NO se limita al
+                    # primer mensaje: si el cliente pregunta algo vago despues
+                    # ("me ayudas con la ubicacion?") sin repetir palabra clave,
+                    # igual debemos reconocer que sigue hablando del mismo anuncio.
+                    if not campana:
                         origen = ORIGEN_POR_TELEFONO.get(phone)
                         nombre_mapeado = MAPEO_POST_A_CAMPANA.get(origen) if origen else None
                         if nombre_mapeado and nombre_mapeado in CAMPANAS:
@@ -2739,8 +2769,14 @@ def webhook():
                     campana_ya_enviada = nombre in FICHAS_ENVIADAS.get(phone, set()) if nombre else False
                     if campana and not campana_ya_enviada:
                         print(f"[MAX] Campaña detectada: {nombre} (historial previo: {bool(historial)})", flush=True)
+                        CAMPANA_ACTIVA_POR_TELEFONO[phone] = nombre
                         responder_campana(phone, texto, campana)
                         continue
+                    elif campana and campana_ya_enviada:
+                        # Ya se mandó la ficha antes, pero SIGUE siendo la campaña
+                        # activa de esta conversación -- que quede registrada para
+                        # que Claude tenga el contexto en su respuesta normal.
+                        CAMPANA_ACTIVA_POR_TELEFONO[phone] = nombre
                     # FAST-PATH de guías (AM-GUIA-XX): igual, en cualquier mensaje,
                     # con proteccion anti-duplicado via GUIAS_ENVIADAS.
                     nombre_g, guia = detectar_guia(texto)
