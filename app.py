@@ -101,6 +101,7 @@ ORIGEN_POR_TELEFONO = {}  # phone -> sourceUrl (liga de Instagram) del primer co
 MAPEO_POST_A_CAMPANA = {
     "https://www.instagram.com/p/Da33OUcA8nj/": "solares_zona_real",  # EB-WJ9214, confirmado 19/07/2026
     "https://www.instagram.com/p/Da365rRg2VF/": "paneles_solares",     # EB-UO2612, confirmado 20/07/2026
+    "https://www.instagram.com/p/Da32rZ1AQIE/": "coto_encino",         # EB-UU6717, confirmado 15/08/2026
 }
 
 # phone -> nombre de campaña activa detectada en esta conversación (por texto
