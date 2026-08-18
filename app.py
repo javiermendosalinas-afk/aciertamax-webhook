@@ -731,6 +731,7 @@ TOOLS = [
          "recamaras_min": {"type": "number"},
          "m2_min": {"type": "number", "description": "Metros cuadrados mínimos. Para tipo=terreno, este campo SÍ representa la superficie del terreno (no construcción) — el dato existe en el inventario para la gran mayoría de los terrenos, así que SIEMPRE puedes filtrar por rango de metros cuando el cliente pida un terreno de tantos a tantos m². Para casa/departamento representa m² de construcción."},
          "m2_max": {"type": "number", "description": "Metros cuadrados máximos. Mismo criterio que m2_min: para terrenos es superficie de terreno, para casa/depto es construcción."},
+         "niveles": {"type": "number", "description": "Número de plantas/niveles de la CASA (1 = una sola planta, 2 = dos plantas, etc.). Solo aplica a tipo=casa. El dato no está disponible para todas las casas — si no viene marcado en el registro, la propiedad NO se incluye en el resultado cuando se filtra por este parámetro (a diferencia de otros filtros, aquí es mejor excluir que arriesgar mostrar una de 2 plantas cuando piden 1). Si el cliente pide explícitamente 'una sola planta' o 'un nivel', usa niveles=1."},
          "tipo": {"type": "string", "description": "casa, departamento o terreno"},
          "texto": {"type": "string", "description": "colonia(s), fraccionamiento(s), nombre de DESARROLLO/TORRE, o código EB a buscar dentro del municipio. Si el cliente da VARIAS colonias aceptables, sepáralas por coma: 'Camino Real, Monraz, Virreyes' — encuentra propiedades que coincidan con CUALQUIERA de ellas. ⚠️ NUNCA pongas aquí características genéricas como 'coto', 'privada', 'alberca', 'seguridad', 'amueblado', 'jardín', 'roof garden' — esas NO son nombres propios de lugar, y este filtro busca la palabra LITERAL dentro del título/colonia, así que casi nunca hay coincidencia exacta y el resultado sale vacío aunque SÍ exista inventario real que cumple. Si el cliente pide una característica genérica (no un nombre propio de colonia/desarrollo), deja 'texto' vacío y filtra solo con municipio/tipo/precio — luego aclara que esa característica específica no está confirmada en el registro y se verifica en la ficha."},
          "amueblado": {"type": "string", "enum": ["Sí", "No"], "description": "Solo filtra si el cliente lo pidió explícitamente. El dato no siempre está disponible en el registro; si no viene marcado, la propiedad SÍ se incluye (no se descarta por falta de dato)."},
@@ -1956,7 +1957,7 @@ def _colonia_coincide(colonia_frase, campos_busqueda):
 
 def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=None,
                           recamaras_min=None, tipo=None, texto=None, operacion=None,
-                          amueblado=None, limite=5, m2_min=None, m2_max=None):
+                          amueblado=None, limite=5, m2_min=None, m2_max=None, niveles=None):
     """Busca en la bolsa compartida ZMG (venta desde $2M, renta desde $13,000/mes).
     Guarda el resultado exacto mostrado a ESTE cliente para poder resolver
     referencias como "la 3" con seleccionar_de_lista, sin inventar nada."""
@@ -2024,6 +2025,13 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                 continue
             if m2_max and m2_val > float(m2_max):
                 continue
+        if niveles:
+            try:
+                niveles_val = int(float(str(p.get("Niveles") or "")))
+            except (ValueError, TypeError):
+                niveles_val = None
+            if niveles_val is None or niveles_val != int(niveles):
+                continue  # sin dato o no coincide: se excluye para no arriesgar
         res.append(p)
     res.sort(key=lambda x: x.get("Precio") or 0)
     mostradas = res[: min(int(limite or 5), 8)]
