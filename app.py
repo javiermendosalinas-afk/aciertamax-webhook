@@ -2906,11 +2906,23 @@ def webhook():
                     # y no esta registrado aun — registrar inmediatamente sin esperar a Claude
                     _hist_actual = get_history(phone)
                     _ya_registrado = phone in REGISTRADOS
-                    # Palabras comunes que empiezan con mayuscula al inicio de una
-                    # respuesta pero NUNCA son un nombre propio -- sin esta lista,
-                    # respuestas como "Comprar" a "que buscas?" se registraban como
-                    # si fueran el nombre del cliente, dejando el CRM con datos
-                    # incorrectos que nunca se corregian despues.
+                    # FIX DE RAIZ: antes, cualquier mensaje corto que empezara con
+                    # mayuscula se trataba como nombre (con una lista negra de
+                    # palabras comunes creciendo sin parar). Eso dejo pasar groserias
+                    # de un cliente molesto ("Puto", "Chinga a tu madre") como si
+                    # fueran su nombre, generando folios de lead falsos en el CRM.
+                    # Ahora se exige ADEMAS que el ultimo mensaje de MAX haya
+                    # preguntado el nombre de verdad -- ligado al contexto real de
+                    # la conversacion, no a la forma superficial del texto.
+                    _ultimo_msg_max = ""
+                    for _m in reversed(_hist_actual):
+                        if _m.get("role") == "assistant":
+                            _c = _m.get("content")
+                            _ultimo_msg_max = _c if isinstance(_c, str) else str(_c)
+                            break
+                    _pregunto_nombre = any(f in _ultimo_msg_max.lower() for f in
+                        ["cómo te llamas", "como te llamas", "tu nombre", "cuál es tu nombre",
+                         "cual es tu nombre", "me dices tu nombre", "me compartes tu nombre"])
                     _NO_SON_NOMBRES = {
                         "comprar","rentar","vender","comprar.","rentar.","vender.",
                         "renta","venta","si","sí","no","hola","gracias","ok","okay",
@@ -2918,7 +2930,7 @@ def webhook():
                         "casa","departamento","depa","terreno","cualquiera","cualquier",
                         "urgente","pronto","ya","hoy","mañana","comprando","rentando",
                     }
-                    if (not _ya_registrado and len(_hist_actual) >= 2
+                    if (not _ya_registrado and _pregunto_nombre and len(_hist_actual) >= 2
                             and len(texto.strip().split()) <= 4  # mensaje corto = posible nombre
                             and not any(c in texto for c in ['?','http','EB-','$'])
                             and texto.strip()[0].isupper()  # empieza con mayuscula = nombre
