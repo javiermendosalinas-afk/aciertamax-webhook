@@ -1915,9 +1915,16 @@ def enviar_ficha_campana(phone, desarrollo):
 # corriendo inventario_zmg.py y resubiendo el CSV al repositorio.
 # ------------------------------------------------------------------
 INVENTARIO_ZMG = []
+# Se prefiere el CSV YA PONDERADO (con Score_Comercial, generado por
+# ponderar_inventario.py) para que MAX pueda priorizar por susceptibilidad
+# de venta, no solo por precio. Si aún no se ha corrido la ponderación en
+# esta actualización, cae de vuelta al CSV crudo sin score (compatibilidad).
+_ARCHIVO_INVENTARIO = ("inventario_zmg_ponderado.csv"
+                       if os.path.exists("inventario_zmg_ponderado.csv")
+                       else "inventario_zmg.csv")
 try:
     import csv as _csv
-    with open("inventario_zmg.csv", encoding="utf-8") as _f:
+    with open(_ARCHIVO_INVENTARIO, encoding="utf-8") as _f:
         for _row in _csv.DictReader(_f):
             try:
                 _row["Precio"] = int(float(_row.get("Precio") or 0))
@@ -1927,10 +1934,16 @@ try:
                 _row["Recámaras"] = int(float(_row["Recámaras"])) if _row.get("Recámaras") not in (None, "", "nan") else None
             except ValueError:
                 _row["Recámaras"] = None
+            try:
+                _row["Score_Comercial"] = float(_row["Score_Comercial"]) if _row.get("Score_Comercial") not in (None, "", "nan") else None
+            except ValueError:
+                _row["Score_Comercial"] = None
             INVENTARIO_ZMG.append(_row)
-    print(f"[MAX] Inventario ZMG cargado: {len(INVENTARIO_ZMG)} propiedades", flush=True)
+    print(f"[MAX] Inventario ZMG cargado desde {_ARCHIVO_INVENTARIO}: "
+          f"{len(INVENTARIO_ZMG)} propiedades", flush=True)
 except FileNotFoundError:
-    print("[MAX] Sin inventario_zmg.csv: solo inventario propio disponible", flush=True)
+    print("[MAX] Sin inventario_zmg.csv ni inventario_zmg_ponderado.csv: "
+          "solo inventario propio disponible", flush=True)
 
 ULTIMA_BUSQUEDA = {}  # phone -> lista de propiedades mostradas en el último resultado
                       # (permite resolver "la 3", "esa" sin adivinar ni inventar)
@@ -2033,7 +2046,13 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
             if niveles_val is None or niveles_val != int(niveles):
                 continue  # sin dato o no coincide: se excluye para no arriesgar
         res.append(p)
-    res.sort(key=lambda x: x.get("Precio") or 0)
+    # Prioridad: Score_Comercial descendente (propiedades más "vendibles" primero
+    # -- mejor precio/m² vs su zona, ficha completa, dato de precio confiable, y
+    # bono si es desarrollo propio). Si una propiedad no tiene score calculado
+    # (CSV viejo sin ponderar, o dato insuficiente), cae al final de su grupo de
+    # score y se ordena por precio como antes, para no perder el comportamiento
+    # ya probado en producción.
+    res.sort(key=lambda x: (-(x.get("Score_Comercial") or -1), x.get("Precio") or 0))
     mostradas = res[: min(int(limite or 5), 8)]
     # Se guarda la lista EXACTA mostrada, en el mismo orden, indexada 1..N
     ULTIMA_BUSQUEDA[phone] = mostradas
@@ -2043,11 +2062,16 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
         "tipo": p.get("Tipo"), "precio": p.get("Precio"),
         "recamaras": p.get("Recámaras"), "banos": p.get("Baños"),
         "m2": p.get("m²"), "liga": p.get("Liga"),
+        "score_comercial": p.get("Score_Comercial"),
     } for i, p in enumerate(mostradas)]
     resultado = {"total_coincidencias": len(res), "propiedades": out,
             "nota": "Guardado como la lista activa de este cliente. Si el cliente responde "
                     "'la 1/2/3...' usa seleccionar_de_lista con ese número — NUNCA inventes "
-                    "un nombre de propiedad que no esté en esta lista."}
+                    "un nombre de propiedad que no esté en esta lista. 'score_comercial' es un "
+                    "dato INTERNO tuyo (qué tan bien está de precio esa propiedad vs. su zona) — "
+                    "NUNCA lo menciones al cliente ni lo uses como argumento de venta explícito, "
+                    "solo úsalo para decidir cuál mencionar primero cuando varias califican igual."
+    }
     # HONESTIDAD DE MUNICIPIO: si el cliente dio un municipio + nombre de colonia/
     # desarrollo y no hubo NADA, puede ser que el cliente (o el propio MAX) haya
     # asumido mal el municipio -- fraccionamientos como "El Palomar" quedan en la
