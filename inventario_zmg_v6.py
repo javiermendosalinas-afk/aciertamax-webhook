@@ -27,6 +27,7 @@ PENDIENTE DE VERIFICAR (avísame si falla):
 """
 
 import csv
+import json
 import re
 import time
 import sys
@@ -91,74 +92,96 @@ def extraer_codigo_eb(img_alt, url):
 
 
 def parsear_tarjetas(html):
-    """Devuelve lista de dicts, una por propiedad, a partir del HTML de listado."""
+    """Devuelve lista de dicts, una por propiedad, a partir del HTML de listado.
+
+    CONFIRMADO CONTRA HTML REAL (no adivinado): cada propiedad vive en un
+    <div class="property-listing" data-lat="..." data-long="..."
+         data-popover-data='{"price":..., "title":..., "location":...,
+                              "bedrooms":..., "bathrooms":..., "size":...,
+                              "url":..., "image_url":...}'>
+      <div class="property-photo"><a><img alt="EB-XXXXXX" src="..."></a></div>
+      <div class="property-description">
+        ...
+        <div class="property-info">
+          <p class="property-type">Casa en condominio</p>
+          <p>4 recámaras, 4 baños</p>   (puede faltar si no aplica, ej. Edificio)
+          <p>508 m²</p>
+        </div>
+      </div>
+    </div>
+
+    El JSON de data-popover-data ya trae todo estructurado y es más
+    confiable que parsear el texto visible -- se usa como fuente principal.
+    """
     soup = BeautifulSoup(html, "html.parser")
     resultados = []
 
-    # Cada propiedad cuelga de un <a> que envuelve la imagen y apunta a /property/...
-    tarjetas = soup.select("a[href*='/property/']")
-    vistos = set()
-
-    for a in tarjetas:
-        href = a.get("href", "")
-        if href in vistos or "Ver detalles" == a.get_text(strip=True):
-            # evita duplicar: cada tarjeta aparece 2 veces (imagen + "Ver detalles")
-            pass
-        # Nos apoyamos en el contenedor padre para sacar todo el bloque de texto
-        contenedor = a.find_parent()
-        while contenedor and contenedor.name not in ("li", "div", "article"):
-            contenedor = contenedor.find_parent()
-        if not contenedor:
+    for tarjeta in soup.select("div.property-listing"):
+        raw = tarjeta.get("data-popover-data", "")
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
             continue
 
-        bloque_id = href
-        if bloque_id in vistos:
-            continue
+        precio, moneda = limpiar_precio(data.get("price", "") or "")
 
-        texto = contenedor.get_text("|", strip=True)
-        if "En Venta" not in texto and "En Renta" not in texto and "$" not in texto:
-            continue
+        m2 = None
+        size_texto = data.get("size") or ""
+        m2_match = re.search(r"[\d,]+(?:\.\d+)?", size_texto)
+        if m2_match:
+            try:
+                m2 = float(m2_match.group(0).replace(",", ""))
+            except ValueError:
+                m2 = None
 
-        vistos.add(bloque_id)
+        # Tipo limpio: viene aparte en el HTML visible (más confiable que
+        # tratar de separarlo del texto de "location", que a veces el
+        # tipo mismo contiene " en ", ej. "Casa en condominio").
+        tipo_tag = tarjeta.select_one("p.property-type")
+        tipo = tipo_tag.get_text(strip=True) if tipo_tag else ""
 
-        img = contenedor.find("img")
+        # Colonia y Municipio: "location" = "<Tipo> en <Colonia>, <Municipio>"
+        # -- se quita el prefijo de tipo ya conocido, luego se separa por
+        # la ÚLTIMA coma (algunas colonias también podrían traer comas).
+        location = data.get("location", "") or ""
+        resto = location
+        if tipo and resto.startswith(tipo):
+            resto = resto[len(tipo):].strip()
+            if resto.lower().startswith("en "):
+                resto = resto[3:].strip()
+        colonia, municipio_tarjeta = "", ""
+        if "," in resto:
+            colonia, municipio_tarjeta = resto.rsplit(",", 1)
+            colonia = colonia.strip()
+            municipio_tarjeta = municipio_tarjeta.strip()
+        else:
+            colonia = resto.strip()
+
+        # Código EB: primero del alt de la imagen (más directo), si no,
+        # del nombre de archivo de image_url.
+        img = tarjeta.select_one("img")
         img_alt = img.get("alt", "") if img else ""
+        codigo_eb = extraer_codigo_eb(img_alt, data.get("image_url", ""))
 
-        precio_match = re.search(r"\$\s*[\d,]+(?:\.\d+)?\s*(?:USD|MXN)?", texto)
-        precio_texto = precio_match.group(0) if precio_match else ""
-        precio, moneda = limpiar_precio(precio_texto)
-
-        m2_match = re.search(r"[\d,]+(?:\.\d+)?\s*m²", texto)
-        m2, _ = limpiar_m2(m2_match.group(0)) if m2_match else (None, False)
-
-        rec_match = re.search(r"(\d+)\s*rec[aá]maras?", texto)
-        recamaras = rec_match.group(1) if rec_match else ""
-
-        ban_match = re.search(r"(\d+)\s*baños?", texto)
-        banos = ban_match.group(1) if ban_match else ""
-
-        # COLONIA: el sitio trae un encabezado h5 (##### en markdown) justo
-        # debajo del título, formato "Colonia, Ciudad" -- separado del
-        # título libre. Es más confiable que tratar de adivinar la colonia
-        # dentro del título de texto libre.
-        colonia = ""
-        h5 = contenedor.find(["h5", "h6"])
-        if h5:
-            colonia_texto = h5.get_text(strip=True)
-            if "," in colonia_texto:
-                colonia = colonia_texto.split(",")[0].strip()
+        url_rel = data.get("url", "") or ""
+        href = url_rel if url_rel.startswith("http") else f"{BASE}{url_rel}"
 
         resultados.append({
             "href": href,
-            "texto_crudo": texto,
             "precio": precio,
             "moneda": moneda,
             "m2": m2,
-            "recamaras": recamaras,
-            "banos": banos,
+            "recamaras": data.get("bedrooms"),
+            "banos": data.get("bathrooms"),
             "colonia": colonia,
-            "codigo_eb": extraer_codigo_eb(img_alt, href),
-            "img_alt": img_alt,
+            "municipio_tarjeta": municipio_tarjeta,
+            "tipo": tipo,
+            "titulo": data.get("title", ""),
+            "codigo_eb": codigo_eb,
+            "lat": tarjeta.get("data-lat"),
+            "lon": tarjeta.get("data-long"),
         })
 
     return resultados
@@ -216,18 +239,24 @@ def main():
                 if f["precio"] is None or f["precio"] < piso:
                     continue
                 todas_las_filas.append({
-                    "Municipio": municipio.replace("-", " ").title(),
+                    # El municipio real de la tarjeta (si vino) es más
+                    # confiable que asumirlo del segmento de la URL que
+                    # se recorrió -- evita el bug ya visto antes de
+                    # "aviso_municipio_no_coincide" con datos cruzados.
+                    "Municipio": f["municipio_tarjeta"] or municipio.replace("-", " ").title(),
                     "Colonia": f["colonia"],
                     "Operación": operacion,
                     "Precio": f["precio"],
                     "Moneda": f["moneda"],
-                    "Título/Colonia": f["img_alt"] or f["href"],
-                    "Tipo": "",  # se puede enriquecer con una segunda pasada al detalle
+                    "Título/Colonia": f["titulo"] or f["href"],
+                    "Tipo": f["tipo"],
                     "Recámaras": f["recamaras"],
                     "Baños": f["banos"],
                     "m²": f["m2"],
                     "codigo_eb": f["codigo_eb"],
-                    "Liga": f"{BASE}{f['href']}" if f["href"].startswith("/") else f["href"],
+                    "Liga": f["href"],
+                    "lat": f["lat"],
+                    "lon": f["lon"],
                     "Fuente": "EasyBroker-aciertamax",
                     "Fecha_Corrida": fecha_corrida,
                 })
@@ -238,7 +267,7 @@ def main():
         sys.exit(1)
 
     columnas = ["Municipio", "Colonia", "Operación", "Precio", "Moneda", "Título/Colonia",
-                "Tipo", "Recámaras", "Baños", "m²", "codigo_eb", "Liga",
+                "Tipo", "Recámaras", "Baños", "m²", "codigo_eb", "Liga", "lat", "lon",
                 "Fuente", "Fecha_Corrida"]
 
     salida = f"inventario_zmg_{fecha_corrida}.csv"

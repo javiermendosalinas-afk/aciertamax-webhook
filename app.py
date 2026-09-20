@@ -18,6 +18,7 @@ Variables de entorno requeridas:
 
 import os
 import io
+import math
 import json
 import time
 import threading
@@ -1577,6 +1578,15 @@ TOOLS = [
          "renta_mensual": {"type": "number", "description": "Requerido si operacion=renta"},
          "precio_venta": {"type": "number", "description": "Requerido si operacion=venta"}},
       "required": ["operacion"]}},
+    {"name": "buscar_cerca_de_lugar",
+     "description": "Busca propiedades cerca de un punto de referencia conocido (landmark), ej. 'busco algo cerca de Andares' o 'cerca del Centro Magno, máximo 2km'. Usa las coordenadas GPS reales de cada propiedad (no una estimación) -- solo funciona bien si el inventario tiene coordenadas cargadas. Úsala cuando el cliente mencione un lugar/zona conocida en vez de una colonia formal, o pida explícitamente un radio de distancia.",
+     "input_schema": {"type": "object", "properties": {
+         "nombre_lugar": {"type": "string", "description": "Nombre del lugar de referencia, ej. 'Andares, Zapopan' -- incluir el municipio si se sabe ayuda a ubicarlo mejor."},
+         "radio_km": {"type": "number", "description": "Radio de búsqueda en km. Default 1.5 si el cliente no especifica."},
+         "operacion": {"type": "string", "enum": ["VENTA", "RENTA"]},
+         "tipo": {"type": "string"},
+         "precio_max": {"type": "number"}},
+      "required": ["nombre_lugar"]}},
     {
     "name": "precalificar_credito",
     "description": "Precalifica al prospecto para credito hipotecario y orienta sobre su capacidad real de compra. Usar cuando el cliente mencione credito, Infonavit, mensualidades, enganche, o cuando el presupuesto supere $1,500,000. Devuelve orientacion personalizada: tipo de credito viable, monto estimado, mensualidad aproximada, y si necesita asesor especializado.",
@@ -2145,6 +2155,12 @@ def run_tool(name, args, phone):
             out = calcular_costos_operacion(args.get("operacion", ""),
                                             args.get("renta_mensual"),
                                             args.get("precio_venta"))
+        elif name == "buscar_cerca_de_lugar":
+            out = buscar_cerca_de_lugar(phone, args.get("nombre_lugar", ""),
+                                        radio_km=args.get("radio_km", 1.5),
+                                        operacion=args.get("operacion"),
+                                        tipo=args.get("tipo"),
+                                        precio_max=args.get("precio_max"))
         else:
             out = {"error": f"herramienta desconocida {name}"}
     except Exception as e:
@@ -2907,6 +2923,93 @@ def _calcular_estrellas(p, precio_max=None, precio_min=None, recamaras_min=None,
             pass  # sin dato de m2: no se penaliza por falta de información
 
     return max(2.5, round(estrellas * 2) / 2)
+
+
+def _geocodificar_lugar(nombre_lugar):
+    """Geocodifica un punto de referencia (landmark) usando Nominatim/
+    OpenStreetMap, gratuito. Solo se usa para el PUNTO DE REFERENCIA
+    (ej. 'Andares') -- las propiedades ya traen su propia lat/lon reales
+    desde el scraper, no se geocodifican."""
+    try:
+        r = requests.get("https://nominatim.openstreetmap.org/search", params={
+            "q": f"{nombre_lugar}, Jalisco, México", "format": "json", "limit": 1,
+            "countrycodes": "mx",
+        }, headers={"User-Agent": "AciertaMaxBot/1.0 (javier.mendoza@acierta.com.mx)"}, timeout=10)
+        datos = r.json()
+        if datos:
+            return float(datos[0]["lat"]), float(datos[0]["lon"])
+    except Exception as e:
+        print(f"[MAX-GEO] Error geocodificando '{nombre_lugar}': {e}", flush=True)
+    return None, None
+
+
+def _distancia_km(lat1, lon1, lat2, lon2):
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2))
+         * math.sin(dlon / 2) ** 2)
+    return R * 2 * math.asin(math.sqrt(a))
+
+
+def buscar_cerca_de_lugar(phone, nombre_lugar, radio_km=1.5, operacion=None,
+                          tipo=None, precio_max=None, limite=8):
+    """Busca propiedades cerca de un punto de referencia (landmark), ej.
+    'Andares', 'Centro Magno', usando la lat/lon REAL de cada propiedad
+    (viene directo del scraper desde 2026-09, no es una estimación por
+    colonia). Solo funciona bien para propiedades scrapeadas después de
+    esa fecha -- las más viejas en el CSV pueden no traer coordenadas."""
+    lat_centro, lon_centro = _geocodificar_lugar(nombre_lugar)
+    if lat_centro is None:
+        return {"error": f"No pude ubicar '{nombre_lugar}'. Pide al cliente ser más "
+                         f"específico (ej. agregar el municipio) o usa buscar_inventario_zmg "
+                         f"por zona en su lugar."}
+
+    candidatas = []
+    for p in INVENTARIO_ZMG:
+        lat_p, lon_p = p.get("lat"), p.get("lon")
+        if not lat_p or not lon_p:
+            continue
+        try:
+            lat_p, lon_p = float(lat_p), float(lon_p)
+        except (TypeError, ValueError):
+            continue
+        dist = _distancia_km(lat_centro, lon_centro, lat_p, lon_p)
+        if dist <= float(radio_km):
+            if operacion and p.get("Operación", "").upper() != operacion.upper():
+                continue
+            if tipo and tipo.lower() not in (p.get("Tipo") or "").lower():
+                continue
+            if precio_max and (p.get("Precio") or 0) > float(precio_max):
+                continue
+            p2 = dict(p)
+            p2["_distancia_km"] = round(dist, 2)
+            candidatas.append(p2)
+
+    if not candidatas:
+        con_coords = sum(1 for p in INVENTARIO_ZMG if p.get("lat") and p.get("lon"))
+        return {"total_coincidencias": 0, "propiedades": [],
+                "nota": (f"No se encontró nada a {radio_km}km de {nombre_lugar}. "
+                        f"Solo {con_coords} de {len(INVENTARIO_ZMG)} propiedades del "
+                        f"inventario actual tienen coordenadas -- si el inventario no se "
+                        f"ha refrescado recientemente, puede que la zona buscada simplemente "
+                        f"no tenga cobertura de coordenadas todavía. Ofrece buscar_inventario_zmg "
+                        f"por municipio/colonia como alternativa.")}
+
+    candidatas.sort(key=lambda x: x["_distancia_km"])
+    mostradas = candidatas[:int(limite or 8)]
+    ULTIMA_BUSQUEDA[phone] = mostradas
+    out = [{
+        "numero": i + 1, "titulo": p.get("Título/Colonia"), "municipio": p.get("Municipio"),
+        "tipo": p.get("Tipo"), "precio": p.get("Precio"), "recamaras": p.get("Recámaras"),
+        "banos": p.get("Baños"), "m2": p.get("m²"), "liga": p.get("Liga"),
+        "distancia_km": p["_distancia_km"],
+    } for i, p in enumerate(mostradas)]
+    return {"total_coincidencias": len(candidatas), "propiedades": out,
+            "nota": (f"'{nombre_lugar}' ubicado en ({lat_centro:.4f}, {lon_centro:.4f}). "
+                    f"Guardado como lista activa -- usa seleccionar_de_lista con el número "
+                    f"si el cliente elige una.")}
 
 
 def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=None,

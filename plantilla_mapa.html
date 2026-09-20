@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Acierta Max — Busca en el mapa</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #666; --card: #fff;
+    --border: #e5e5e5; --accent: #d85a30;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14151a; --fg: #eee; --muted: #999; --card: #1e1f26; --border: #333;
+    }
+  }
+  :root[data-theme="dark"] { --bg: #14151a; --fg: #eee; --muted: #999; --card: #1e1f26; --border: #333; }
+  html { scroll-padding-top: env(safe-area-inset-top, 0px); }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, "Segoe UI", Arial, sans-serif;
+    background: var(--bg); color: var(--fg); height: 100%;
+  }
+  .topbar {
+    padding: 10px 16px; padding-top: calc(10px + env(safe-area-inset-top, 0px));
+    border-bottom: 1px solid var(--border); display: flex; align-items: center;
+    gap: 10px; flex-wrap: wrap; background: var(--bg);
+  }
+  .topbar h1 { font-size: 16px; font-weight: 600; margin: 0; flex: 1 1 auto; }
+  .topbar select, .topbar button {
+    font-size: 13px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--card); color: var(--fg);
+  }
+  .topbar button.primario { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  .contenedor { display: flex; height: calc(100vh - 54px); }
+  #mapa { flex: 1 1 auto; min-width: 0; }
+  #panel {
+    width: 320px; max-width: 40vw; overflow-y: auto; border-left: 1px solid var(--border);
+    padding: 12px; flex-shrink: 0;
+  }
+  #panel h2 { font-size: 14px; margin: 0 0 8px; color: var(--muted); font-weight: 600; }
+  .tarjeta {
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 8px; font-size: 13px;
+  }
+  .tarjeta .titulo { font-weight: 600; margin-bottom: 4px; }
+  .tarjeta .precio { color: var(--accent); font-weight: 700; margin-bottom: 4px; }
+  .tarjeta .detalle { color: var(--muted); font-size: 12px; }
+  .tarjeta a { color: var(--accent); text-decoration: none; font-size: 12px; }
+  .aviso { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .leaflet-popup-content { font-size: 13px; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>🏡 Acierta Max — Dibuja tu zona de búsqueda</h1>
+    <select id="filtroOperacion">
+      <option value="">Venta y Renta</option>
+      <option value="VENTA">Solo Venta</option>
+      <option value="RENTA">Solo Renta</option>
+    </select>
+    <select id="filtroTipo">
+      <option value="">Todos los tipos</option>
+    </select>
+    <button id="btnLimpiar">Limpiar área</button>
+  </div>
+  <div class="contenedor">
+    <div id="mapa"></div>
+    <div id="panel">
+      <h2 id="tituloResultados">Dibuja un área en el mapa</h2>
+      <div class="aviso" id="avisoInicial">
+        Usa el ícono de polígono (⬠) en la esquina superior izquierda del mapa
+        para dibujar el área donde quieres buscar. En cuanto cierres la figura,
+        aquí aparecerán las propiedades dentro de esa zona.
+      </div>
+      <div id="listaResultados"></div>
+    </div>
+  </div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
+<script>
+const PROPIEDADES = __DATOS_PROPIEDADES__;
+
+const mapa = L.map('mapa').setView([20.676, -103.38], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap',
+  maxZoom: 19
+}).addTo(mapa);
+
+const capaDibujo = new L.FeatureGroup();
+mapa.addLayer(capaDibujo);
+
+const controlDibujo = new L.Control.Draw({
+  draw: {
+    polygon: { shapeOptions: { color: '#d85a30' } },
+    polyline: false, rectangle: true, circle: false,
+    circlemarker: false, marker: false
+  },
+  edit: { featureGroup: capaDibujo, remove: true }
+});
+mapa.addControl(controlDibujo);
+
+const marcadores = [];
+const tiposSet = new Set();
+PROPIEDADES.forEach(p => { if (p.tipo) tiposSet.add(p.tipo); });
+const selTipo = document.getElementById('filtroTipo');
+[...tiposSet].sort().forEach(t => {
+  const op = document.createElement('option');
+  op.value = t; op.textContent = t;
+  selTipo.appendChild(op);
+});
+
+function formatoPrecio(p, moneda) {
+  if (!p) return 'Precio a consultar';
+  return '$' + Math.round(p).toLocaleString('es-MX') + ' ' + (moneda || 'MXN');
+}
+
+function pasaFiltros(p) {
+  const op = document.getElementById('filtroOperacion').value;
+  const tipo = document.getElementById('filtroTipo').value;
+  if (op && p.operacion !== op) return false;
+  if (tipo && p.tipo !== tipo) return false;
+  return true;
+}
+
+PROPIEDADES.forEach(p => {
+  if (!p.lat || !p.lon) return;
+  const m = L.marker([p.lat, p.lon]);
+  m.bindPopup(
+    '<b>' + (p.titulo || 'Propiedad') + '</b><br>' +
+    formatoPrecio(p.precio, p.moneda) + '<br>' +
+    (p.tipo || '') + (p.m2 ? ' · ' + Math.round(p.m2) + ' m²' : '') + '<br>' +
+    (p.liga ? '<a href="' + p.liga + '" target="_blank">Ver ficha</a>' : '')
+  );
+  m._prop = p;
+  m.addTo(mapa);
+  marcadores.push(m);
+});
+
+function puntoEnPoligono(lat, lon, poligonoLatLngs) {
+  let dentro = false;
+  const pts = poligonoLatLngs[0];
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const xi = pts[i].lat, yi = pts[i].lng;
+    const xj = pts[j].lat, yj = pts[j].lng;
+    const interseccion = ((yi > lon) !== (yj > lon)) &&
+      (lat < (xj - xi) * (lon - yi) / (yj - yi) + xi);
+    if (interseccion) dentro = !dentro;
+  }
+  return dentro;
+}
+
+function mostrarResultados(dentroDelArea) {
+  const lista = document.getElementById('listaResultados');
+  const titulo = document.getElementById('tituloResultados');
+  const aviso = document.getElementById('avisoInicial');
+  aviso.style.display = 'none';
+  const filtradas = dentroDelArea.filter(pasaFiltros);
+  titulo.textContent = filtradas.length + ' propiedades en esta zona';
+  lista.innerHTML = '';
+  if (filtradas.length === 0) {
+    lista.innerHTML = '<div class="aviso">Nada en esta zona con los filtros actuales.</div>';
+    return;
+  }
+  filtradas.forEach(p => {
+    const div = document.createElement('div');
+    div.className = 'tarjeta';
+    div.innerHTML =
+      '<div class="titulo">' + (p.titulo || 'Propiedad') + '</div>' +
+      '<div class="precio">' + formatoPrecio(p.precio, p.moneda) + '</div>' +
+      '<div class="detalle">' + (p.tipo || '') +
+        (p.recamaras ? ' · ' + p.recamaras + ' rec' : '') +
+        (p.banos ? ' · ' + p.banos + ' baños' : '') +
+        (p.m2 ? ' · ' + Math.round(p.m2) + ' m²' : '') + '</div>' +
+      (p.liga ? '<a href="' + p.liga + '" target="_blank">Ver ficha completa →</a>' : '');
+    lista.appendChild(div);
+  });
+}
+
+let ultimoPoligono = null;
+
+mapa.on(L.Draw.Event.CREATED, function (e) {
+  capaDibujo.clearLayers();
+  const capa = e.layer;
+  capaDibujo.addLayer(capa);
+  ultimoPoligono = capa.getLatLngs();
+  const dentro = PROPIEDADES.filter(p =>
+    p.lat && p.lon && puntoEnPoligono(p.lat, p.lon, ultimoPoligono));
+  mostrarResultados(dentro);
+});
+
+document.getElementById('btnLimpiar').addEventListener('click', () => {
+  capaDibujo.clearLayers();
+  ultimoPoligono = null;
+  document.getElementById('tituloResultados').textContent = 'Dibuja un área en el mapa';
+  document.getElementById('listaResultados').innerHTML = '';
+  document.getElementById('avisoInicial').style.display = 'block';
+});
+
+['filtroOperacion', 'filtroTipo'].forEach(id => {
+  document.getElementById(id).addEventListener('change', () => {
+    if (!ultimoPoligono) return;
+    const dentro = PROPIEDADES.filter(p =>
+      p.lat && p.lon && puntoEnPoligono(p.lat, p.lon, ultimoPoligono));
+    mostrarResultados(dentro);
+  });
+});
+</script>
+</body>
+</html>

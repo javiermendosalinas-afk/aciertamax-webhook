@@ -84,10 +84,13 @@ df = df.sort_values("Score_Comercial", ascending=False)
 
 columnas_salida = [
     "Score_Comercial", "Es_Desarrollo_Propio", "Precio_Confiable", "Municipio",
-    "Operación", "Tipo", "Título/Colonia", "Precio", "precio_m2",
+    "Colonia", "Operación", "Tipo", "Título/Colonia", "Precio", "precio_m2",
     "precio_m2_vs_mediana", "Recámaras", "Baños", "m²", "Completitud",
-    "codigo_eb", "Liga",
+    "codigo_eb", "Liga", "lat", "lon",
 ]
+# Compatibilidad: si el CSV de origen es de una corrida vieja sin Colonia/lat/lon,
+# no truena -- simplemente no las incluye en la salida.
+columnas_salida = [c for c in columnas_salida if c in df.columns]
 
 df[columnas_salida].to_csv("inventario_zmg_ponderado.csv", index=False)
 
