@@ -51,6 +51,7 @@ VENDEDORES = [
     {"nombre": "Ubaldo",  "phone": os.environ.get("VENDEDOR_UBALDO",  "3319128128")},
     {"nombre": "Leticia", "phone": os.environ.get("VENDEDOR_LETICIA", "3316183775")},
     {"nombre": "Gloria",  "phone": os.environ.get("VENDEDOR_GLORIA",  "3331270050")},
+    {"nombre": "Paola",   "phone": os.environ.get("VENDEDOR_PAOLA",   "3338998750")},
 ]
 JAVIER_PHONE = VENDEDORES[0]["phone"]  # siempre recibe copia de todo
 _TURNO_LOCK = threading.Lock()
@@ -64,6 +65,566 @@ def _siguiente_vendedor():
         v = VENDEDORES[_turno_actual[0] % len(VENDEDORES)]
         _turno_actual[0] += 1
     return v
+
+# ------------------------------------------------------------------
+# CRM AIDA — Atencion / Interes / Deseo / Accion
+# Un solo Sheet ("CRM AIDA") es la fuente de verdad de en qué fase va
+# cada cliente, quién lo lleva, y qué falta. Javier lo puede ver y
+# editar directamente en cualquier momento -- esa ES su supervisión.
+# ------------------------------------------------------------------
+CRM_HOJA = "CRM AIDA"
+CRM_COLUMNAS = ["FOLIO", "FASE", "TELEFONO_CLIENTE", "NOMBRE_CLIENTE",
+                "VENDEDOR", "VENDEDOR_PHONE", "PROPIEDADES",
+                "CONTACTO_CLIENTE", "CONTACTO_ORIGINADOR", "FECHA_HORA_CITA",
+                "VISITA_RESULTADO", "OPERACION", "DOCUMENTACION",
+                "CONCLUIDO", "CREADO", "ULTIMA_ACCION", "PROXIMO_SEGUIMIENTO_TS",
+                "VISITA_ACTIVA", "ULTIMA_UBICACION_TS", "ALERTA_ENVIADA",
+                "CARPETA_CLIENTE_URL", "INTENTOS_SEGUIMIENTO"]
+INTENTOS_ANTES_DE_ESCALAR = 3  # ~7 horas de silencio (3h + 2h + 2h) antes de avisarte a ti
+SEGURIDAD_HOJA = "Seguridad Vendedores"
+SEGURIDAD_COLUMNAS = ["FOLIO_CRM", "VENDEDOR", "VENDEDOR_PHONE", "FECHA_HORA",
+                      "LATITUD", "LONGITUD"]
+MINUTOS_ENTRE_UBICACION = 30  # cadencia pedida al vendedor
+MINUTOS_TOLERANCIA_ALERTA = 45  # margen antes de avisar a Javier (30 + colchón)
+
+# ------------------------------------------------------------------
+# REFERENCIAS A BETTY — responsable de crédito. Cuando un cliente va a
+# necesitar crédito bancario y/o Infonavit, se le avisa que sus datos se
+# comparten con Betty, se le pide a ella que lo contacte, y se da
+# seguimiento a AMBOS lados (Betty y, si hace falta, recordar al cliente)
+# hasta que quede contactado -- con copia a Javier siempre.
+# ------------------------------------------------------------------
+BETTY_HOJA = "Referencias Betty"
+BETTY_COLUMNAS = ["FOLIO", "TELEFONO_CLIENTE", "NOMBRE_CLIENTE", "NECESIDAD",
+                  "CONTACTO_BETTY", "CREADO", "ULTIMA_ACCION",
+                  "PROXIMO_SEGUIMIENTO_TS", "CONCLUIDO", "INTENTOS_SEGUIMIENTO"]
+
+def _betty_sheet():
+    import gspread
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_info(
+        json.loads(GOOGLE_CREDS_JSON),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+    try:
+        return libro.worksheet(BETTY_HOJA)
+    except Exception:
+        sh = libro.add_worksheet(title=BETTY_HOJA, rows=2000, cols=len(BETTY_COLUMNAS))
+        sh.append_row(BETTY_COLUMNAS)
+        return sh
+
+def referir_a_betty(phone_cliente, nombre_cliente, necesidad):
+    """Registra la referencia y avisa a Betty (con copia a Javier).
+    `necesidad` describe brevemente qué busca el cliente: 'crédito
+    bancario', 'Infonavit', 'Cofinavit', etc."""
+    if not (GOOGLE_CREDS_JSON and SHEET_ID):
+        return {"referido": False, "motivo": "Sheets no configurado"}
+    try:
+        sh = _betty_sheet()
+        n = len(sh.get_all_values())
+        folio_betty = f"BETTY-{n:04d}"
+        proximo = time.time() + (3 * 3600)  # primer check-in a Betty: 3 horas
+        sh.append_row([folio_betty, phone_cliente, nombre_cliente, necesidad,
+                       "Pendiente", hora_gdl(), hora_gdl(), str(proximo), "No", "0"])
+        msg_betty = (
+            f"🏦 NUEVO CLIENTE PARA CRÉDITO — {folio_betty}\n\n"
+            f"Cliente: {nombre_cliente}\n"
+            f"WhatsApp: {phone_cliente}\n"
+            f"Necesita: {necesidad}\n\n"
+            f"Por favor contáctalo. En unas horas te pregunto si ya lo lograste."
+        )
+        wati_send_text(BETTY_PHONE, msg_betty)
+        if JAVIER_PERSONAL:
+            wati_send_text(JAVIER_PERSONAL,
+                f"📋 COPIA — Se refirió a {nombre_cliente} ({phone_cliente}) con Betty "
+                f"para {necesidad}. Folio: {folio_betty}")
+        return {"referido": True, "folio_betty": folio_betty}
+    except Exception as e:
+        return {"referido": False, "motivo": str(e)[:200]}
+
+def _betty_buscar_pendiente(texto=""):
+    """Igual que con vendedores: si Betty tiene un solo caso activo, es
+    ese; si tiene varios, usa el folio si lo menciona; si no lo
+    menciona, regresa ambiguo en vez de adivinar."""
+    sh = _betty_sheet()
+    valores = sh.get_all_values()
+    if len(valores) < 2:
+        return None, None, []
+    headers = valores[0]
+    activos = []
+    for idx in range(len(valores) - 1, 0, -1):
+        fila = dict(zip(headers, valores[idx] + [""] * (len(headers) - len(valores[idx]))))
+        if fila.get("CONCLUIDO") != "Si":
+            activos.append((idx + 1, fila))
+    if not activos:
+        return None, None, []
+    m = re.search(r"BETTY-\d{4}", (texto or "").upper())
+    if m:
+        for fila_num, fila in activos:
+            if fila.get("FOLIO") == m.group(0):
+                return fila_num, fila, activos
+    if len(activos) == 1:
+        return activos[0][0], activos[0][1], activos
+    return None, None, activos
+
+def betty_procesar_respuesta(texto):
+    """Parser determinístico de la respuesta de Betty a un check-in."""
+    fila_num, registro, activos = _betty_buscar_pendiente(texto)
+    if not activos:
+        return False
+    if not registro:
+        lista = "\n".join(f"• {f.get('FOLIO')} — {f.get('NOMBRE_CLIENTE')}" for _, f in activos)
+        wati_send_text(BETTY_PHONE,
+            f"Tienes más de un caso pendiente, ¿a cuál te refieres? Contéstame con el folio:\n{lista}")
+        return True
+    sh = _betty_sheet()
+    col = {h: i + 1 for i, h in enumerate(BETTY_COLUMNAS)}
+    sh.update_cell(fila_num, col["INTENTOS_SEGUIMIENTO"], "0")
+    t = texto.strip().lower()
+
+    if any(p in t for p in ["si", "sí", "ya", "listo", "contactado", "lo contacté", "la contacté"]):
+        sh.update_cell(fila_num, col["CONTACTO_BETTY"], "Si")
+        sh.update_cell(fila_num, col["CONCLUIDO"], "Si")
+        sh.update_cell(fila_num, col["ULTIMA_ACCION"], hora_gdl())
+        wati_send_text(BETTY_PHONE, "Perfecto, gracias por confirmar 🙌")
+        if JAVIER_PERSONAL:
+            wati_send_text(JAVIER_PERSONAL,
+                f"✅ Betty ya contactó a {registro.get('NOMBRE_CLIENTE')} ({registro.get('FOLIO')})")
+        return True
+    if any(p in t for p in ["no", "no he podido", "aún no", "todavía no"]):
+        sh.update_cell(fila_num, col["CONTACTO_BETTY"], "No")
+        sh.update_cell(fila_num, col["ULTIMA_ACCION"], hora_gdl())
+        proximo = time.time() + (2 * 3600)
+        sh.update_cell(fila_num, col["PROXIMO_SEGUIMIENTO_TS"], str(proximo))
+        wati_send_text(BETTY_PHONE, "Entendido, te pregunto de nuevo en un rato. Gracias 👍")
+        return True
+    return False
+
+def _betty_revisar_seguimientos():
+    """Corre en el mismo ciclo de 1 hora que el resto del CRM."""
+    sh = _betty_sheet()
+    valores = sh.get_all_values()
+    if len(valores) < 2:
+        return
+    headers = valores[0]
+    col = {h: i + 1 for i, h in enumerate(headers)}
+    ahora = time.time()
+    for idx in range(1, len(valores)):
+        fila = dict(zip(headers, valores[idx] + [""] * (len(headers) - len(valores[idx]))))
+        if fila.get("CONCLUIDO") == "Si":
+            continue
+        try:
+            proximo = float(fila.get("PROXIMO_SEGUIMIENTO_TS") or 0)
+        except ValueError:
+            continue
+        try:
+            intentos = int(fila.get("INTENTOS_SEGUIMIENTO") or 0)
+        except ValueError:
+            intentos = 0
+        if intentos >= INTENTOS_ANTES_DE_ESCALAR:
+            if JAVIER_PERSONAL:
+                wati_send_text(JAVIER_PERSONAL,
+                    f"⚠️ Betty lleva {intentos} intentos sin responder sobre "
+                    f"{fila.get('NOMBRE_CLIENTE')} ({fila.get('FOLIO')}). Por favor interven directamente.")
+            continue
+        if proximo and ahora >= proximo:
+            wati_send_text(BETTY_PHONE,
+                f"Hola! Seguimiento {fila.get('FOLIO')} — ¿ya contactaste a "
+                f"{fila.get('NOMBRE_CLIENTE')} para lo de crédito? (sí/no)")
+            sh.update_cell(idx + 1, col["PROXIMO_SEGUIMIENTO_TS"], str(ahora + 2 * 3600))
+            sh.update_cell(idx + 1, col["INTENTOS_SEGUIMIENTO"], str(intentos + 1))
+
+def _crm_sheet():
+    """Abre (o crea, con encabezados) la pestaña CRM AIDA."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_info(
+        json.loads(GOOGLE_CREDS_JSON),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+    try:
+        return libro.worksheet(CRM_HOJA)
+    except Exception:
+        sh = libro.add_worksheet(title=CRM_HOJA, rows=2000, cols=len(CRM_COLUMNAS))
+        sh.append_row(CRM_COLUMNAS)
+        return sh
+
+def _crm_fila_a_dict(headers, fila):
+    return {headers[i]: (fila[i] if i < len(fila) else "") for i in range(len(headers))}
+
+def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion=""):
+    """Arranca el expediente CRM AIDA de un cliente que ya calificó
+    propiedades y quiere avanzar a visita. Asigna vendedor en turno,
+    le manda las fichas + claves EB, y programa el primer seguimiento
+    a 3 horas. `propiedades` es una lista de dicts {codigo_eb, titulo, liga}."""
+    if not (GOOGLE_CREDS_JSON and SHEET_ID):
+        return {"creado": False, "motivo": "Sheets no configurado"}
+    try:
+        sh = _crm_sheet()
+        vendedor = _siguiente_vendedor()
+        n = len(sh.get_all_values())
+        folio_crm = f"CRM-{n:04d}"
+        ahora = time.time()
+        proximo = ahora + (3 * 3600)  # primer check-in: 3 horas
+
+        lista_texto = "\n".join(
+            f"• {p.get('titulo','(sin título)')} — {p.get('codigo_eb','')} — {p.get('liga','')}"
+            for p in propiedades
+        )
+        codigos = ", ".join(p.get("codigo_eb", "") for p in propiedades if p.get("codigo_eb"))
+
+        # EXPEDIENTE DIGITAL: crea (o reutiliza) la carpeta definitiva del
+        # cliente, y si ya había una identificación guardada en la carpeta
+        # temporal por teléfono, la reubica aquí.
+        carpeta_url = ""
+        try:
+            carpeta_id, carpeta_url = _drive_carpeta_cliente(folio_crm, nombre_cliente)
+            m = memoria_leer(phone_cliente)
+            doc_url_previo = m.get("ULTIMO_DOCUMENTO_URL", "")
+            if doc_url_previo:
+                file_id = _drive_extraer_file_id(doc_url_previo)
+                if file_id:
+                    _drive_mover_archivo(file_id, carpeta_id)
+        except Exception as e:
+            print(f"[MAX-EXPEDIENTE] Error preparando carpeta de {nombre_cliente}: {e}", flush=True)
+
+        sh.append_row([
+            folio_crm, "Atencion", phone_cliente, nombre_cliente,
+            vendedor["nombre"], vendedor["phone"],
+            "; ".join(f"{p.get('codigo_eb','')}|{p.get('liga','')}" for p in propiedades),
+            "Pendiente", "Pendiente", "", "", operacion, "", "No",
+            hora_gdl(), hora_gdl(), str(proximo),
+            "No", "", "No",  # VISITA_ACTIVA, ULTIMA_UBICACION_TS, ALERTA_ENVIADA
+            carpeta_url, "0",
+        ])
+
+        msg = (
+            f"🆕 NUEVO CLIENTE ASIGNADO — {folio_crm}\n\n"
+            f"Cliente: {nombre_cliente} ({phone_cliente})\n"
+            f"Le interesan estas propiedades:\n{lista_texto}\n\n"
+            f"📋 Por favor:\n"
+            f"1. Busca estas claves en tu EasyBroker para identificar al originador: {codigos}\n"
+            f"2. Contacta al cliente para agendar visita.\n"
+            f"3. Contacta al originador de cada propiedad para confirmar disponibilidad.\n\n"
+            + (f"📁 Expediente del cliente (identificación y documentos): {carpeta_url}\n\n" if carpeta_url else "")
+            + f"En 3 horas te voy a preguntar cómo vas. Cualquier duda, contesta aquí mismo."
+        )
+        for p in propiedades:
+            if p.get("liga"):
+                try:
+                    enviar_ficha_liga(vendedor["phone"], p["liga"])
+                except Exception:
+                    pass
+        wati_send_text(vendedor["phone"], msg)
+        return {"creado": True, "folio_crm": folio_crm, "vendedor": vendedor["nombre"],
+                "carpeta_cliente": carpeta_url}
+    except Exception as e:
+        return {"creado": False, "motivo": str(e)[:200]}
+
+def crm_registrar_ubicacion(vendedor_phone, lat, lon):
+    """Registra un ping de ubicación de un vendedor en visita activa:
+    actualiza el reloj de 'última ubicación' (para que no se dispare una
+    alerta falsa) y deja el punto en el log de Seguridad Vendedores.
+    Si por alguna razón tiene más de un expediente con visita activa a
+    la vez, actualiza todos -- su ubicación física real es una sola, así
+    que aplica a cualquier expediente que la esté esperando."""
+    _, _, activos = _crm_buscar_por_vendedor_pendiente(vendedor_phone)
+    activos_en_visita = [(fn, f) for fn, f in activos if f.get("VISITA_ACTIVA") == "Si"]
+    if not activos_en_visita:
+        return False  # no hay visita activa registrada para este número
+    sh = _crm_sheet()
+    col = {h: i + 1 for i, h in enumerate(CRM_COLUMNAS)}
+    for fila_num, registro in activos_en_visita:
+        sh.update_cell(fila_num, col["ULTIMA_UBICACION_TS"], str(time.time()))
+        sh.update_cell(fila_num, col["ALERTA_ENVIADA"], "")
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        creds = Credentials.from_service_account_info(
+            json.loads(GOOGLE_CREDS_JSON),
+            scopes=["https://www.googleapis.com/auth/spreadsheets"])
+        libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+        try:
+            sh_seg = libro.worksheet(SEGURIDAD_HOJA)
+        except Exception:
+            sh_seg = libro.add_worksheet(title=SEGURIDAD_HOJA, rows=5000, cols=len(SEGURIDAD_COLUMNAS))
+            sh_seg.append_row(SEGURIDAD_COLUMNAS)
+        for _, registro in activos_en_visita:
+            sh_seg.append_row([registro.get("FOLIO"), registro.get("VENDEDOR"),
+                               vendedor_phone, hora_gdl(), lat, lon])
+    except Exception as e:
+        print(f"[MAX-SEGURIDAD] Error guardando log de ubicación: {e}", flush=True)
+    return True
+
+
+def _crm_revisar_seguridad_visitas():
+    """Corre con más frecuencia que el resto del CRM (cada 15 min, no cada
+    hora) porque un retraso largo en detectar 'el vendedor dejó de mandar
+    ubicación' no es aceptable tratándose de seguridad personal.
+    IMPORTANTE: la alerta se REPITE cada ~20 min mientras siga sin
+    ubicación -- no basta con avisar una sola vez y quedarse callado si
+    el vendedor sigue sin responder, eso sería justo el peor momento
+    para que el sistema se quede en silencio."""
+    sh = _crm_sheet()
+    valores = sh.get_all_values()
+    if len(valores) < 2:
+        return
+    headers = valores[0]
+    col = {h: i + 1 for i, h in enumerate(headers)}
+    ahora = time.time()
+    for idx in range(1, len(valores)):
+        fila = _crm_fila_a_dict(headers, valores[idx])
+        if fila.get("VISITA_ACTIVA") != "Si":
+            continue
+        try:
+            ultima = float(fila.get("ULTIMA_UBICACION_TS") or 0)
+        except ValueError:
+            continue
+        try:
+            ultima_alerta = float(fila.get("ALERTA_ENVIADA") or 0)
+        except ValueError:
+            ultima_alerta = 0
+        minutos_sin_ubicacion = (ahora - ultima) / 60
+        minutos_desde_alerta = (ahora - ultima_alerta) / 60 if ultima_alerta else 999
+        ya_hubo_alerta_antes = ultima_alerta > 0
+        if minutos_sin_ubicacion >= MINUTOS_TOLERANCIA_ALERTA and minutos_desde_alerta >= 20:
+            vendedor = fila.get("VENDEDOR")
+            vendedor_phone = fila.get("VENDEDOR_PHONE")
+            folio = fila.get("FOLIO")
+            wati_send_text(vendedor_phone,
+                f"📍 No he recibido tu ubicación en más de {MINUTOS_TOLERANCIA_ALERTA} min "
+                f"({folio}). ¿Todo bien? Mándamela en cuanto puedas.")
+            if JAVIER_PERSONAL:
+                if ya_hubo_alerta_antes:
+                    wati_send_text(JAVIER_PERSONAL,
+                        f"🚨 SIGUE SIN RESPONDER: {vendedor} lleva {int(minutos_sin_ubicacion)} min "
+                        f"sin mandar ubicación ({folio}) — ya se le insistió antes y sigue sin "
+                        f"contestar. Por favor contáctalo directamente o considera medidas adicionales.")
+                else:
+                    wati_send_text(JAVIER_PERSONAL,
+                        f"⚠️ ALERTA DE SEGURIDAD: {vendedor} no ha mandado ubicación en más de "
+                        f"{MINUTOS_TOLERANCIA_ALERTA} min durante una visita activa ({folio}). "
+                        f"Se le pidió confirmar. Por favor da seguimiento directo.")
+            sh.update_cell(idx + 1, col["ALERTA_ENVIADA"], str(ahora))
+
+
+def _crm_buscar_por_vendedor_pendiente(vendedor_phone, texto=""):
+    """Busca a qué expediente aplica la respuesta de este vendedor.
+    Si tiene un solo expediente activo, es ese. Si tiene varios y
+    mencionó el folio (ej. 'CRM-0007'), usa ese. Si tiene varios y NO
+    especificó folio, regresa ambiguo (fila_num=None) junto con la
+    lista completa de candidatos, para que quien llame le pida que
+    aclare -- adivinar aquí podría aplicar la respuesta al cliente
+    equivocado."""
+    sh = _crm_sheet()
+    valores = sh.get_all_values()
+    if len(valores) < 2:
+        return None, None, []
+    headers = valores[0]
+    activos = []
+    for idx in range(len(valores) - 1, 0, -1):  # más reciente primero
+        fila = _crm_fila_a_dict(headers, valores[idx])
+        if fila.get("VENDEDOR_PHONE") == vendedor_phone and fila.get("CONCLUIDO") != "Si":
+            activos.append((idx + 1, fila))
+    if not activos:
+        return None, None, []
+    m = re.search(r"CRM-\d{4}", (texto or "").upper())
+    if m:
+        for fila_num, fila in activos:
+            if fila.get("FOLIO") == m.group(0):
+                return fila_num, fila, activos
+    if len(activos) == 1:
+        return activos[0][0], activos[0][1], activos
+    return None, None, activos  # ambiguo: 2+ activos, sin folio especificado
+
+def crm_procesar_respuesta_vendedor(vendedor_phone, texto):
+    """Parser determinístico (NO usa el modelo) de la respuesta de un
+    vendedor a un check-in del CRM. Se mantiene simple y predecible a
+    propósito -- esto mueve el pipeline de ventas real, no conviene
+    dejarlo a interpretación libre de un LLM."""
+    fila_num, registro, activos = _crm_buscar_por_vendedor_pendiente(vendedor_phone, texto)
+    if not activos:
+        return False  # no hay expediente activo de este vendedor; no es una respuesta de CRM
+    if not registro:
+        # Ambiguo: 2+ clientes activos y no dijo a cuál se refiere --
+        # mejor preguntar que aplicarlo al cliente equivocado.
+        lista = "\n".join(f"• {f.get('FOLIO')} — {f.get('NOMBRE_CLIENTE')}" for _, f in activos)
+        wati_send_text(vendedor_phone,
+            f"Tienes más de un cliente activo, ¿a cuál te refieres? Contéstame incluyendo el folio:\n{lista}")
+        return True
+
+    t = texto.strip().lower()
+    sh = _crm_sheet()
+    headers = CRM_COLUMNAS
+    col = {h: i + 1 for i, h in enumerate(headers)}  # 1-indexed para gspread
+
+    def actualizar(campo, valor):
+        sh.update_cell(fila_num, col[campo], valor)
+
+    # El vendedor SÍ respondió (llegamos hasta aquí, no fue ambiguo) --
+    # se resetea el contador de intentos fallidos.
+    actualizar("INTENTOS_SEGUIMIENTO", "0")
+
+    fase = registro.get("FASE")
+
+    if fase == "Atencion":
+        cliente_ok = registro.get("CONTACTO_CLIENTE") == "Si"
+        originador_ok = registro.get("CONTACTO_ORIGINADOR") == "Si"
+
+        if "concluir" in t or "cancelar" in t or "no va a proceder" in t:
+            actualizar("CONCLUIDO", "Si")
+            actualizar("ULTIMA_ACCION", hora_gdl())
+            wati_send_text(vendedor_phone, "Entendido, marco este caso como concluido. Gracias por avisar 👍")
+            return True
+
+        # Si ya se le preguntó fecha de cita y esto parece una fecha/hora,
+        # tiene prioridad sobre el parseo de sí/no.
+        if cliente_ok and originador_ok and not registro.get("FECHA_HORA_CITA"):
+            actualizar("FECHA_HORA_CITA", texto.strip())
+            actualizar("ULTIMA_ACCION", hora_gdl())
+            proximo = time.time() + (2 * 3600)  # +2h después de la cita reportada, de forma simple
+            actualizar("PROXIMO_SEGUIMIENTO_TS", str(proximo))
+            # SEGURIDAD: activa el monitoreo de ubicación desde ahora. Es
+            # intencional que arranque de inmediato (no exactamente a la
+            # hora de la cita) -- más monitoreo nunca es un riesgo, menos sí.
+            actualizar("VISITA_ACTIVA", "Si")
+            actualizar("ULTIMA_UBICACION_TS", str(time.time()))
+            actualizar("ALERTA_ENVIADA", "")
+            wati_send_text(vendedor_phone,
+                f"Perfecto, quedó agendada la cita. Te voy a preguntar cómo salió un rato después. Éxito 🙌\n\n"
+                f"📍 Por tu seguridad: mándame tu ubicación (como mensaje de ubicación normal de "
+                f"WhatsApp) cada {MINUTOS_ENTRE_UBICACION} minutos mientras estés en la visita. "
+                f"Cuando termines, escríbeme 'terminé la visita'.")
+            return True
+
+        if "termine la visita" in t or "terminé la visita" in t or "termine visita" in t:
+            actualizar("VISITA_ACTIVA", "No")
+            actualizar("ULTIMA_ACCION", hora_gdl())
+            wati_send_text(vendedor_phone, "Perfecto, ya no te voy a pedir ubicación. Cuéntame cómo salió 🙌")
+            return True
+
+        cambios = []
+        if not cliente_ok and any(p in t for p in ["cliente si", "cliente sí", "ya contacte al cliente", "al cliente si", "al cliente sí"]):
+            actualizar("CONTACTO_CLIENTE", "Si")
+            cambios.append("cliente: contactado")
+        elif not cliente_ok and any(p in t for p in ["cliente no", "al cliente no"]):
+            actualizar("CONTACTO_CLIENTE", "No")
+
+        if not originador_ok and any(p in t for p in ["originador si", "originador sí", "ya conteste al originador", "al originador si", "al originador sí"]):
+            actualizar("CONTACTO_ORIGINADOR", "Si")
+            cambios.append("originador: contactado")
+        elif not originador_ok and any(p in t for p in ["originador no", "al originador no"]):
+            actualizar("CONTACTO_ORIGINADOR", "No")
+
+        # Respuesta simple "si"/"no" sin especificar a cuál -- se aplica a
+        # lo que siga pendiente, preguntando explícito si hay ambigüedad.
+        if not cambios and t in ("si", "sí", "ya", "listo"):
+            if not cliente_ok:
+                actualizar("CONTACTO_CLIENTE", "Si")
+                cambios.append("cliente: contactado")
+            elif not originador_ok:
+                actualizar("CONTACTO_ORIGINADOR", "Si")
+                cambios.append("originador: contactado")
+
+        actualizar("ULTIMA_ACCION", hora_gdl())
+        if cambios:
+            wati_send_text(vendedor_phone, f"Anotado: {', '.join(cambios)}. Gracias 👍")
+        else:
+            wati_send_text(vendedor_phone,
+                "Para anotarlo bien, contéstame así: 'cliente sí' / 'cliente no' / "
+                "'originador sí' / 'originador no' (uno o los dos).")
+        return True
+
+    if fase == "Interes":
+        actualizar("VISITA_RESULTADO", texto.strip()[:300])
+        actualizar("FASE", "Deseo")
+        actualizar("ULTIMA_ACCION", hora_gdl())
+        op = (registro.get("OPERACION") or "").lower()
+        if "renta" in op:
+            doc_msg = ("Para avanzar con la renta, pídele al cliente: identificación oficial, "
+                       "comprobante de ingresos (3-4x la renta), aval con propiedad en Jalisco, "
+                       "y referencias.")
+        else:
+            doc_msg = ("Para avanzar con la compra, pídele al cliente: identificación oficial, "
+                       "comprobante de ingresos, y si es crédito, precalificación bancaria o "
+                       "Infonavit vigente.")
+        wati_send_text(vendedor_phone, f"Gracias por el reporte. {doc_msg}")
+        return True
+
+    return False
+
+def _crm_pendientes_de_seguimiento():
+    """Regresa los registros CRM activos cuyo PROXIMO_SEGUIMIENTO_TS ya
+    se cumplió -- para que el hilo proactivo les mande el check-in."""
+    sh = _crm_sheet()
+    valores = sh.get_all_values()
+    if len(valores) < 2:
+        return []
+    headers = valores[0]
+    ahora = time.time()
+    pendientes = []
+    for idx in range(1, len(valores)):
+        fila = _crm_fila_a_dict(headers, valores[idx])
+        if fila.get("CONCLUIDO") == "Si":
+            continue
+        try:
+            proximo = float(fila.get("PROXIMO_SEGUIMIENTO_TS") or 0)
+        except ValueError:
+            continue
+        if proximo and ahora >= proximo:
+            pendientes.append((idx + 1, fila))
+    return pendientes
+
+def _crm_revisar_seguimientos():
+    """Manda el check-in correspondiente a cada registro vencido, y
+    reprograma el siguiente en 2 horas (según la cadencia que pidió
+    Javier: primer check a 3h, luego cada 2h hasta resolverse). Si el
+    vendedor no responde tras varios intentos, escala directo a Javier
+    en vez de seguir preguntando para siempre sin que nadie se entere."""
+    sh = _crm_sheet()
+    for fila_num, registro in _crm_pendientes_de_seguimiento():
+        vendedor_phone = registro.get("VENDEDOR_PHONE")
+        fase = registro.get("FASE")
+        col_proximo = CRM_COLUMNAS.index("PROXIMO_SEGUIMIENTO_TS") + 1
+        col_intentos = CRM_COLUMNAS.index("INTENTOS_SEGUIMIENTO") + 1
+        try:
+            intentos = int(registro.get("INTENTOS_SEGUIMIENTO") or 0)
+        except ValueError:
+            intentos = 0
+
+        if intentos >= INTENTOS_ANTES_DE_ESCALAR:
+            if JAVIER_PERSONAL:
+                wati_send_text(JAVIER_PERSONAL,
+                    f"⚠️ {registro.get('VENDEDOR')} lleva {intentos} intentos sin responder sobre "
+                    f"{registro.get('NOMBRE_CLIENTE')} ({registro.get('FOLIO')}). Por favor "
+                    f"interven directamente -- el sistema deja de insistirle solo hasta que tú actúes.")
+            # No se reprograma más -- queda esperando que Javier intervenga
+            # o que el vendedor responda espontáneamente (lo que sí se
+            # sigue procesando normal si escribe).
+            continue
+
+        if fase == "Atencion":
+            cliente_ok = registro.get("CONTACTO_CLIENTE") == "Si"
+            originador_ok = registro.get("CONTACTO_ORIGINADOR") == "Si"
+            if cliente_ok and originador_ok and registro.get("FECHA_HORA_CITA"):
+                # ya se agendó -- este check-in es el de "¿cómo salió la visita?"
+                col_fase = CRM_COLUMNAS.index("FASE") + 1
+                sh.update_cell(fila_num, col_fase, "Interes")
+                wati_send_text(vendedor_phone,
+                    f"Hola! ¿Cómo salió la visita con {registro.get('NOMBRE_CLIENTE','el cliente')}? "
+                    f"Cuéntame brevemente para dar seguimiento.")
+                sh.update_cell(fila_num, col_proximo, "")  # se reprograma solo si vuelve a fallar
+                sh.update_cell(fila_num, col_intentos, str(intentos + 1))
+                continue
+            faltante = []
+            if not cliente_ok: faltante.append("al cliente")
+            if not originador_ok: faltante.append("al originador")
+            wati_send_text(vendedor_phone,
+                f"Hola! Seguimiento de {registro.get('FOLIO')} — {registro.get('NOMBRE_CLIENTE')}. "
+                f"¿Ya contactaste {' y '.join(faltante)}?")
+            sh.update_cell(fila_num, col_proximo, str(time.time() + 2 * 3600))
+            sh.update_cell(fila_num, col_intentos, str(intentos + 1))
+
 CALENDLY_URL        = os.environ.get("CALENDLY_URL", "")
 CLAUDE_MODEL        = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
@@ -98,11 +659,54 @@ ORIGEN_POR_TELEFONO = {}  # phone -> sourceUrl (liga de Instagram) del primer co
 # cada vez que confirma qué publicación promociona qué propiedad — así,
 # aunque el botón de Instagram mande un mensaje genérico ("Quiero más
 # información"), MAX sabe identificar la propiedad exacta por el origen.
-MAPEO_POST_A_CAMPANA = {
+# Semilla inicial (por si el Sheet aún no tiene la pestaña, o Sheets no
+# responde) -- estos ya estaban confirmados antes de mover esto a Sheets.
+_MAPEO_POST_A_CAMPANA_SEMILLA = {
     "https://www.instagram.com/p/Da33OUcA8nj/": "solares_zona_real",  # EB-WJ9214, confirmado 19/07/2026
     "https://www.instagram.com/p/Da365rRg2VF/": "paneles_solares",     # EB-UO2612, confirmado 20/07/2026
-    "https://www.instagram.com/p/Da32rZ1AQIE/": "coto_encino",         # EB-UU6717, confirmado 15/08/2026
+    "https://www.instagram.com/p/DcAYjA8gdH2/": "bellavittoria",       # confirmado 05/09/2026 (caso Iván)
+    # Da32rZ1AQIE (Coto Encino, EB-UU6717) quitado el 05/09/2026: la casa ya se rentó.
 }
+_MAPEO_POST_CACHE = {"datos": None, "hora": 0}
+_MAPEO_POST_CACHE_SEGUNDOS = 600  # 10 minutos -- Javier puede editar el Sheet
+                                   # y el cambio se refleja solo, sin redeploy
+
+def obtener_mapeo_post_a_campana():
+    """Lee la pestaña 'Mapeo Posts' del Sheet (LIGA_INSTAGRAM | CAMPANA | NOTAS).
+    Javier agrega ahí cada post nuevo -- sin tocar código, sin redeploy.
+    Se cachea 10 min para no golpear la API de Sheets en cada mensaje de
+    WhatsApp. Si Sheets falla o la pestaña no existe aún, usa la semilla."""
+    ahora = time.time()
+    if _MAPEO_POST_CACHE["datos"] is not None and (ahora - _MAPEO_POST_CACHE["hora"]) < _MAPEO_POST_CACHE_SEGUNDOS:
+        return _MAPEO_POST_CACHE["datos"]
+    mapeo = dict(_MAPEO_POST_A_CAMPANA_SEMILLA)
+    try:
+        if GOOGLE_CREDS_JSON and SHEET_ID:
+            import gspread
+            from google.oauth2.service_account import Credentials
+            creds = Credentials.from_service_account_info(
+                json.loads(GOOGLE_CREDS_JSON),
+                scopes=["https://www.googleapis.com/auth/spreadsheets"])
+            libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+            try:
+                sh = libro.worksheet("Mapeo Posts")
+            except Exception:
+                sh = libro.add_worksheet(title="Mapeo Posts", rows=200, cols=3)
+                sh.append_row(["LIGA_INSTAGRAM", "CAMPANA", "NOTAS"])
+                # Se siembra el Sheet con lo que ya sabíamos, para que Javier
+                # vea el formato correcto y edite/agregue desde ahí en adelante.
+                for liga, campana in _MAPEO_POST_A_CAMPANA_SEMILLA.items():
+                    sh.append_row([liga, campana, ""])
+            filas = sh.get_all_values()[1:]  # sin encabezado
+            for fila in filas:
+                if len(fila) >= 2 and fila[0].strip() and fila[1].strip():
+                    mapeo[fila[0].strip()] = fila[1].strip()
+            print(f"[MAX] Mapeo Posts cargado desde Sheet: {len(mapeo)} posts", flush=True)
+    except Exception as e:
+        print(f"[MAX-ERROR] No se pudo leer 'Mapeo Posts' de Sheets, usando semilla: {e}", flush=True)
+    _MAPEO_POST_CACHE["datos"] = mapeo
+    _MAPEO_POST_CACHE["hora"] = ahora
+    return mapeo
 
 # phone -> nombre de campaña activa detectada en esta conversación (por texto
 # o por origen de Instagram). Se usa para darle contexto a Claude en turnos
@@ -206,6 +810,108 @@ def eb_detalle(public_id):
 def wati_headers():
     return {"Authorization": f"Bearer {WATI_API_KEY}"}
 
+# ------------------------------------------------------------------
+# EXPEDIENTE DIGITAL DEL CLIENTE — INE y documentos organizados en
+# Google Drive, una carpeta por cliente, enlazada desde el CRM AIDA.
+# ------------------------------------------------------------------
+DRIVE_CARPETA_RAIZ_NOMBRE = "Acierta Max — Expedientes de Clientes"
+DRIVE_COMPARTIR_CON = os.environ.get("DRIVE_COMPARTIR_CON_EMAIL", "")  # tu correo de Gmail/Google Workspace
+_drive_carpeta_raiz_id_cache = {"id": None}
+
+def _drive_client():
+    from googleapiclient.discovery import build
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_info(
+        json.loads(GOOGLE_CREDS_JSON),
+        scopes=["https://www.googleapis.com/auth/drive"])
+    return build("drive", "v3", credentials=creds)
+
+def _drive_obtener_o_crear_carpeta(nombre, carpeta_padre_id=None):
+    servicio = _drive_client()
+    query = (f"name = '{nombre}' and mimeType = 'application/vnd.google-apps.folder' "
+             f"and trashed = false")
+    if carpeta_padre_id:
+        query += f" and '{carpeta_padre_id}' in parents"
+    resultado = servicio.files().list(q=query, fields="files(id, name)").execute()
+    archivos = resultado.get("files", [])
+    if archivos:
+        return archivos[0]["id"]
+    metadata = {"name": nombre, "mimeType": "application/vnd.google-apps.folder"}
+    if carpeta_padre_id:
+        metadata["parents"] = [carpeta_padre_id]
+    carpeta = servicio.files().create(body=metadata, fields="id").execute()
+    nueva_id = carpeta["id"]
+    # CRÍTICO: una carpeta creada por el service account vive en SU propio
+    # Drive -- sin compartirla, nadie más (ni Javier) puede abrirla aunque
+    # tenga el link. Se comparte solo la carpeta RAÍZ (las subcarpetas de
+    # cliente heredan el permiso automáticamente al estar adentro).
+    if DRIVE_COMPARTIR_CON and not carpeta_padre_id:
+        try:
+            servicio.permissions().create(
+                fileId=nueva_id,
+                body={"type": "user", "role": "writer", "emailAddress": DRIVE_COMPARTIR_CON},
+                sendNotificationEmail=False).execute()
+        except Exception as e:
+            print(f"[MAX-EXPEDIENTE] No se pudo compartir la carpeta raíz con {DRIVE_COMPARTIR_CON}: {e}", flush=True)
+    return nueva_id
+
+def _drive_carpeta_cliente(folio, nombre_cliente):
+    """Regresa (carpeta_id, url) de la carpeta de este cliente, creándola
+    si no existe: Acierta Max — Expedientes de Clientes / FOLIO_Nombre/"""
+    if not _drive_carpeta_raiz_id_cache["id"]:
+        _drive_carpeta_raiz_id_cache["id"] = _drive_obtener_o_crear_carpeta(DRIVE_CARPETA_RAIZ_NOMBRE)
+    nombre_carpeta = f"{folio}_{nombre_cliente}"[:100].replace("/", "-")
+    carpeta_id = _drive_obtener_o_crear_carpeta(nombre_carpeta, _drive_carpeta_raiz_id_cache["id"])
+    url = f"https://drive.google.com/drive/folders/{carpeta_id}"
+    return carpeta_id, url
+
+def _wati_descargar_media(filename):
+    """Descarga un archivo de media que el cliente mandó por WhatsApp,
+    usando el endpoint getMedia de Wati. `filename` viene en el payload
+    del webhook cuando el mensaje es imagen/documento/audio."""
+    url = f"{WATI_BASE_URL}/api/v1/getMedia"
+    r = requests.get(url, headers=wati_headers(), params={"fileName": filename}, timeout=30)
+    if r.status_code != 200:
+        raise Exception(f"getMedia respondió {r.status_code}: {r.text[:200]}")
+    return r.content
+
+def _drive_mover_archivo(file_id, carpeta_destino_id):
+    """Mueve un archivo a otra carpeta (quita todos sus padres actuales,
+    pone solo el nuevo) -- para reubicar la identificación de la carpeta
+    temporal por teléfono a la carpeta definitiva FOLIO_Nombre."""
+    servicio = _drive_client()
+    archivo = servicio.files().get(fileId=file_id, fields="parents").execute()
+    padres_actuales = ",".join(archivo.get("parents", []))
+    servicio.files().update(fileId=file_id, addParents=carpeta_destino_id,
+                            removeParents=padres_actuales, fields="id, parents").execute()
+
+def _drive_extraer_file_id(url):
+    m = re.search(r"/d/([a-zA-Z0-9_-]+)", url) or re.search(r"[?&]id=([a-zA-Z0-9_-]+)", url)
+    return m.group(1) if m else None
+
+def guardar_documento_cliente(phone, filename, nombre_archivo_destino, folio=None, nombre_cliente=None, mimetype="image/jpeg"):
+    """Descarga un documento que mandó el cliente (ej. su identificación)
+    y lo sube a su carpeta en Drive. Si no hay folio/nombre todavía (el
+    CRM AIDA aún no existe -- la ID normalmente llega ANTES de agendar),
+    se guarda temporalmente y se resuelve la carpeta real cuando se
+    crea el expediente CRM (ver crm_crear_registro)."""
+    from googleapiclient.http import MediaInMemoryUpload
+    contenido = _wati_descargar_media(filename)
+    if not folio or not nombre_cliente:
+        # Aún no existe folio -- se guarda en una carpeta temporal por
+        # teléfono, y se mueve a la carpeta definitiva del cliente cuando
+        # se llame iniciar_recorrido_crm.
+        carpeta_id, url = _drive_carpeta_cliente("TEMP", phone)
+    else:
+        carpeta_id, url = _drive_carpeta_cliente(folio, nombre_cliente)
+    servicio = _drive_client()
+    media = MediaInMemoryUpload(contenido, mimetype=mimetype, resumable=False)
+    archivo = servicio.files().create(
+        body={"name": nombre_archivo_destino, "parents": [carpeta_id]},
+        media_body=media, fields="id, webViewLink").execute()
+    return {"file_id": archivo["id"], "carpeta_url": url,
+            "file_url": archivo.get("webViewLink", url)}
+
 def _normalizar_phone_wati(phone):
     """Wati necesita el numero con codigo de pais completo para mensajes salientes.
     Si el numero tiene 10 digitos (formato local), agrega 521 al inicio."""
@@ -214,12 +920,40 @@ def _normalizar_phone_wati(phone):
         return "521" + p
     return p
 
+JAVIER_PERSONAL = os.environ.get("JAVIER_PERSONAL_NUMBER", "5213325773277")
+BETTY_PHONE = os.environ.get("BETTY_PHONE_NUMBER", "3311964181")  # responsable de crédito
+
+def _reenviar_a_javier(phone, cliente=None, max_resp=None):
+    """Copia en tiempo real a Javier de lo que escribe el cliente y/o lo
+    que responde MAX, con el teléfono del cliente. Se engancha una sola
+    vez dentro de wati_send_text para cubrir TODAS las rutas de salida
+    (fast-path de ficha, campaña, respuesta general del modelo, seguimiento
+    proactivo) sin tener que tocar cada punto de envío por separado."""
+    if not JAVIER_PERSONAL:
+        return
+    destino = _normalizar_phone_wati(phone)
+    # Nunca reenviarse a sí mismo (evitaría un bucle infinito), ni
+    # duplicar lo que ya se manda explícito al número de aviso del equipo.
+    if destino == _normalizar_phone_wati(JAVIER_PERSONAL) or destino == _normalizar_phone_wati(HUMAN_HANDOFF or ""):
+        return
+    try:
+        if cliente:
+            wati_send_text(JAVIER_PERSONAL, f"📩 Cliente {phone}:\n{cliente[:500]}")
+        if max_resp:
+            wati_send_text(JAVIER_PERSONAL, f"🤖 MAX → {phone}:\n{max_resp[:500]}")
+    except Exception as e:
+        print(f"[MAX-FORWARD] Error reenviando a Javier: {e}", flush=True)
+
+
 def wati_send_text(phone, text):
     phone_norm = _normalizar_phone_wati(phone)
     url = f"{WATI_BASE_URL}/api/v1/sendSessionMessage/{phone_norm}"
     r = requests.post(url, headers=wati_headers(),
                       params={"messageText": text}, timeout=20)
-    return r.status_code in (200, 201)
+    ok = r.status_code in (200, 201)
+    if ok:
+        _reenviar_a_javier(phone, max_resp=text)
+    return ok
 
 def wati_send_image(phone, image_url, caption=""):
     phone = _normalizar_phone_wati(phone)
@@ -368,7 +1102,7 @@ HOJA_MEMORIA = "Memoria Prospectos"
 HOJA_SEGUIMIENTO = "Seguimiento Vendedor"
 COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
                 "PRESUPUESTO","ZONA","RECAMARAS","PROPIEDADES_VISTAS",
-                "ULTIMA_INTERACCION","ESTADO","NOTAS_COACHING"]
+                "ULTIMA_INTERACCION","ESTADO","NOTAS_COACHING","ULTIMO_DOCUMENTO_URL"]
 
 def _sheets_client():
     """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
@@ -430,7 +1164,7 @@ def memoria_guardar(phone, **kwargs):
         else:
             nueva_fila = [kwargs.get(c,"") for c in COLS_MEMORIA]
             sh.append_row(nueva_fila)
-        MEMORIA_CACHE[phone] = kwargs
+        MEMORIA_CACHE[phone] = {**MEMORIA_CACHE.get(phone, {}), **kwargs}
         print(f"[MAX-MEM] Memoria guardada para {phone}: {list(kwargs.keys())}", flush=True)
     except Exception as e:
         print(f"[MAX-MEM] Error guardando memoria {phone}: {e}", flush=True)
@@ -646,12 +1380,77 @@ def registrar_contacto_bitacora(phone, primer_mensaje, detectado=""):
     except Exception as e:
         return {"registrado": False, "motivo": str(e)[:200]}
 
+def _calcular_score_lead(nombre="", interes="", operacion="", presupuesto="", zona="", notas=""):
+    """Score 0-100 de 'qué tan caliente' está el lead, para que el equipo
+    sepa a quién llamar primero. Basado en señales que YA se capturan hoy
+    en la conversación -- no requiere preguntarle nada nuevo al cliente."""
+    score = 0
+    texto = f"{interes} {notas}".lower()
+    if nombre and nombre.strip().lower() not in ("", "(sin nombre, pidió '*')"):
+        score += 15
+    if operacion:
+        score += 10
+    if presupuesto:
+        score += 20
+    if zona:
+        score += 15
+    if any(p in texto for p in ["credito", "crédito", "infonavit", "banco", "contado"]):
+        score += 15
+    if any(p in texto for p in ["urgente", "hoy", "ya", "pronto", "esta semana", "inmediato"]):
+        score += 10
+    if any(p in texto for p in ["visita", "cita", "ver la propiedad", "conocerla"]):
+        score += 15
+    return min(score, 100)
+
+
+def _actualizar_score_lead_si_sube(folio, nuevo_score):
+    """Si el lead ya estaba registrado y ahora sabemos más de él (dio su
+    presupuesto, mencionó crédito, pidió visita...), subimos su score en
+    el Sheet -- nunca lo bajamos, porque una respuesta corta de un turno
+    no debe hacer parecer más frío a un lead que ya se sabía interesado."""
+    if not (GOOGLE_CREDS_JSON and SHEET_ID):
+        return
+    import gspread
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_info(
+        json.loads(GOOGLE_CREDS_JSON),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+    sh = libro.worksheet("Leads MAX")
+    headers = sh.row_values(1)
+    col_score = None
+    for idx, h in enumerate(headers, start=1):
+        if h.strip().upper().startswith("SCORE_LEAD"):
+            col_score = idx
+            break
+    if col_score is None:
+        return  # se crea la columna en el próximo registro nuevo, no aquí
+    celda_folio = sh.find(folio, in_column=1)
+    if not celda_folio:
+        return
+    actual = sh.cell(celda_folio.row, col_score).value
+    try:
+        actual = int(actual) if actual else 0
+    except ValueError:
+        actual = 0
+    if nuevo_score > actual:
+        sh.update_cell(celda_folio.row, col_score, nuevo_score)
+
+
 def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
                    zona="", notas=""):
+    nuevo_score = _calcular_score_lead(nombre, interes, operacion, presupuesto, zona, notas)
     # Candado: si este número ya se registró en las últimas 24h,
-    # regresar el mismo folio en vez de crear otro.
+    # regresar el mismo folio en vez de crear otro -- pero SÍ actualizamos
+    # su score si con esta nueva info se ve más caliente que antes (p.ej.
+    # ya dijo su presupuesto o que quiere crédito, cosa que no sabíamos
+    # cuando se registró la primera vez).
     previo = REGISTRADOS.get(phone)
     if previo and time.time() - previo[1] < 86400:
+        try:
+            _actualizar_score_lead_si_sube(previo[0], nuevo_score)
+        except Exception:
+            pass  # el folio ya es válido aunque falle solo la actualización de score
         return {"registrado": False, "folio": previo[0],
                 "nota": "ya estaba registrado; usa este folio, no lo registres de nuevo"}
     if not (GOOGLE_CREDS_JSON and SHEET_ID):
@@ -668,14 +1467,24 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
         try:
             sh = libro.worksheet("Leads MAX")
         except Exception:
-            sh = libro.add_worksheet(title="Leads MAX", rows=1000, cols=10)
+            sh = libro.add_worksheet(title="Leads MAX", rows=1000, cols=11)
             sh.append_row(["FOLIO", "FECHA Y HORA", "WHATSAPP", "NOMBRE",
                            "OPERACIÓN", "INTERÉS", "PRESUPUESTO", "ZONA",
-                           "NOTAS", "ESTATUS"])
+                           "NOTAS", "ESTATUS", "SCORE_LEAD (0-100)"])
         n = len(sh.get_all_values())  # incluye encabezado
         folio = f"ACIERTA-{n:04d}"
         sh.append_row([folio, hora_gdl(), phone, nombre,
-                       operacion, interes, presupuesto, zona, notas, "NUEVO"])
+                       operacion, interes, presupuesto, zona, notas, "NUEVO", nuevo_score])
+        # Si el Sheet ya existía de antes de este cambio, la columna
+        # SCORE_LEAD puede no estar en el encabezado -- la agregamos sola,
+        # sin tocar ninguna columna ni dato que ya tuvieras.
+        try:
+            headers = sh.row_values(1)
+            if not any(h.strip().upper().startswith("SCORE_LEAD") for h in headers):
+                sh.update_cell(1, len(headers) + 1, "SCORE_LEAD (0-100)")
+                sh.update_cell(n + 1, len(headers) + 1, nuevo_score)
+        except Exception:
+            pass  # el lead ya quedó guardado aunque esto falle
         REGISTRADOS[phone] = (folio, time.time())
         try:
             _actualizar_bitacora_con_lead(phone, folio, operacion, interes)
@@ -697,6 +1506,15 @@ def avisar_humano(phone, resumen, categoria=None):
     if HUMAN_HANDOFF:
         wati_send_text(HUMAN_HANDOFF,
             f"{encabezado}\nCliente: {phone}\n{resumen[:600]}")
+    # Los casos especiales NO son leads buscando propiedad -- que el hilo
+    # proactivo nunca les mande "¿quieres ver opciones frescas?" (suena
+    # fuera de lugar para un broker de otra inmobiliaria, un reclamo de
+    # propietario, o alguien buscando trabajo aquí).
+    if categoria in etiquetas:
+        try:
+            memoria_guardar(phone, ESTADO=f"No-Molestar-{categoria}")
+        except Exception:
+            pass  # no debe tumbar el aviso ya enviado
     return {"avisado": bool(HUMAN_HANDOFF)}
 
 # ------------------------------------------------------------------
@@ -714,7 +1532,7 @@ TOOLS = [
          "limite": {"type": "number", "description": "máx 10, default 5"}},
       "required": ["operacion"]}},
     {"name": "enviar_ficha",
-     "description": "Envía al cliente la ficha comercial de una propiedad (foto + datos + liga). Úsala cuando el cliente muestre interés en una propiedad específica de los resultados. Máximo 3 fichas por turno.",
+     "description": "Envía al cliente la ficha comercial de una propiedad (foto + datos + liga). Úsala cuando el cliente muestre interés en una propiedad específica de los resultados. Máximo 5 fichas por turno.",
      "input_schema": {"type": "object", "properties": {
          "public_id": {"type": "string"}}, "required": ["public_id"]}},
     {"name": "enviar_ficha_campana",
@@ -729,6 +1547,7 @@ TOOLS = [
          "operacion": {"type": "string", "enum": ["VENTA", "RENTA"], "description": "VENTA o RENTA — indícalo siempre que sepas cuál busca el cliente"},
          "precio_min": {"type": "number"}, "precio_max": {"type": "number"},
          "recamaras_min": {"type": "number"},
+         "banos_min": {"type": "number", "description": "Baños mínimos. Igual que recámaras: si una propiedad tiene menos, no se excluye -- baja sus estrellas de match en vez de desaparecer de los resultados."},
          "m2_min": {"type": "number", "description": "Metros cuadrados mínimos. Para tipo=terreno, este campo SÍ representa la superficie del terreno (no construcción) — el dato existe en el inventario para la gran mayoría de los terrenos, así que SIEMPRE puedes filtrar por rango de metros cuando el cliente pida un terreno de tantos a tantos m². Para casa/departamento representa m² de construcción."},
          "m2_max": {"type": "number", "description": "Metros cuadrados máximos. Mismo criterio que m2_min: para terrenos es superficie de terreno, para casa/depto es construcción."},
          "niveles": {"type": "number", "description": "Número de plantas/niveles de la CASA (1 = una sola planta, 2 = dos plantas, etc.). Solo aplica a tipo=casa. El dato no está disponible para todas las casas — si no viene marcado en el registro, la propiedad NO se incluye en el resultado cuando se filtra por este parámetro (a diferencia de otros filtros, aquí es mejor excluir que arriesgar mostrar una de 2 plantas cuando piden 1). Si el cliente pide explícitamente 'una sola planta' o 'un nivel', usa niveles=1."},
@@ -738,7 +1557,7 @@ TOOLS = [
          "limite": {"type": "number", "description": "máx 8, default 5"}},
       "required": []}},
     {"name": "enviar_ficha_liga",
-     "description": "Envía al cliente la ficha (foto + datos + liga oficial) de una propiedad de la bolsa ZMG. Usa la liga EXACTA que regresó buscar_inventario_zmg o seleccionar_de_lista. Máximo 3 por turno.",
+     "description": "Envía al cliente la ficha (foto + datos + liga oficial) de una propiedad de la bolsa ZMG. Usa la liga EXACTA que regresó buscar_inventario_zmg o seleccionar_de_lista. Máximo 5 por turno.",
      "input_schema": {"type": "object", "properties": {
          "liga": {"type": "string"}}, "required": ["liga"]}},
     {"name": "seleccionar_de_lista",
@@ -751,6 +1570,13 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "nombre": {"type": "string", "enum": ["renta"], "description": "Identificador interno de la guía"}},
       "required": ["nombre"]}},
+    {"name": "calcular_costos_operacion",
+     "description": "Da el presupuesto aproximado de gastos y la lista de documentos necesarios para formalizar una renta (con las cifras fijas de Acierta Max: depósito, anticipado, investigación, Justicia Alternativa IJA oficina 161) o una compra-venta ante notario (rango de referencia general). Úsala en cuanto el cliente pregunte cuánto necesita para rentar/comprar, o qué documentos hacen falta, o cuando ya esté avanzado en el proceso de agendar/formalizar.",
+     "input_schema": {"type": "object", "properties": {
+         "operacion": {"type": "string", "enum": ["renta", "venta"]},
+         "renta_mensual": {"type": "number", "description": "Requerido si operacion=renta"},
+         "precio_venta": {"type": "number", "description": "Requerido si operacion=venta"}},
+      "required": ["operacion"]}},
     {
     "name": "precalificar_credito",
     "description": "Precalifica al prospecto para credito hipotecario y orienta sobre su capacidad real de compra. Usar cuando el cliente mencione credito, Infonavit, mensualidades, enganche, o cuando el presupuesto supere $1,500,000. Devuelve orientacion personalizada: tipo de credito viable, monto estimado, mensualidad aproximada, y si necesita asesor especializado.",
@@ -784,6 +1610,11 @@ TOOLS = [
             "es_conyugal": {
                 "type": "boolean",
                 "description": "True si aplica con conyugue o segundo titular"
+            },
+            "historial_crediticio": {
+                "type": "string",
+                "enum": ["bueno", "regular", "malo", "no se"],
+                "description": "Autoreportado por el cliente si lo menciona espontáneamente (nunca preguntes de forma que suene a interrogatorio invasivo). Solo ajusta la simulación -- MAX nunca consulta el Buró de Crédito real."
             }
         },
         "required": ["ingreso_mensual", "precio_objetivo"]
@@ -839,22 +1670,43 @@ TOOLS = [
          "zona": {"type": "string"}, "notas": {"type": "string"}},
       "required": ["nombre", "operacion"]}},
     {"name": "avisar_humano",
-     "description": "Notifica al equipo humano de Acierta. Úsala cuando: el cliente pida hablar con una persona, quiera agendar visita, esté listo para ofertar, haga una pregunta legal/fiscal que no debes responder, o sea uno de los CASOS ESPECIALES (reclamo de propietario, agente que quiere colaborar, interés en trabajar aquí).",
+     "description": "Notifica al equipo humano de Acierta. Úsala cuando: el cliente haga una pregunta legal/fiscal que no debes responder, o sea uno de los CASOS ESPECIALES (reclamo de propietario, agente que quiere colaborar, interés en trabajar aquí). Para cuando el cliente quiera AGENDAR VISITA a una o varias propiedades ya vistas, usa iniciar_recorrido_crm en su lugar -- ese sí arranca el seguimiento completo con el vendedor asignado.",
      "input_schema": {"type": "object", "properties": {
          "resumen": {"type": "string", "description": "Resumen del cliente y su necesidad"},
          "categoria": {"type": "string", "enum": ["RECLAMO-PROPIETARIO", "COLABORACION-AGENTE", "BOLSA-TRABAJO"],
                       "description": "Solo para casos especiales; omite este campo en leads normales de compra/venta/renta"}},
       "required": ["resumen"]}},
+    {"name": "iniciar_recorrido_crm",
+     "description": "Arranca el CRM AIDA: asigna un vendedor en turno, le manda las fichas de las propiedades que el cliente quiere visitar (con sus claves EB) y le pide contactar al cliente y al originador de cada una. Úsala en cuanto el cliente confirme que quiere agendar visita a una o varias propiedades de tu última búsqueda -- necesitas ya su nombre (si no lo tienes, pídeselo primero). Después de esto, el seguimiento lo continúa el sistema con el vendedor automáticamente -- solo dile al cliente que un asesor lo va a contactar pronto.",
+     "input_schema": {"type": "object", "properties": {
+         "numeros": {"type": "array", "items": {"type": "integer"},
+                    "description": "Los números (1, 2, 3...) de la lista de la última búsqueda que el cliente quiere visitar. Si dijo 'la 1 y la 3', manda [1, 3]."},
+         "operacion": {"type": "string", "enum": ["venta", "renta"]}},
+      "required": ["numeros", "operacion"]}},
+    {"name": "referir_a_betty",
+     "description": "Refiere al cliente con Betty, la responsable de crédito, cuando quede claro que va a necesitar crédito bancario y/o Infonavit para su compra. Antes de usarla SIEMPRE avísale al cliente explícitamente que vas a compartir sus datos con Betty y pídele que por favor atienda su mensaje o llamada. Necesitas ya el nombre del cliente.",
+     "input_schema": {"type": "object", "properties": {
+         "nombre": {"type": "string"},
+         "necesidad": {"type": "string", "description": "Breve: 'crédito bancario', 'Infonavit', 'Cofinavit', etc."}},
+      "required": ["nombre", "necesidad"]}},
 ]
 
 SYSTEM_PROMPT = """Eres MAX, el asesor digital de Acierta Max, inmobiliaria con 20 años de experiencia en la Zona Metropolitana de Guadalajara, dirigida por Javier Mendoza. Conversas por WhatsApp en español mexicano, cálido, profesional y BREVE (máximo 3-4 líneas por mensaje; WhatsApp no es para párrafos largos).
+
+CONSISTENCIA DE GÉNERO: te presentas como "el asesor digital" (masculino). Cuando hables de ti mismo en primera persona con adjetivos, usa concordancia masculina ("tengo que ser honesto", "quedé atento", "estoy seguro") — nunca femenina ("honesta", "atenta", "segura"). Es un detalle pequeño pero rompe la consistencia del personaje si se mezcla.
+
+FORMATO DE NEGRITAS EN WHATSAPP: WhatsApp usa un solo asterisco a cada lado para negritas (*así*), nunca dos (**así**) como en Markdown normal. Cuando uses negritas, cierra siempre el par en la MISMA palabra o frase corta — nunca empieces una negrita en "MAX" y la cierres varias palabras después en "Acierta Max", porque eso deja asteriscos sueltos y se ve mal. Ejemplo correcto: "Soy *MAX*, asesor digital de *Acierta Max*." Si tienes duda de si vas a cerrar bien el par, mejor no uses negritas en esa frase.
+
+PRINCIPIOS DE SERVICIO (de los libros de Pedro Trueba de Torres, referencia obligada del sector en México — AMPI):
+- "El negocio inmobiliario no es de inmuebles, es de personas" (Servicios Inmobiliarios 360°): antes de mandar otra ficha técnica, pregúntate si estás tratando con la persona que tienes enfrente o solo despachando un catálogo. Un cliente que repite la misma pregunta dos veces está diciendo que no se siente escuchado — para ahí y atiende la persona, no el trámite.
+- "El servicio lo califica el cliente, no el asesor" (Consejos que Valen Oro): no basta con que tú sientas que ya respondiste bien — si el cliente pide que le repitas algo, o insiste en la misma zona/pregunta, eso ES la señal de que el servicio no está llegando como debería, incorpóralo de inmediato en tu siguiente respuesta.
+- Objetivos claros, no aspiraciones vagas (10 El Asesor Inmobiliario Perfecto): empuja siempre hacia lo concreto — no dejes a un cliente en "estoy viendo opciones", ayúdalo a aterrizar una zona, un presupuesto, una fecha real.
+- El valor de la exclusiva (Las Exclusivas): si alguien escribe queriendo VENDER o RENTAR su propia propiedad (no comprar), no lo trates como un lead más de búsqueda — explícale brevemente el valor de que Acierta Max maneje su propiedad en exclusiva (mayor exposición, un solo punto de contacto, proceso ordenado) y usa avisar_humano para que el equipo comercial le dé seguimiento con el detalle de comisión y condiciones.
 """ + (f"""
 AGENDA DE CITAS: cuando el cliente quiera agendar cita o visita, además de avisar_humano, compártele esta liga para que elija directamente el día y la hora en la agenda: {CALENDLY_URL} — dile: "Puedes apartar aquí mismo el día y la hora que mejor te acomoden".
 """ if CALENDLY_URL else "") + """
 
 TU MISIÓN: entender qué necesita el cliente, mostrarle las mejores opciones del inventario y conectarlo con un asesor humano en el momento correcto. Cliente-céntrico siempre: estás del lado del cliente.
-
-SI EL CLIENTE QUIERE COMPRAR (o rentar para sí) — FLUJO COMPRADOR (eres su COACH, no un buscador — usa SPIN Compacto):
 
 REGLA #0 — NOMBRE PRIMERO (MAXIMA PRIORIDAD, sin excepcion):
 En tu SEGUNDO mensaje (despues del saludo inicial), SIEMPRE pregunta el nombre del cliente
@@ -896,7 +1748,7 @@ REFERENCIAS A "ESTA/ESE" PROPIEDAD SIN CONTEXTO CLARO: si el cliente dice algo c
 
 CASOS ESPECIALES (no son leads normales — trátalos con tacto y escala siempre, con la categoría correcta en avisar_humano):
 - "Esta propiedad es mía" / reclamo de propietario sobre un anuncio: discúlpate, NO discutas ni confirmes ni niegues nada tú mismo. Di algo como "Gracias por avisarnos, esto lo debe atender directamente nuestro equipo." Usa avisar_humano con categoria="RECLAMO-PROPIETARIO" y resumen claro (qué anuncio, qué dijo).
-- "Soy agente inmobiliario" / quiere colaborar o co-brokear: agradece el interés profesional, sé cordial, y usa avisar_humano con categoria="COLABORACION-AGENTE" — esto lo atiende Javier o el equipo comercial, no lo resuelvas tú con detalles de comisión.
+- "Soy agente inmobiliario" / quiere colaborar o co-brokear: agradece el interés profesional, sé cordial, y usa avisar_humano con categoria="COLABORACION-AGENTE" — esto lo atiende Javier o el equipo comercial, no lo resuelvas tú con detalles de comisión. NO esperes la frase literal "soy agente": reconoce también las señales típicas de un broker preguntando para un cliente suyo — menciona el nombre de OTRA inmobiliaria/empresa, dice "tengo un cliente interesado" (en vez de "estoy interesado"), o pregunta directamente "¿cuánto comparten de comisión?". Si ves 2 o más de estas señales, trátalo como broker aunque nunca diga la palabra "agente". Cuando sea broker, NO le mandes la ficha completa de venta al público ni le preguntes "¿es para vivir o invertir?" — eso es para compradores finales, no para un colega. Responde con algo breve y profesional confirmando que sí está disponible (si lo sabes) y que el equipo comercial le da el detalle de comisión y condiciones.
 - "Quiero trabajar en Acierta Max" / bolsa de trabajo: agradece el interés, pide nombre y área de interés si lo comparte con gusto, pero NO hagas entrevista ni preguntas de reclutamiento. Usa avisar_humano con categoria="BOLSA-TRABAJO" para que RH lo contacte.
 
 CIERRE HUMANIZADO — solo cuando ACABAS de ejecutar avisar_humano o registrar_lead con éxito en este mismo turno (nunca antes, nunca como promesa adelantada): agradece la preferencia y anuncia que un coach certificado le llama en breve, con calidez y SIN repetir siempre la misma frase — varía entre algo como "Gracias por tu confianza en Acierta Max 🙏 En breve un coach certificado te contacta para acompañarte en todo el proceso." o "Qué gusto que nos elijas. Un coach del equipo te escribe en breve para seguir contigo." Mantén el tono cálido y breve — no es un mensaje aparte largo, cabe en el mismo cierre de la conversación.
@@ -906,17 +1758,45 @@ CIERRE HUMANIZADO — solo cuando ACABAS de ejecutar avisar_humano o registrar_l
 SI EL CLIENTE QUIERE VENDER O RENTAR SU PROPIEDAD — FLUJO CAPTACIÓN (muy valioso):
 1. Agradece la confianza y aclara con amabilidad: "Trabajamos exclusivamente la Zona Metropolitana de Guadalajara (Guadalajara, Zapopan, Tlaquepaque, Tonalá, Tlajomulco y El Salto)". Si su propiedad está fuera de la ZMG, agradece y ofrece registrar sus datos por si podemos referirlo.
 2. Si está en la ZMG: comenta los beneficios de Acierta Max — 20+ años de experiencia, agentes certificados y miembros AMPI, miles de operaciones, opinión de valor profesional SIN COSTO, difusión en los principales portales y aciertamax.com, acompañamiento completo y seguro hasta la firma.
-3. Pide con gusto una CITA: "¿Nos permites una cita para conocer tu propiedad y entregarte una opinión de valor sin costo ni compromiso? ¿Qué día te acomoda?"
-4. Pregunta lo esencial (una a la vez): tipo de propiedad, colonia/municipio, y si es para venta o renta.
-5. Pide su nombre → registrar_lead con operacion="CAPTACIÓN-VENDEDOR" y todo en notas → SIEMPRE avisar_humano (prioridad máxima) y confirma que un asesor certificado lo contacta hoy mismo.
+3. Explícale sobre el contrato, con naturalidad (no lo satures de tecnicismos): "Trabajamos con un contrato de intermediación registrado ante PROFECO conforme a la NOM-247-SE-2021 — es la norma que protege al propietario y al comprador en este tipo de operaciones, con condiciones claras desde el inicio." Si pregunta detalles legales específicos del contrato que no sepas, no inventes — dile que el asesor se los explica a detalle.
+4. Avísale explícitamente: "Para conocer tu propiedad y platicarte el proceso completo, te va a llamar directamente Javier Mendoza, nuestro Director General." (Es un compromiso real de Javier, dilo tal cual, no lo generalices a "un asesor" en este caso específico.)
+5. Pide con gusto una CITA: "¿Nos permites una cita para conocer tu propiedad y entregarte una opinión de valor sin costo ni compromiso? ¿Qué día te acomoda?"
+6. Pregunta lo esencial (una a la vez): tipo de propiedad, colonia/municipio, y si es para venta o renta.
+7. Pide su nombre → registrar_lead con operacion="CAPTACIÓN-VENDEDOR" y todo en notas → SIEMPRE avisar_humano (prioridad máxima) y confirma que Javier Mendoza lo contacta hoy mismo.
 NUNCA des un precio o valor de su propiedad por chat: eso lo entrega el asesor con la opinión de valor profesional.
 
 MODELO DE CALIFICACIÓN (obtén esto conversando con naturalidad, NO como interrogatorio):
+0. VENTA CRUZADA: aunque el cliente haya llegado buscando COMPRAR o RENTAR para sí mismo, en algún punto natural de la conversación pregúntale también si tiene una propiedad propia que quiera poner en venta o renta — mucha gente que compra también vende algo. Si dice que sí, cambia al FLUJO CAPTACIÓN de arriba para esa parte (puedes atender ambos hilos con el mismo cliente).
 1. QUERER: ¿busca comprar o RENTAR? (distingue SIEMPRE; si dice rentar, alquilar, arrendar → operacion=renta)
 2. PODER: presupuesto aproximado; si compra, ¿contado, crédito bancario o Infonavit?
-3. CÓMO: ¿para vivir, invertir, oficina?
-4. CUÁNDO: ¿urge o está explorando?
+3. CÓMO: ¿para vivir, invertir, oficina? Si surge con naturalidad, indaga el motivo de fondo (mudanza de trabajo, creció la familia, separación, inversión para renta/plusvalía) — entender el "por qué" real te ayuda a mostrar las propiedades resaltando lo que a ESE cliente le importa, no una lista genérica de características.
+4. CUÁNDO: no te quedes en "urge o explora" — precisa el plazo real: ¿en cuánto tiempo necesita decidir/mudarse? Esto define qué tan caliente está el lead: menos de 30 días = caliente (prioridad alta, avísale al vendedor que es urgente), 30-90 días = tibio (seguimiento normal), más de 90 días = frío (nútrelo con información, sin presionar por visita inmediata).
 5. DÓNDE: zona de la ZMG (Guadalajara, Zapopan, Tlaquepaque, Tonalá, Tlajomulco).
+6. TIPO Y TAMAÑO: ¿casa, departamento o terreno? ¿Cuántas recámaras y cuántos baños necesita? ¿Necesita cajón de estacionamiento, y para cuántos autos? Estas preguntas SÍ hazlas explícitas, no las asumas.
+7. SEGÚN EL TIPO, una pregunta más específica (esto ayuda a la conversación aunque hoy NO podamos verificarlo en el inventario, ver aviso abajo):
+   - Si es CASA: "¿te gustaría que esté dentro de un coto o fraccionamiento privado con casa club?"
+   - Si es DEPARTAMENTO: "¿buscas amenidades como alberca, gimnasio, roof garden?"
+8. CENTRO DE DECISIÓN: antes de agendar una visita o avanzar a una oferta, pregúntale con naturalidad si alguien más participa en la decisión (cónyuge, socio, familiar) — "¿alguien más te va a acompañar a decidir esto, o la decisión es solo tuya?". Si hay más gente involucrada, anótalo en las notas del lead para que el vendedor sepa con quién más debe coordinarse antes de cerrar.
+
+MANEJO DE OBJECIONES (usa esto para no quedarte sin qué decir cuando el cliente dude — adapta el tono, no lo repitas como guion memorizado):
+- "Solo quiero ver precio y ubicación, no quiero dar mi presupuesto": encuadra el valor antes de insistir — "Para no hacerte perder tiempo con opciones que no te convienen, nada más necesito confirmar un par de datos, así te muestro solo lo que sí aplica para ti."
+- "El precio me parece elevado para la zona": no discutas el precio tú mismo — ofrece mostrarle 1-2 opciones similares en la misma zona para que compare, y si insiste, usa avisar_humano para que el asesor entre con el argumento de mercado.
+- "Quiero pensarlo unos días": respeta la decisión, nunca presiones — pero sí puedes mencionar con honestidad si esa propiedad tiene alta demanda (score comercial alto) o si hay otros interesados, sin inventar urgencia falsa.
+- "No me da confianza tal cláusula del contrato" (temas de contrato, PROFECO, condiciones): nunca inventes una explicación legal — dile que el asesor se la explica a detalle y usa avisar_humano.
+
+
+
+SISTEMA DE ESTRELLAS PARA MOSTRAR OPCIONES: cuando uses buscar_inventario_zmg, pásale precio_max, recamaras_min y banos_min con lo que el cliente te dio — la herramienta regresa TODAS las opciones relevantes (no solo las que calzan exacto), cada una con 'estrellas_match' de 2.5 a 5 (en medias estrellas). La PRIMERA vez que muestres varias opciones en una conversación, explícale al cliente el sistema con algo como: "Te voy a mostrar varias opciones, calificadas de 2.5 a 5 estrellas según qué tan bien cumplen lo que buscas — así ves todo el panorama, no solo lo que calza perfecto." Las estrellas SOLO consideran presupuesto/recámaras/baños/m² porque son los únicos datos que el sistema confirma. Si el cliente pidió coto con casa club, alberca, gimnasio u otra amenidad (paso 7 arriba), esas NUNCA entran en las estrellas — dilo aparte y con honestidad: "esa característica en particular no la tengo confirmada en el sistema, la ficha oficial o el asesor te la confirman."
+
+DE LAS ESTRELLAS A LA VISITA (CRM AIDA): en cuanto el cliente diga que quiere visitar/agendar una o varias de las propiedades que le mostraste (ej. "la 1 y la 3, sí quiero verlas", "me interesa la segunda"):
+1. SEGURIDAD PRIMERO — pídele nombre completo y una foto de su identificación oficial, con esta explicación honesta (adapta el tono, no la copies literal siempre igual): "Antes de agendar, por tu seguridad y la del asesor que te va a atender, te pedimos tu nombre completo y una foto de tu identificación oficial — así también te localizamos más rápido si hace falta. Acierta Max certifica a todos sus asesores, y tu información se maneja de forma confidencial." Si el cliente pregunta por qué o se siente incómodo, sé transparente: es una medida de seguridad real, dado el contexto de inseguridad hacia agentes inmobiliarios en Guadalajara — no es un trámite arbitrario.
+2. Si el cliente manda una foto pero es de la propiedad, un comprobante u otra cosa que no sea una identificación, dilo con amabilidad y vuelve a pedir específicamente la identificación.
+3. Con nombre + identificación recibidos (aunque no puedas leer el contenido de la foto, su sola llegada cuenta como cumplido), usa iniciar_recorrido_crm con los números elegidos — esto asigna un vendedor real y arranca el seguimiento completo, tú ya no tienes que preguntar más al respecto.
+4. Después de llamarla, dile al cliente algo breve como "Listo, un asesor de nuestro equipo te contacta en breve para coordinar la visita" — NO le des detalles del proceso interno (vendedor asignado, originador, etc.), eso es trabajo de MAX y del equipo, no del cliente.
+
+SI AL CLIENTE NO LE GUSTÓ LA PROPIEDAD (tras verla o tras revisar la ficha): pregúntale qué no le convenció (precio, zona, tamaño, algo específico) y usa esa respuesta para buscar y ofrecer otra alternativa de inmediato con buscar_inventario_zmg — no dejes la conversación ahí. Guarda en las notas del lead (registrar_lead / notas) qué se le ofreció y por qué no le gustó, para que quede historial de las alternativas ya exploradas con este cliente.
+
+SI AL CLIENTE SÍ LE GUSTÓ LA PROPIEDAD Y HAY ACUERDOS (precio, condiciones, fecha de entrega, forma de pago, etc.): anota TODOS los acuerdos con precisión en las notas (registrar_lead) y confirma con el cliente sus datos completos (nombre completo, teléfono, correo si lo tiene) porque el equipo le va a enviar una minuta por escrito con lo acordado — dile explícitamente: "Voy a dejar anotado todo lo que acordamos, y el equipo te manda una minuta por escrito para que quede constancia." NUNCA inventes o asumas un acuerdo que el cliente no confirmó explícitamente.
 
 PROPIEDADES EN CAMPAÑA — LAS 5 SON EXCLUSIVAS DE ACIERTA MAX (no compartidas con otros asesores; el sistema ya envió la ficha oficial si el cliente la mencionó; tú continúa calificando y resolviendo dudas SOLO con estos datos). Por ser exclusivas, empuja con más confianza hacia la cita/visita — no hay competencia de otro asesor por la misma propiedad:
 1. THE BLOCK EASY LIVING (también le dicen "el de ITESO"): depto en RENTA $18,000/mes + mant. $2,800. 1 recámara, 2 baños, 65 m², piso 4, amueblado disponible. Periférico Sur 8331, El Mante, Tlaquepaque, junto a ITESO. No aceptan mascotas. Liga oficial: https://www.aciertamax.com/property/iteso-amplio-departamento-nuevo-vista-panoramica-roof-garden-ubicacion-premium?agent=javier373&lang=es
@@ -1115,7 +1995,11 @@ si es probable que sea una propiedad con anos de uso.
 - Si la conversación parece continuar algo que no recuerdas, discúlpate brevemente y confirma: "Para atenderte bien, ¿me confirmas si buscas comprar/rentar, o vender tu propiedad?"
 - Un saludo inicial cálido con tu nombre (MAX de Acierta Max) solo la primera vez.
 - Usa buscar_propiedades en cuanto sepas operación + una pista más (zona o presupuesto). No esperes a tener todo.
-- Ofrece fichas: "¿Te mando la ficha con fotos?" y usa enviar_ficha si acepta (máx 3 por turno).
+- Ofrece fichas: "¿Te mando la ficha con fotos?" y usa enviar_ficha si acepta (máx 5 por turno).
+- NO EXISTE MATCH EXACTO EN SU ZONA/PRESUPUESTO → ACTÚA, NO SOLO PREGUNTES: si el cliente ya te dio zona + presupuesto + tipo y no hay opciones exactas, NO te quedes solo preguntando "¿quieres ampliar zona?" — busca de inmediato en zonas cercanas o tipos similares dentro de su presupuesto con buscar_inventario_zmg/buscar_propiedades, y manda hasta 5 fichas de esas alternativas ya con enviar_ficha, explicando brevemente por qué se las mandas ("no encontré exacto en X, pero esto está cerca y sí calza con tu presupuesto"). Si el cliente ya rechazó o ignoró la misma pregunta de "¿ampliar zona?" una vez, la segunda vez actúa directo en vez de preguntar de nuevo — un cliente que sigue insistiendo en lo mismo dos o tres veces está a punto de irse, no de responder otra pregunta.
+- OFRECE CRÉDITO/INFONAVIT DE FORMA PROACTIVA, no solo cuando lo mencionen: en cuanto sepas que el cliente busca COMPRAR (no rentar) y tengas su presupuesto aproximado, pregúntale si va con crédito bancario, Infonavit, o contado — no esperes a que él lo saque primero. Muchos clientes no saben que pueden pedir esa ayuda si nadie se las ofrece. Si dice que sí tiene interés o duda sobre crédito/Infonavit, usa precalificar_credito de inmediato.
+- LÍMITES EN CRÉDITO — CLARIFICADOS: (1) MAX NUNCA consulta el Buró de Crédito directamente ni tiene acceso a ese sistema — pero el CLIENTE sí puede bajar su propio reporte en www.burodecredito.com.mx y mandártelo por WhatsApp como documento; si lo hace, agradécele y avísale que quedó guardado en su expediente para que el asesor/Betty lo revisen, tú no lo interpretes ni le digas un veredicto sobre su historial. (2) El NSS (número de seguro social) el cliente sí te lo puede dar por WhatsApp directamente si quiere — anótalo en las notas del lead, pero MAX nunca lo usa para entrar al portal de Infonavit; eso lo hace un asesor humano o el propio cliente. (3) precalificar_credito SIEMPRE es una simulación con datos que el cliente te da de palabra — jamás la presentes como una aprobación real o un número garantizado; incluye siempre el mensaje de "disclaimer_obligatorio" que te regresa la herramienta, no lo omitas ni lo resumas a la ligera.
+- REFERENCIA CON BETTY (crédito): en cuanto quede claro que el cliente va a necesitar crédito bancario y/o Infonavit para avanzar (después de la simulación con precalificar_credito, o si él mismo lo pide), avísale EXPLÍCITAMENTE antes de hacer nada: "Voy a compartir tus datos con Betty, nuestra especialista en crédito, para que te contacte y te ayude con el trámite — por favor atiende su mensaje o llamada." Solo después de decir esto, usa referir_a_betty. Nunca la refieras sin avisarle primero al cliente. Si el comprador pregunta qué documentos necesita, NUNCA le des tú una lista — dile que eso varía según el banco/institución que elija, y que Betty se la va a dar exacta cuando lo contacte.
 - En cuanto el cliente diga su NOMBRE (aunque no tenga zona ni presupuesto aun), llama registrar_lead DE INMEDIATO con lo que tengas. No esperes tener operacion+interes+zona completos — un registro parcial (nombre + telefono) es mejor que perder el lead. Si despues da mas datos, avisar_humano los incluira.
 - Cliente quiere visita, ofertar, o pide humano → avisar_humano Y dile que un asesor le escribe en breve.
 - NUNCA des asesoría legal, fiscal o hipotecaria definitiva; NUNCA negocies precios; NUNCA inventes propiedades ni datos: solo lo que devuelven las herramientas.
@@ -1209,22 +2093,17 @@ def run_tool(name, args, phone):
             ), daemon=True).start()
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
-            # Sincronizar con memoria persistente Y notificar al vendedor
-            # SIN importar si es lead nuevo o ya existia — el vendedor siempre debe saber
+            # Sincronizar con memoria persistente. YA NO se notifica al
+            # vendedor aquí -- ese aviso (con el cuestionario viejo de 6
+            # preguntas) quedó reemplazado por el CRM AIDA nuevo, que se
+            # dispara con iniciar_recorrido_crm cuando el cliente ya eligió
+            # propiedades específicas para visitar (etapa más útil para el
+            # vendedor que un lead recién llegado sin rumbo claro todavía).
             nombre_reg = args.get("nombre","")
             folio_reg = out.get("folio","")
             if nombre_reg and folio_reg:
-                # IMPORTANTE: guardar en memoria y notificar en el MISMO thread,
-                # en ese orden. Antes eran dos threads paralelos independientes
-                # sin garantia de orden -- si la notificacion corria ANTES de que
-                # terminara el guardado, leia memoria vieja/incompleta y el correo
-                # salia contradictorio (ej. "COMPRA" en el titulo pero "Operacion:
-                # renta" en el perfil, porque leyo el OPERACION de un momento
-                # anterior de la conversacion). Con un solo thread secuencial,
-                # memoria_guardar SIEMPRE termina (incluyendo el cache) antes de
-                # que seguimiento_registrar_vendedor lea la memoria.
-                def _guardar_y_notificar(_phone=phone, _nombre=nombre_reg,
-                                          _folio=folio_reg, _args=dict(args)):
+                def _guardar_memoria(_phone=phone, _nombre=nombre_reg,
+                                      _args=dict(args)):
                     memoria_guardar(
                         phone=_phone,
                         NOMBRE=_nombre,
@@ -1235,11 +2114,37 @@ def run_tool(name, args, phone):
                         NOTAS_COACHING=_args.get("notas",""),
                         ESTADO="Lead-registrado"
                     )
-                    seguimiento_registrar_vendedor(_phone, _nombre, _folio)
-                threading.Thread(target=_guardar_y_notificar, daemon=True).start()
-                print(f"[MAX-SEG] Notificacion vendedor disparada para {phone} / {folio_reg}", flush=True)
+                threading.Thread(target=_guardar_memoria, daemon=True).start()
+                print(f"[MAX-SEG] Lead {folio_reg} registrado para {phone} (sin cuestionario viejo -- CRM AIDA lo toma después)", flush=True)
         elif name == "avisar_humano":
             out = avisar_humano(phone, args.get("resumen", ""), args.get("categoria"))
+        elif name == "iniciar_recorrido_crm":
+            numeros = args.get("numeros") or []
+            ultima = ULTIMA_BUSQUEDA.get(phone) or []
+            seleccionadas = []
+            for n in numeros:
+                idx = int(n) - 1
+                if 0 <= idx < len(ultima):
+                    p = ultima[idx]
+                    seleccionadas.append({
+                        "codigo_eb": p.get("codigo_eb", ""),
+                        "titulo": p.get("Título/Colonia", ""),
+                        "liga": p.get("Liga", ""),
+                    })
+            if not seleccionadas:
+                out = {"error": "No encontré esas propiedades en la última búsqueda de este cliente. "
+                                "Vuelve a mostrarle opciones con buscar_inventario_zmg antes de agendar."}
+            else:
+                m = memoria_leer(phone)
+                nombre_cliente = m.get("NOMBRE", "") or "Cliente"
+                out = crm_crear_registro(phone, nombre_cliente, seleccionadas,
+                                         operacion=args.get("operacion", ""))
+        elif name == "referir_a_betty":
+            out = referir_a_betty(phone, args.get("nombre", ""), args.get("necesidad", ""))
+        elif name == "calcular_costos_operacion":
+            out = calcular_costos_operacion(args.get("operacion", ""),
+                                            args.get("renta_mensual"),
+                                            args.get("precio_venta"))
         else:
             out = {"error": f"herramienta desconocida {name}"}
     except Exception as e:
@@ -1736,17 +2641,6 @@ CAMPANAS = {
                    "Acierta Max — Socio AMPI, certificado ✅"),
         "seguimiento": "¿Te gustaría agendar una visita? 🙌",
     },
-    "coto_encino": {
-        "claves": ["coto encino", "eb-uu6717"],
-        "foto": None,
-        "caption": "🏡 CASA EN RENTA — Coto Encino, Valle Imperial\n📍 Coto Encino, Valle Imperial, Zapopan\n💰 RENTA $18,000/mes",
-        "cuerpo": ("🛏 3 recámaras · 🛁 3 baños · 📐 151 m²\n\n"
-                   "✨ Distribución funcional, comunidad residencial tranquila y segura.\n\n"
-                   "🔗 Ficha completa con fotos:\nhttps://www.aciertamax.com/property/casa-en-renta-dentro-de-coto-encino-en-valle-imperial?agent=javier373&lang=es\n\n"
-                   "🔵 Propiedad compartida. Renta y disponibilidad sujetas a confirmación.\n"
-                   "Acierta Max — Socio AMPI, certificado ✅"),
-        "seguimiento": "¿Te gustaría agendar una visita? 🙌",
-    },
     "loft_providencia": {
         "claves": ["loft providencia", "eb-vs9049"],
         "foto": None,
@@ -1968,9 +2862,57 @@ def _colonia_coincide(colonia_frase, campos_busqueda):
         return False
     return all(w in campos_busqueda for w in palabras)
 
+def _calcular_estrellas(p, precio_max=None, precio_min=None, recamaras_min=None,
+                        banos_min=None, m2_min=None):
+    """Estrellas (2.5-5, en medias estrellas) de qué tan bien esta propiedad
+    cumple lo que el cliente pidió -- NO qué tan buena es en general (eso es
+    Score_Comercial). Solo pondera sobre datos que SÍ tenemos confirmados
+    (precio, recámaras, baños, m²). Ubicación y tipo (casa/depto/terreno)
+    NUNCA entran aquí -- esos siguen siendo filtro duro más arriba en
+    buscar_inventario_zmg, porque son el factor crítico que define si la
+    propiedad es siquiera relevante. Nunca baja de 2.5: si se está
+    mostrando como opción, ya pasó ese filtro duro de ubicación/tipo."""
+    estrellas = 5.0
+    precio = p.get("Precio") or 0
+
+    if precio_max and precio > float(precio_max):
+        exceso = (precio - float(precio_max)) / float(precio_max)
+        if exceso > 0.25:
+            estrellas -= 3
+        elif exceso > 0.10:
+            estrellas -= 2
+        else:
+            estrellas -= 1
+    if precio_min and precio < float(precio_min):
+        estrellas -= 0.5  # más barato de lo pedido rara vez es un problema real
+
+    recamaras = p.get("Recámaras")
+    if recamaras_min and recamaras is not None:
+        faltan = int(recamaras_min) - int(recamaras)
+        if faltan > 0:
+            estrellas -= min(faltan, 2)
+
+    banos = p.get("Baños")
+    if banos_min and banos is not None:
+        faltan = float(banos_min) - float(banos)
+        if faltan > 0:
+            estrellas -= min(faltan, 2)
+
+    if m2_min:
+        try:
+            m2_val = float(str(p.get("m²") or "").replace(",", ""))
+            if m2_val < float(m2_min):
+                estrellas -= 1
+        except ValueError:
+            pass  # sin dato de m2: no se penaliza por falta de información
+
+    return max(2.5, round(estrellas * 2) / 2)
+
+
 def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=None,
                           recamaras_min=None, tipo=None, texto=None, operacion=None,
-                          amueblado=None, limite=5, m2_min=None, m2_max=None, niveles=None):
+                          amueblado=None, limite=5, m2_min=None, m2_max=None, niveles=None,
+                          banos_min=None):
     """Busca en la bolsa compartida ZMG (venta desde $2M, renta desde $13,000/mes).
     Guarda el resultado exacto mostrado a ESTE cliente para poder resolver
     referencias como "la 3" con seleccionar_de_lista, sin inventar nada."""
@@ -2021,11 +2963,15 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
             if am and ((quiere_amueblado and am != "Sí") or (not quiere_amueblado and am != "No")):
                 continue  # solo excluye cuando el dato SÍ existe y contradice
         precio = p.get("Precio") or 0
-        if precio_min and precio < float(precio_min):
-            continue
-        if precio_max and precio > float(precio_max):
-            continue
-        if recamaras_min and (p.get("Recámaras") or 0) < int(recamaras_min):
+        # Precio y recámaras YA NO excluyen de tajo por debajo del techo de
+        # sensatez -- se convierten en factores del match por estrellas
+        # (_calcular_estrellas), para poder mostrarle al cliente TODAS las
+        # opciones relevantes ordenadas por qué tan bien cumplen, en vez de
+        # dejarlo con "0 resultados" cuando nada calza exacto pero sí hay
+        # algo cercano. Sí se excluye lo absurdamente fuera de rango (más
+        # del triple del presupuesto) -- eso ya no es "una opción cercana",
+        # es ruido que no ayuda a nadie.
+        if precio_max and precio > float(precio_max) * 3:
             continue
         if m2_min or m2_max:
             try:
@@ -2046,13 +2992,16 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
             if niveles_val is None or niveles_val != int(niveles):
                 continue  # sin dato o no coincide: se excluye para no arriesgar
         res.append(p)
-    # Prioridad: Score_Comercial descendente (propiedades más "vendibles" primero
-    # -- mejor precio/m² vs su zona, ficha completa, dato de precio confiable, y
-    # bono si es desarrollo propio). Si una propiedad no tiene score calculado
-    # (CSV viejo sin ponderar, o dato insuficiente), cae al final de su grupo de
-    # score y se ordena por precio como antes, para no perder el comportamiento
-    # ya probado en producción.
-    res.sort(key=lambda x: (-(x.get("Score_Comercial") or -1), x.get("Precio") or 0))
+    for p in res:
+        p["_estrellas"] = _calcular_estrellas(p, precio_max=precio_max, precio_min=precio_min,
+                                               recamaras_min=recamaras_min, banos_min=banos_min,
+                                               m2_min=m2_min)
+    # Prioridad: primero las estrellas de match con el cliente (lo que pidió
+    # de presupuesto/recámaras/baños), y dentro de un mismo número de
+    # estrellas, Score_Comercial descendente (más "vendible") como
+    # desempate. Así el cliente ve primero lo que MEJOR le queda a él, no
+    # solo lo más barato o lo más fácil de vender para nosotros.
+    res.sort(key=lambda x: (-x["_estrellas"], -(x.get("Score_Comercial") or -1), x.get("Precio") or 0))
     mostradas = res[: min(int(limite or 5), 8)]
     # Se guarda la lista EXACTA mostrada, en el mismo orden, indexada 1..N
     ULTIMA_BUSQUEDA[phone] = mostradas
@@ -2062,15 +3011,24 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
         "tipo": p.get("Tipo"), "precio": p.get("Precio"),
         "recamaras": p.get("Recámaras"), "banos": p.get("Baños"),
         "m2": p.get("m²"), "liga": p.get("Liga"),
+        "estrellas_match": p.get("_estrellas"),
         "score_comercial": p.get("Score_Comercial"),
     } for i, p in enumerate(mostradas)]
     resultado = {"total_coincidencias": len(res), "propiedades": out,
             "nota": "Guardado como la lista activa de este cliente. Si el cliente responde "
                     "'la 1/2/3...' usa seleccionar_de_lista con ese número — NUNCA inventes "
-                    "un nombre de propiedad que no esté en esta lista. 'score_comercial' es un "
-                    "dato INTERNO tuyo (qué tan bien está de precio esa propiedad vs. su zona) — "
-                    "NUNCA lo menciones al cliente ni lo uses como argumento de venta explícito, "
-                    "solo úsalo para decidir cuál mencionar primero cuando varias califican igual."
+                    "un nombre de propiedad que no esté en esta lista. 'estrellas_match' (2.5-5, en medias estrellas) SÍ "
+                    "se le puede decir al cliente -- de hecho DEBES explicárselo la primera vez que "
+                    "muestres varias opciones: 'aquí tienes varias opciones, calificadas de 2.5 a 5 "
+                    "estrellas según qué tan bien cumplen lo que buscas'. Las estrellas solo pesan "
+                    "presupuesto/recámaras/baños/m² porque son los únicos datos confirmados -- si el "
+                    "cliente pidió casa club, alberca, gimnasio u otra amenidad, esas NO están en las "
+                    "estrellas (no las tenemos confirmadas) y debes decírselo aparte: 'eso no lo tengo "
+                    "confirmado en el sistema, checa la ficha o pregúntale al asesor'. "
+                    "'score_comercial' es un dato INTERNO tuyo (qué tan bien está de precio esa "
+                    "propiedad vs. su zona) — NUNCA lo menciones al cliente ni lo uses como argumento "
+                    "de venta explícito, solo úsalo para desempatar cuando varias tengan las mismas "
+                    "estrellas."
     }
     # HONESTIDAD DE MUNICIPIO: si el cliente dio un municipio + nombre de colonia/
     # desarrollo y no hubo NADA, puede ser que el cliente (o el propio MAX) haya
@@ -2280,14 +3238,27 @@ def _revisar_seguimientos():
             nombre      = nombre or "amigo"
             props_vistas = props
 
+            # NUNCA reactivar como "lead buscando propiedad" a alguien que
+            # ya fue marcado como caso especial (agente/broker de otra
+            # inmobiliaria, reclamo de propietario, bolsa de trabajo). Un
+            # "¿quieres ver opciones frescas?" suena fuera de lugar y poco
+            # profesional para un colega broker o un reclamo en curso.
+            if estado.startswith("No-Molestar"):
+                continue
+
             # MOMENTO 1: 24h sin respuesta tras una busqueda activa
             if (24 <= horas_sin_contacto < 48
                     and busqueda
                     and estado not in ("Seguimiento-24h",)):
+                # Evita duplicar la zona si ya viene mencionada dentro del
+                # texto de búsqueda guardado (p.ej. "Casa en Coto Encino,
+                # Valle Imperial, Zapopan — $18,000/mes" ya incluye la zona).
+                zona_ya_incluida = bool(zona) and zona.lower() in busqueda.lower()
+                sufijo_zona = f" en {zona}" if (zona and not zona_ya_incluida) else ""
                 msg = (
                     f"Hola {nombre}! Soy MAX de Acierta Max. "
                     f"Quedé pensando en tu busqueda de {busqueda or 'propiedad'}"
-                    f"{' en ' + zona if zona else ''}. "
+                    f"{sufijo_zona}. "
                     f"Han entrado propiedades nuevas al inventario — "
                     f"quieres que te muestre opciones frescas? "
                     f"O si prefieres hablar con un asesor, solo escribe *"
@@ -2334,11 +3305,33 @@ def _loop_proactivo():
         time.sleep(3600)  # esperar 1 hora
         print("[MAX-PRO] Revisando seguimientos proactivos...", flush=True)
         _revisar_seguimientos()
+        try:
+            _crm_revisar_seguimientos()
+        except Exception as e:
+            # Aislado a propósito: un error en el CRM de vendedores nunca
+            # debe tumbar el seguimiento a clientes, y viceversa.
+            print(f"[MAX-CRM] Error en revision de seguimientos CRM: {e}", flush=True)
+        try:
+            _betty_revisar_seguimientos()
+        except Exception as e:
+            print(f"[MAX-CRM] Error en revision de seguimientos de Betty: {e}", flush=True)
+
+def _loop_seguridad_visitas():
+    """Thread aparte, cada 15 min -- la seguridad personal de un vendedor
+    en campo no puede esperar el ciclo de 1 hora del resto del CRM."""
+    while True:
+        time.sleep(15 * 60)
+        try:
+            _crm_revisar_seguridad_visitas()
+        except Exception as e:
+            print(f"[MAX-SEGURIDAD] Error en revision de seguridad: {e}", flush=True)
 
 # Arrancar el thread proactivo al iniciar
 _thread_proactivo = threading.Thread(target=_loop_proactivo, daemon=True)
 _thread_proactivo.start()
-print("[MAX-PRO] Thread proactivo iniciado (revisa cada hora)", flush=True)
+_thread_seguridad = threading.Thread(target=_loop_seguridad_visitas, daemon=True)
+_thread_seguridad.start()
+print("[MAX-PRO] Thread proactivo iniciado (revisa cada hora) + thread de seguridad (cada 15 min)", flush=True)
 
 # ------------------------------------------------------------------
 # LINEA DE ENGANCHE PROACTIVA (se agrega automaticamente a fichas de VENTA)
@@ -2370,11 +3363,89 @@ def linea_enganche(precio, operacion):
 # ------------------------------------------------------------------
 # PRECALIFICACION CREDITICIA
 # ------------------------------------------------------------------
+def calcular_costos_operacion(operacion, renta_mensual=None, precio_venta=None):
+    """Presupuesto aproximado de gastos para formalizar la operación.
+    RENTA: usa las cifras fijas de Acierta Max (oficina 161 del IJA para
+    Justicia Alternativa) -- estos SÍ son números reales de la empresa,
+    no una estimación de mercado.
+    VENTA: da un RANGO aproximado de gastos notariales (varía por
+    notaría y municipio) -- esto es una referencia general, no una
+    cotización real de ninguna notaría en particular."""
+    op = (operacion or "").lower()
+
+    if op == "renta":
+        renta = float(renta_mensual or 0)
+        deposito = renta
+        anticipado = renta
+        investigacion = 1500
+        justicia_alternativa = 2000
+        total = deposito + anticipado + investigacion + justicia_alternativa
+        return {
+            "operacion": "renta",
+            "desglose": {
+                "Depósito en garantía (1 mes)": deposito,
+                "Renta anticipada (1 mes)": anticipado,
+                "Investigación (aval/inquilino)": investigacion,
+                "Justicia Alternativa (IJA, oficina 161)": justicia_alternativa,
+            },
+            "total_aproximado": total,
+            "documentos_necesarios": [
+                "Identificación oficial con foto (INE)",
+                "Datos completos: nombre, teléfono y correo electrónico",
+                "Al menos 5 referencias personales (nombre y teléfono)",
+                "Comprobante de ingresos de donde obtiene sus recursos (últimos 2 meses, con vigencia no mayor a 3 meses)",
+                "Autorización de estudio en Buró de Crédito",
+                "Datos del obligado solidario (aval): nombre completo, teléfono y correo",
+                "Copia del predial de la propiedad del obligado solidario",
+                "Pago de la investigación",
+            ],
+            "nota": ("Este presupuesto usa las cifras fijas de Acierta Max (investigación y "
+                    "Justicia Alternativa ante la oficina 161 del IJA). El depósito y la renta "
+                    "anticipada son sobre la renta mensual que me diste -- confírmalo con el "
+                    "asesor antes de comprometerte, puede variar según el propietario."),
+        }
+
+    elif op == "venta":
+        precio = float(precio_venta or 0)
+        pct_min, pct_max = 0.04, 0.08  # rango típico de gastos notariales en México
+        return {
+            "operacion": "venta",
+            "rango_gastos_aproximado": [round(precio * pct_min), round(precio * pct_max)],
+            "porcentaje_referencia": "4% a 8% del valor de la propiedad (varía por notaría, municipio y si hay crédito hipotecario de por medio)",
+            "incluye_tipicamente": [
+                "Honorarios del notario",
+                "ISAI (Impuesto Sobre Adquisición de Inmuebles)",
+                "Derechos de Registro Público de la Propiedad",
+                "Avalúo",
+                "Certificados (libertad de gravamen, no adeudo de predial y agua)",
+            ],
+            "documentos_necesarios": (
+                "Betty (responsable de crédito) le solicita al comprador la lista exacta de "
+                "documentos, porque varía según el banco o institución que elija (bancario, "
+                "Infonavit, Cofinavit, contado). No hay una lista única que MAX pueda dar de "
+                "antemano para este caso."
+            ),
+            "nota": ("Este es un rango de REFERENCIA GENERAL, no una cotización real de ninguna "
+                    "notaría específica -- el costo exacto lo confirma la notaría que elijan al "
+                    "momento de la operación, y puede variar según si hay crédito bancario, "
+                    "Infonavit, o es de contado."),
+        }
+    else:
+        return {"error": "operacion debe ser 'renta' o 'venta'"}
+
+
 def precalificar_credito(phone, ingreso_mensual, precio_objetivo,
                           tiene_imss=False, tiene_infonavit=False,
                           saldo_infonavit=0, enganche_disponible=0,
-                          es_conyugal=False):
-    """Calcula capacidad de credito hipotecario y orienta al prospecto."""
+                          es_conyugal=False, historial_crediticio=""):
+    """Calcula capacidad de credito hipotecario y orienta al prospecto.
+    ESTO ES UNA SIMULACION con datos autoreportados por el cliente -- NO
+    es una consulta real al Buro de Credito (eso requiere que Acierta Max
+    este dado de alta como empresa afiliada ante Buro de Credito, con
+    autorizacion firmada del cliente para cada consulta -- fuera del
+    alcance de MAX). historial_crediticio es autoreportado por el cliente
+    ("bueno"/"regular"/"malo"/"no se") y solo ajusta la estimacion --
+    nunca reemplaza una consulta real."""
     ingreso = float(ingreso_mensual or 0)
     precio  = float(precio_objetivo or 0)
     enganche = float(enganche_disponible or 0)
@@ -2384,7 +3455,26 @@ def precalificar_credito(phone, ingreso_mensual, precio_objetivo,
     mensualidad_max = ingreso * 0.30
     # Con tasa promedio 10.75% a 20 anos, factor de pago ~$10.10 por cada $1,000
     FACTOR_PAGO = 10.10 / 1000  # mensualidad por peso de credito
-    credito_banco_max = mensualidad_max / FACTOR_PAGO if mensualidad_max > 0 else 0
+
+    # Ajuste cualitativo por historial autoreportado -- SOLO afecta el
+    # credito bancario (Infonavit tiene sus propias reglas de puntaje,
+    # no depende del buro tradicional de la misma forma).
+    hist = (historial_crediticio or "").lower()
+    if hist in ("malo", "atrasos", "moroso", "mal historial"):
+        factor_ajuste_banco = 0.60  # castiga fuerte la capacidad estimada
+        nota_historial = ("Mencionaste antecedentes de atrasos -- esto puede reducir bastante tu "
+                          "capacidad real o la tasa que te ofrezcan. La cifra de banco de abajo "
+                          "ya viene reducida por precaución, pero SOLO el Buró de Crédito real, "
+                          "consultado por el banco, da el número exacto.")
+    elif hist in ("regular", "mas o menos", "más o menos"):
+        factor_ajuste_banco = 0.85
+        nota_historial = ("Con historial 'regular' la cifra de banco de abajo ya viene algo "
+                          "reducida por precaución -- el banco puede ofrecerte más o menos, "
+                          "según lo que su consulta real al buró arroje.")
+    else:
+        factor_ajuste_banco = 1.0
+        nota_historial = ""
+    credito_banco_max = (mensualidad_max / FACTOR_PAGO if mensualidad_max > 0 else 0) * factor_ajuste_banco
 
     # Credito maximo Infonavit 2026
     INFONAVIT_MAX_INDIVIDUAL = 2935002
@@ -2451,10 +3541,18 @@ def precalificar_credito(phone, ingreso_mensual, precio_objetivo,
         "mejor_opcion": mejor["tipo"] if mejor else "Requiere mas informacion",
         "capacidad_maxima": round(mejor["capacidad_total"]) if mejor else 0,
         "brecha": round(max(brecha, 0)),
+        "nota_historial_crediticio": nota_historial,
         "recomendacion": (
             "Con tu perfil, esta propiedad es viable. Te recomiendo cotizar en Condusef (condusef.gob.mx) para comparar bancos y elegir la mejor tasa. Un asesor de Acierta Max puede acompanarte en el proceso."
             if viable else
             f"Con tu perfil actual la propiedad de ${precio:,.0f} tiene una brecha de ${max(brecha,0):,.0f}. Te puedo mostrar opciones en tu rango real o explorar como ampliar tu capacidad (segundo titular, mayor enganche, o plazo mas largo)."
+        ),
+        "disclaimer_obligatorio": (
+            "Esto es una SIMULACION orientativa con los datos que tú me diste (ingreso, si tienes "
+            "Infonavit/IMSS, y tu propio historial crediticio si lo mencionaste) -- NO es una "
+            "precalificación oficial de ningún banco ni una consulta real a tu Buró de Crédito. "
+            "El número final que un banco te apruebe depende de su propia consulta al buró y sus "
+            "políticas internas, que pueden dar un resultado distinto al de esta simulación."
         ),
         "simulador_condusef": "https://simulador.condusef.gob.mx/credito-hipotecario/",
         "nota": "Esta es una orientacion inicial — no sustituye la evaluacion formal del banco o Infonavit."
@@ -2664,15 +3762,83 @@ def webhook():
             text = _eb_en_payload
         else:
             # Si parece ser una imagen/audio/video/documento real (no un evento
-            # de estado/entrega), responder con honestidad — NUNCA silencio
-            # total, eso se siente como ser ignorado.
-            if tipo_msg in ("image", "video", "audio", "document", "sticker", "photo"):
+            # de estado/entrega), NO respondas con un mensaje fijo que ignora
+            # el contexto -- puede ser justo la identificación que pediste
+            # para agendar una visita. Deja que el modelo decida, con una
+            # nota describiendo qué llegó (no puedes ver el contenido real
+            # de la imagen, pero el modelo sí sabe si la estaba esperando).
+            if tipo_msg == "location":
+                # Puede venir en varias formas segun el proveedor -- se
+                # busca de forma defensiva en vez de asumir un solo campo.
+                loc = data.get("location") or {}
+                lat = data.get("latitude") or loc.get("latitude")
+                lon = data.get("longitude") or loc.get("longitude")
+                _tel_vendedores_loc = {_normalizar_phone_wati(v["phone"]) for v in VENDEDORES}
+                if _normalizar_phone_wati(phone) in _tel_vendedores_loc and lat and lon:
+                    registrada = False
+                    try:
+                        registrada = crm_registrar_ubicacion(phone, lat, lon)
+                    except Exception as e:
+                        print(f"[MAX-SEGURIDAD] Error registrando ubicación de {phone}: {e}", flush=True)
+                    if registrada:
+                        wati_send_text(phone, "📍 Ubicación recibida, todo en orden ✅")
+                    else:
+                        print(f"[MAX-SEGURIDAD] Ubicación de {phone} sin visita activa registrada -- ignorada", flush=True)
+                return jsonify(ok=True)
+            if tipo_msg in ("image", "photo"):
+                # Se guarda en Drive de una vez (probablemente sea la
+                # identificación pedida). Como el folio del CRM AIDA puede
+                # no existir todavía en este punto, se guarda temporal y
+                # crm_crear_registro la reubica a la carpeta definitiva.
+                _filename_media = data.get("fileName") or data.get("filename") or data.get("data")
+                if _filename_media:
+                    try:
+                        _res_doc = guardar_documento_cliente(
+                            phone, _filename_media,
+                            f"identificacion_{hora_gdl().replace(':','-').replace(' ','_')}.jpg")
+                        memoria_guardar(phone, ULTIMO_DOCUMENTO_URL=_res_doc["file_url"])
+                        print(f"[MAX-EXPEDIENTE] Documento de {phone} guardado: {_res_doc['file_url']}", flush=True)
+                    except Exception as e:
+                        print(f"[MAX-EXPEDIENTE] Error guardando documento de {phone}: {e}", flush=True)
+                text = ("[El cliente envió una foto/imagen aquí en el chat. No puedes ver "
+                        "su contenido, pero el sistema ya la guardó en su expediente digital. "
+                        "Si en tu mensaje anterior le pediste su identificación "
+                        "oficial para agendar una visita, trata esta imagen como recibida y "
+                        "continúa el proceso (llama iniciar_recorrido_crm si ya tienes nombre "
+                        "+ los números de propiedad). Si no le habías pedido nada, pregúntale "
+                        "con amabilidad qué es o para qué te la comparte.]")
+            elif tipo_msg == "document":
+                # Probablemente sea el PDF de su Buró de Crédito (el
+                # cliente lo baja él mismo de burodecredito.com.mx) u
+                # otro documento -- se guarda en su expediente igual que
+                # la identificación, pero sin que MAX interprete su
+                # contenido ni dé un veredicto sobre el historial.
+                _filename_doc = data.get("fileName") or data.get("filename") or data.get("data")
+                if _filename_doc:
+                    try:
+                        _res_doc2 = guardar_documento_cliente(
+                            phone, _filename_doc,
+                            f"documento_{hora_gdl().replace(':','-').replace(' ','_')}.pdf",
+                            mimetype="application/pdf")
+                        memoria_guardar(phone, ULTIMO_DOCUMENTO_URL=_res_doc2["file_url"])
+                        print(f"[MAX-EXPEDIENTE] Documento (PDF) de {phone} guardado: {_res_doc2['file_url']}", flush=True)
+                    except Exception as e:
+                        print(f"[MAX-EXPEDIENTE] Error guardando documento (PDF) de {phone}: {e}", flush=True)
+                text = ("[El cliente envió un documento (probablemente PDF) aquí en el chat. "
+                        "No puedes ver su contenido, pero el sistema ya lo guardó en su expediente "
+                        "digital. Si le pediste su Buró de Crédito o algún otro documento, agradécele "
+                        "y dile que quedó guardado para que el asesor/Betty lo revisen -- NUNCA des "
+                        "un veredicto sobre su historial crediticio, tú no puedes leerlo. Si no le "
+                        "habías pedido nada, pregúntale con amabilidad qué es.]")
+            elif tipo_msg in ("video", "audio", "sticker"):
                 wati_send_text(phone,
-                    "¡Hola! 👋 Veo que me compartiste algo (imagen o archivo), pero hoy no "
+                    "¡Hola! 👋 Veo que me compartiste algo, pero hoy no "
                     "puedo leerlo directamente 🙏. ¿Me escribes el nombre de la propiedad, "
                     "el código que empieza con EB-, o la liga del anuncio que viste? "
                     "Así te ayudo al instante con la ficha oficial.")
-            return jsonify(ok=True)
+                return jsonify(ok=True)
+            else:
+                return jsonify(ok=True)
     # DIAGNÓSTICO TEMPORAL: ver qué campos manda Wati en el payload real,
     # para saber si trae source_url/source_id (el origen del anuncio de
     # Instagram) que hoy no estamos usando. Quitar una vez confirmado.
@@ -2680,6 +3846,33 @@ def webhook():
     if any(k for k in data.keys() if "source" in k.lower()):
         print(f"[MAX-DIAGNOSTICO] Campos de origen encontrados: "
               f"{ {k: v for k, v in data.items() if 'source' in k.lower()} }", flush=True)
+
+    # ENRUTAMIENTO AL CRM AIDA: si quien escribe es uno de los vendedores
+    # Y tiene un expediente activo esperando su respuesta, esto NO pasa
+    # por la conversación normal de MAX con clientes -- se procesa con un
+    # parser determinístico aparte (crm_procesar_respuesta_vendedor),
+    # porque mover el pipeline de ventas real no debe depender de que un
+    # LLM interprete bien un "sí"/"no" suelto.
+    _tel_vendedores = {_normalizar_phone_wati(v["phone"]) for v in VENDEDORES}
+    if _normalizar_phone_wati(phone) in _tel_vendedores:
+        try:
+            if crm_procesar_respuesta_vendedor(phone, text):
+                return jsonify(ok=True, ruta="crm_vendedor")
+        except Exception as e:
+            print(f"[MAX-CRM] Error procesando respuesta de vendedor {phone}: {e}", flush=True)
+        # Si no había expediente pendiente para este número, sigue de largo
+        # como conversación normal (un vendedor también puede escribirle a
+        # MAX como cualquier otro usuario, ej. para probarlo).
+
+    # Mismo tratamiento para Betty (responsable de crédito): sus respuestas
+    # a los check-ins tampoco pasan por el modelo, van al parser aparte.
+    if _normalizar_phone_wati(phone) == _normalizar_phone_wati(BETTY_PHONE):
+        try:
+            if betty_procesar_respuesta(text):
+                return jsonify(ok=True, ruta="betty")
+        except Exception as e:
+            print(f"[MAX-CRM] Error procesando respuesta de Betty: {e}", flush=True)
+
     # Guardar el origen (liga de Instagram) del PRIMER contacto — solo
     # viene en ese mensaje, luego Wati ya no lo repite. Si conocemos ese
     # post, podemos identificar la propiedad exacta que el cliente vio.
@@ -2745,6 +3938,14 @@ def webhook():
         if not lock.acquire(blocking=False):
             return  # ya hay un hilo trabajando este número; él tomará el pendiente
         try:
+            # ESPERA DE RÁFAGA: si el cliente sigue escribiendo (varios mensajes
+            # seguidos, como "Compra" y luego su nombre por separado), le damos
+            # unos segundos de margen ANTES de tomar el primer lote — así se
+            # juntan en una sola respuesta en vez de generar una respuesta por
+            # cada mensaje casi simultáneo. Solo se espera en la primera vuelta;
+            # las siguientes iteraciones (mensajes que llegaron mientras se
+            # generaba la respuesta anterior) se procesan de inmediato.
+            time.sleep(3.5)
             while True:
                 with CONV_LOCK:
                     pendientes = PENDING.get(phone, [])
@@ -2754,6 +3955,7 @@ def webhook():
                     PENDING[phone] = []
                 try:
                     print(f"[MAX] Mensaje de {phone}: {texto[:200]}", flush=True)
+                    _reenviar_a_javier(phone, cliente=texto)
                     historial = get_history(phone)
                     # BITÁCORA UNIVERSAL: registra TODO contacto desde su
                     # primer mensaje, califique o no después. No depende
@@ -2795,7 +3997,7 @@ def webhook():
                     # igual debemos reconocer que sigue hablando del mismo anuncio.
                     if not campana:
                         origen = ORIGEN_POR_TELEFONO.get(phone)
-                        nombre_mapeado = MAPEO_POST_A_CAMPANA.get(origen) if origen else None
+                        nombre_mapeado = obtener_mapeo_post_a_campana().get(origen) if origen else None
                         if nombre_mapeado and nombre_mapeado in CAMPANAS:
                             nombre, campana = nombre_mapeado, CAMPANAS[nombre_mapeado]
                             print(f"[MAX] Campaña detectada por origen de Instagram: {nombre}", flush=True)
@@ -2983,6 +4185,162 @@ def webhook():
             lock.release()
     threading.Thread(target=process, daemon=True).start()
     return jsonify(ok=True)
+
+FICHA_ACCESS_TOKEN = os.environ.get("FICHA_ACCESS_TOKEN", "")
+
+def obtener_ficha_completa(phone):
+    """Junta en un solo dict TODO lo que el sistema sabe de un cliente,
+    leyendo las distintas pestañas donde hoy vive repartida la
+    información (Memoria, Leads, CRM AIDA, Referencias Betty). Esta es
+    la fuente para la ficha maestra -- ver /ficha/<phone>."""
+    phone_n = _normalizar_phone_wati(phone)
+    ficha = {"telefono": phone_n, "perfil": {}, "lead": {}, "crm": [],
+             "betty": [], "encontrado": False}
+
+    m = memoria_leer(phone_n)
+    if m:
+        ficha["perfil"] = m
+        ficha["encontrado"] = True
+
+    try:
+        libro, _ = _sheets_client()
+        if libro:
+            # Leads MAX
+            try:
+                sh = libro.worksheet("Leads MAX")
+                valores = sh.get_all_values()
+                if valores:
+                    headers = valores[0]
+                    for fila in valores[1:]:
+                        d = dict(zip(headers, fila + [""] * (len(headers) - len(fila))))
+                        if _normalizar_phone_wati(d.get("WHATSAPP", "")) == phone_n:
+                            ficha["lead"] = d
+                            ficha["encontrado"] = True
+            except Exception:
+                pass
+            # CRM AIDA -- puede haber más de un expediente (varias rondas)
+            try:
+                sh = libro.worksheet(CRM_HOJA)
+                valores = sh.get_all_values()
+                if valores:
+                    headers = valores[0]
+                    for fila in valores[1:]:
+                        d = dict(zip(headers, fila + [""] * (len(headers) - len(fila))))
+                        if _normalizar_phone_wati(d.get("TELEFONO_CLIENTE", "")) == phone_n:
+                            ficha["crm"].append(d)
+                            ficha["encontrado"] = True
+            except Exception:
+                pass
+            # Referencias Betty
+            try:
+                sh = libro.worksheet(BETTY_HOJA)
+                valores = sh.get_all_values()
+                if valores:
+                    headers = valores[0]
+                    for fila in valores[1:]:
+                        d = dict(zip(headers, fila + [""] * (len(headers) - len(fila))))
+                        if _normalizar_phone_wati(d.get("TELEFONO_CLIENTE", "")) == phone_n:
+                            ficha["betty"].append(d)
+                            ficha["encontrado"] = True
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[MAX-FICHA] Error consolidando ficha de {phone_n}: {e}", flush=True)
+
+    return ficha
+
+
+def _ficha_html(ficha):
+    """Renderiza la ficha consolidada como una página simple y legible."""
+    p = ficha["perfil"]
+    l = ficha["lead"]
+
+    def fila(etiqueta, valor):
+        if not valor:
+            return ""
+        return f"<tr><td class='et'>{etiqueta}</td><td>{valor}</td></tr>"
+
+    html_crm = ""
+    for c in ficha["crm"]:
+        html_crm += f"""
+        <div class="tarjeta">
+          <h3>📋 {c.get('FOLIO','')} — Fase: {c.get('FASE','')}</h3>
+          <table>
+            {fila("Vendedor asignado", c.get("VENDEDOR"))}
+            {fila("Propiedades", c.get("PROPIEDADES","").replace("|", " — ").replace(";", "<br>"))}
+            {fila("Contactó cliente", c.get("CONTACTO_CLIENTE"))}
+            {fila("Contactó originador", c.get("CONTACTO_ORIGINADOR"))}
+            {fila("Fecha/hora de cita", c.get("FECHA_HORA_CITA"))}
+            {fila("Resultado de visita", c.get("VISITA_RESULTADO"))}
+            {fila("Documentación", c.get("DOCUMENTACION"))}
+            {fila("Visita activa (monitoreo)", c.get("VISITA_ACTIVA"))}
+            {fila("Concluido", c.get("CONCLUIDO"))}
+            {fila("Creado", c.get("CREADO"))}
+            {fila("Última acción", c.get("ULTIMA_ACCION"))}
+          </table>
+          {f'<p><a href="{c.get("CARPETA_CLIENTE_URL")}" target="_blank">📁 Ver expediente digital (identificación, documentos)</a></p>' if c.get("CARPETA_CLIENTE_URL") else ""}
+        </div>"""
+
+    html_betty = ""
+    for b in ficha["betty"]:
+        html_betty += f"""
+        <div class="tarjeta">
+          <h3>🏦 {b.get('FOLIO','')} — Referencia a Betty</h3>
+          <table>
+            {fila("Necesidad", b.get("NECESIDAD"))}
+            {fila("Betty ya contactó", b.get("CONTACTO_BETTY"))}
+            {fila("Creado", b.get("CREADO"))}
+          </table>
+        </div>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ficha — {p.get('NOMBRE') or l.get('NOMBRE') or ficha['telefono']}</title>
+<style>
+  body {{ font-family: -apple-system, Arial, sans-serif; background:#f4f5f7; margin:0; padding:24px; color:#1a1a1a; }}
+  .contenedor {{ max-width: 760px; margin: 0 auto; }}
+  h1 {{ font-size: 22px; }}
+  h3 {{ margin: 0 0 8px; font-size: 16px; }}
+  .tarjeta {{ background:white; border-radius:10px; padding:16px 20px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.08); }}
+  table {{ width:100%; border-collapse: collapse; font-size: 14px; }}
+  td {{ padding: 4px 8px; vertical-align: top; border-bottom: 1px solid #eee; }}
+  td.et {{ color:#666; width: 40%; font-weight: 600; }}
+  .score {{ display:inline-block; background:#1a7f37; color:white; border-radius:6px; padding:2px 10px; font-weight:700; }}
+  a {{ color: #1a56db; }}
+</style></head>
+<body><div class="contenedor">
+  <h1>👤 {p.get('NOMBRE') or l.get('NOMBRE') or 'Sin nombre'} <small style="color:#888;">({ficha['telefono']})</small></h1>
+  <div class="tarjeta">
+    <h3>Perfil general</h3>
+    <table>
+      {fila("Score de lead", f'<span class="score">{l.get("SCORE_LEAD (0-100)","")}</span>' if l.get("SCORE_LEAD (0-100)") else "")}
+      {fila("Folio", l.get("FOLIO"))}
+      {fila("Operación", p.get("OPERACION") or l.get("OPERACIÓN"))}
+      {fila("Presupuesto", p.get("PRESUPUESTO") or l.get("PRESUPUESTO"))}
+      {fila("Zona", p.get("ZONA") or l.get("ZONA"))}
+      {fila("Última búsqueda", p.get("ULTIMA_BUSQUEDA") or l.get("INTERÉS"))}
+      {fila("Notas", p.get("NOTAS_COACHING") or l.get("NOTAS"))}
+      {fila("Estado", p.get("ESTADO") or l.get("ESTATUS"))}
+      {fila("Última interacción", p.get("ULTIMA_INTERACCION"))}
+    </table>
+  </div>
+  {html_crm}
+  {html_betty}
+  {"<p style='color:#888;'>No se encontró información de este número.</p>" if not ficha["encontrado"] else ""}
+</div></body></html>"""
+
+
+@app.route("/ficha/<phone>", methods=["GET"])
+def ver_ficha(phone):
+    """Ficha maestra: junta en una sola página todo lo que el sistema
+    sabe de un cliente (perfil, lead, CRM AIDA, referencias a Betty).
+    Protegida con un token simple en el query string."""
+    if FICHA_ACCESS_TOKEN and request.args.get("token") != FICHA_ACCESS_TOKEN:
+        return "No autorizado", 401
+    ficha = obtener_ficha_completa(phone)
+    return _ficha_html(ficha)
+
 
 @app.route("/health", methods=["GET"])
 def health():

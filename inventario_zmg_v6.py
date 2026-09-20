@@ -137,6 +137,17 @@ def parsear_tarjetas(html):
         ban_match = re.search(r"(\d+)\s*baños?", texto)
         banos = ban_match.group(1) if ban_match else ""
 
+        # COLONIA: el sitio trae un encabezado h5 (##### en markdown) justo
+        # debajo del título, formato "Colonia, Ciudad" -- separado del
+        # título libre. Es más confiable que tratar de adivinar la colonia
+        # dentro del título de texto libre.
+        colonia = ""
+        h5 = contenedor.find(["h5", "h6"])
+        if h5:
+            colonia_texto = h5.get_text(strip=True)
+            if "," in colonia_texto:
+                colonia = colonia_texto.split(",")[0].strip()
+
         resultados.append({
             "href": href,
             "texto_crudo": texto,
@@ -145,6 +156,7 @@ def parsear_tarjetas(html):
             "m2": m2,
             "recamaras": recamaras,
             "banos": banos,
+            "colonia": colonia,
             "codigo_eb": extraer_codigo_eb(img_alt, href),
             "img_alt": img_alt,
         })
@@ -205,6 +217,7 @@ def main():
                     continue
                 todas_las_filas.append({
                     "Municipio": municipio.replace("-", " ").title(),
+                    "Colonia": f["colonia"],
                     "Operación": operacion,
                     "Precio": f["precio"],
                     "Moneda": f["moneda"],
@@ -224,7 +237,7 @@ def main():
               "de sobrescribir el CSV vigente.")
         sys.exit(1)
 
-    columnas = ["Municipio", "Operación", "Precio", "Moneda", "Título/Colonia",
+    columnas = ["Municipio", "Colonia", "Operación", "Precio", "Moneda", "Título/Colonia",
                 "Tipo", "Recámaras", "Baños", "m²", "codigo_eb", "Liga",
                 "Fuente", "Fecha_Corrida"]
 
