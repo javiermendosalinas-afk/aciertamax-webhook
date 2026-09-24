@@ -80,7 +80,7 @@ CRM_COLUMNAS = ["FOLIO", "FASE", "TELEFONO_CLIENTE", "NOMBRE_CLIENTE",
                 "VISITA_RESULTADO", "OPERACION", "DOCUMENTACION",
                 "CONCLUIDO", "CREADO", "ULTIMA_ACCION", "PROXIMO_SEGUIMIENTO_TS",
                 "VISITA_ACTIVA", "ULTIMA_UBICACION_TS", "ALERTA_ENVIADA",
-                "CARPETA_CLIENTE_URL", "INTENTOS_SEGUIMIENTO"]
+                "CARPETA_CLIENTE_URL", "INTENTOS_SEGUIMIENTO", "CHAT_COMPLETO"]
 INTENTOS_ANTES_DE_ESCALAR = 3  # ~7 horas de silencio (3h + 2h + 2h) antes de avisarte a ti
 SEGURIDAD_HOJA = "Seguridad Vendedores"
 SEGURIDAD_COLUMNAS = ["FOLIO_CRM", "VENDEDOR", "VENDEDOR_PHONE", "FECHA_HORA",
@@ -253,16 +253,115 @@ def _crm_sheet():
 def _crm_fila_a_dict(headers, fila):
     return {headers[i]: (fila[i] if i < len(fila) else "") for i in range(len(headers))}
 
+def _intentar_asignar_vendedor_automatico(phone, operacion_hint=""):
+    """Dispara la asignación real de vendedor + arranque del CRM AIDA
+    SOLO cuando se cumplen las 3 condiciones que definió Javier:
+      1. Ya se sabe el nombre del cliente
+      2. Ya se tiene su teléfono (siempre lo tenemos, es WhatsApp)
+      3. Ya se le mandó AL MENOS una ficha (puede ser la primera que preguntó)
+    Es seguro llamarla varias veces (desde registrar_lead, desde
+    enviar_ficha, desde enviar_ficha_liga) -- solo actúa la primera vez
+    que las 3 condiciones ya se cumplen, gracias a la bandera CRM_INICIADO."""
+    m = memoria_leer(phone)
+    if m.get("CRM_INICIADO") == "Si":
+        return  # ya se asignó antes, no se repite
+    nombre = m.get("NOMBRE", "")
+    ficha_codigo = m.get("PRIMERA_FICHA_CODIGO", "")
+    ficha_liga = m.get("PRIMERA_FICHA_LIGA", "")
+    if not (nombre and (ficha_codigo or ficha_liga)):
+        return  # todavía falta el nombre o la primera ficha
+
+    propiedades = [{
+        "codigo_eb": ficha_codigo,
+        "titulo": m.get("PRIMERA_FICHA_TITULO", ""),
+        "liga": ficha_liga,
+    }]
+    resultado = crm_crear_registro(phone, nombre, propiedades,
+                                   operacion=operacion_hint or m.get("OPERACION", ""))
+    if resultado.get("creado"):
+        memoria_guardar(phone, CRM_INICIADO="Si")
+        # Aviso EXPLÍCITO a Javier de qué vendedor quedó asignado -- esto es
+        # aparte de la copia general del chat que ya recibe de cada mensaje.
+        if JAVIER_PERSONAL:
+            wati_send_text(JAVIER_PERSONAL,
+                f"✅ ASIGNACIÓN AUTOMÁTICA — {resultado.get('folio_crm')}\n\n"
+                f"Cliente: {nombre} ({phone})\n"
+                f"Vendedor asignado: {resultado.get('vendedor')}\n\n"
+                f"Ya se le mandó el chat completo y la ficha al vendedor.")
+
+
+def _crm_buscar_activo_por_cliente(phone_cliente):
+    """A diferencia de _crm_buscar_por_vendedor_pendiente (busca por
+    vendedor), esta busca por TELÉFONO DEL CLIENTE -- para saber si ya
+    tiene un expediente abierto antes de crear uno nuevo y duplicarlo."""
+    sh = _crm_sheet()
+    valores = sh.get_all_values()
+    if len(valores) < 2:
+        return None, None
+    headers = valores[0]
+    for idx in range(len(valores) - 1, 0, -1):
+        fila = _crm_fila_a_dict(headers, valores[idx])
+        if fila.get("TELEFONO_CLIENTE") == phone_cliente and fila.get("CONCLUIDO") != "Si":
+            return idx + 1, fila
+    return None, None
+
+
 def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion=""):
     """Arranca el expediente CRM AIDA de un cliente que ya calificó
-    propiedades y quiere avanzar a visita. Asigna vendedor en turno,
-    le manda las fichas + claves EB, y programa el primer seguimiento
-    a 3 horas. `propiedades` es una lista de dicts {codigo_eb, titulo, liga}."""
+    propiedades y quiere avanzar a visita. Reutiliza el MISMO vendedor
+    que se le asignó desde el primer contacto (registrar_lead) -- nunca
+    rifa uno distinto, para que sea una sola persona la que lleve al
+    cliente de principio a fin. Le manda las fichas + claves EB, y
+    programa el primer seguimiento a 3 horas. `propiedades` es una lista
+    de dicts {codigo_eb, titulo, liga}.
+
+    Si el cliente YA tiene un expediente activo (ej. se creó automático
+    con su primera ficha, y ahora confirma visita a más propiedades),
+    se ACTUALIZA ese mismo expediente en vez de crear uno duplicado."""
     if not (GOOGLE_CREDS_JSON and SHEET_ID):
         return {"creado": False, "motivo": "Sheets no configurado"}
     try:
         sh = _crm_sheet()
-        vendedor = _siguiente_vendedor()
+        fila_existente, registro_existente = _crm_buscar_activo_por_cliente(phone_cliente)
+        if fila_existente:
+            col = {h: i + 1 for i, h in enumerate(CRM_COLUMNAS)}
+            nuevas_propiedades = "; ".join(
+                f"{p.get('codigo_eb','')}|{p.get('liga','')}" for p in propiedades)
+            propiedades_actuales = registro_existente.get("PROPIEDADES", "")
+            combinado = (propiedades_actuales + "; " + nuevas_propiedades).strip("; ")
+            sh.update_cell(fila_existente, col["PROPIEDADES"], combinado)
+            sh.update_cell(fila_existente, col["ULTIMA_ACCION"], hora_gdl())
+            sh.update_cell(fila_existente, col["CHAT_COMPLETO"],
+                           _formatear_chat_para_vendedor(phone_cliente))
+            vendedor_phone = registro_existente.get("VENDEDOR_PHONE")
+            vendedor_nombre = registro_existente.get("VENDEDOR")
+            lista_texto = "\n".join(
+                f"• {p.get('titulo','(sin título)')} — {p.get('codigo_eb','')} — {p.get('liga','')}"
+                for p in propiedades)
+            wati_send_text(vendedor_phone,
+                f"➕ MÁS PROPIEDADES DE INTERÉS — {registro_existente.get('FOLIO')}\n\n"
+                f"El cliente {nombre_cliente} también quiere ver:\n{lista_texto}")
+            for p in propiedades:
+                if p.get("liga"):
+                    try:
+                        enviar_ficha_liga(vendedor_phone, p["liga"])
+                    except Exception:
+                        pass
+            return {"creado": True, "folio_crm": registro_existente.get("FOLIO"),
+                    "vendedor": vendedor_nombre, "actualizado": True}
+
+        m = memoria_leer(phone_cliente)
+        vendedor_phone_previo = m.get("VENDEDOR_ASIGNADO_PHONE")
+        vendedor_nombre_previo = m.get("VENDEDOR_ASIGNADO")
+        if vendedor_phone_previo and vendedor_nombre_previo:
+            vendedor = {"nombre": vendedor_nombre_previo, "phone": vendedor_phone_previo}
+        else:
+            # No debería pasar (registrar_lead ya asigna a todo contacto),
+            # pero si por alguna razón no hay uno guardado, se asigna aquí
+            # como respaldo en vez de fallar.
+            vendedor = _siguiente_vendedor()
+            memoria_guardar(phone_cliente, VENDEDOR_ASIGNADO=vendedor["nombre"],
+                            VENDEDOR_ASIGNADO_PHONE=vendedor["phone"])
         n = len(sh.get_all_values())
         folio_crm = f"CRM-{n:04d}"
         ahora = time.time()
@@ -296,7 +395,7 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
             "Pendiente", "Pendiente", "", "", operacion, "", "No",
             hora_gdl(), hora_gdl(), str(proximo),
             "No", "", "No",  # VISITA_ACTIVA, ULTIMA_UBICACION_TS, ALERTA_ENVIADA
-            carpeta_url, "0",
+            carpeta_url, "0", _formatear_chat_para_vendedor(phone_cliente),
         ])
 
         msg = (
@@ -308,7 +407,8 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
             f"2. Contacta al cliente para agendar visita.\n"
             f"3. Contacta al originador de cada propiedad para confirmar disponibilidad.\n\n"
             + (f"📁 Expediente del cliente (identificación y documentos): {carpeta_url}\n\n" if carpeta_url else "")
-            + f"En 3 horas te voy a preguntar cómo vas. Cualquier duda, contesta aquí mismo."
+            + f"En 3 horas te voy a preguntar cómo vas. Cualquier duda, contesta aquí mismo.\n\n"
+            + f"👇 Te mando el chat completo actualizado en el siguiente mensaje."
         )
         for p in propiedades:
             if p.get("liga"):
@@ -317,6 +417,8 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
                 except Exception:
                     pass
         wati_send_text(vendedor["phone"], msg)
+        chat_completo = _formatear_chat_para_vendedor(phone_cliente)
+        wati_send_text(vendedor["phone"], f"💬 CHAT COMPLETO — {folio_crm}\n\n{chat_completo}")
         return {"creado": True, "folio_crm": folio_crm, "vendedor": vendedor["nombre"],
                 "carpeta_cliente": carpeta_url}
     except Exception as e:
@@ -719,6 +821,27 @@ def get_history(phone):
     with CONV_LOCK:
         return list(CONVERSATIONS.get(phone, []))
 
+def _formatear_chat_para_vendedor(phone, max_caracteres=3000):
+    """Convierte el historial de la conversación en un texto legible tipo
+    chat, para que el vendedor vea exactamente qué se habló -- no solo
+    los datos ya extraídos (nombre, presupuesto, etc.)."""
+    historial = get_history(phone)
+    if not historial:
+        return "(sin historial de conversación disponible)"
+    lineas = []
+    for turno in historial:
+        etiqueta = "Cliente" if turno.get("role") == "user" else "MAX"
+        contenido = turno.get("content", "")
+        if not isinstance(contenido, str):
+            continue  # se ignoran bloques no textuales (llamadas a herramientas, etc.)
+        lineas.append(f"{etiqueta}: {contenido}")
+    texto = "\n".join(lineas)
+    if len(texto) > max_caracteres:
+        # Se prioriza lo MÁS RECIENTE (más relevante para el vendedor que
+        # el saludo inicial), avisando que se recortó el inicio.
+        texto = "[...inicio de la conversación recortado...]\n" + texto[-max_caracteres:]
+    return texto
+
 def append_history(phone, role, content):
     with CONV_LOCK:
         h = CONVERSATIONS.setdefault(phone, [])
@@ -924,6 +1047,16 @@ def _normalizar_phone_wati(phone):
 JAVIER_PERSONAL = os.environ.get("JAVIER_PERSONAL_NUMBER", "5213325773277")
 BETTY_PHONE = os.environ.get("BETTY_PHONE_NUMBER", "3311964181")  # responsable de crédito
 
+def _es_numero_interno(phone):
+    """True si el número es de un vendedor o de Betty -- para que la
+    lógica de 'primera ficha enviada / asignación automática' (pensada
+    para CLIENTES) nunca se dispare cuando en realidad le estamos
+    mandando una ficha AL VENDEDOR (ej. dentro de crm_crear_registro)."""
+    phone_n = _normalizar_phone_wati(phone)
+    if phone_n == _normalizar_phone_wati(BETTY_PHONE):
+        return True
+    return phone_n in {_normalizar_phone_wati(v["phone"]) for v in VENDEDORES}
+
 def _reenviar_a_javier(phone, cliente=None, max_resp=None):
     """Copia en tiempo real a Javier de lo que escribe el cliente y/o lo
     que responde MAX, con el teléfono del cliente. Se engancha una sola
@@ -1092,6 +1225,19 @@ def enviar_ficha(phone, public_id):
         return {"enviada": False,
                 "error": "el envío por WhatsApp falló o solo se completó parcialmente",
                 "nota": "NO confirmes al cliente que se la mandaste; dile que hubo un problema técnico"}
+    # Guarda la PRIMERA ficha enviada (si aún no había ninguna) -- es una
+    # de las 3 condiciones para que se dispare la asignación real de
+    # vendedor. Se salta por completo si esto se le mandó a un VENDEDOR
+    # (ej. dentro del propio CRM), no a un cliente real.
+    try:
+        if not _es_numero_interno(phone):
+            if not memoria_leer(phone).get("PRIMERA_FICHA_LIGA"):
+                memoria_guardar(phone, PRIMERA_FICHA_CODIGO=public_id,
+                                PRIMERA_FICHA_TITULO=d.get("titulo", ""),
+                                PRIMERA_FICHA_LIGA=d.get("url_publica") or public_id)
+            _intentar_asignar_vendedor_automatico(phone)
+    except Exception as e:
+        print(f"[MAX-CRM] Error en asignación automática tras ficha ({phone}): {e}", flush=True)
     return {"enviada": True, "propiedad": d.get("titulo"), "public_id": public_id}
 
 # ------------------------------------------------------------------
@@ -1103,7 +1249,10 @@ HOJA_MEMORIA = "Memoria Prospectos"
 HOJA_SEGUIMIENTO = "Seguimiento Vendedor"
 COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
                 "PRESUPUESTO","ZONA","RECAMARAS","PROPIEDADES_VISTAS",
-                "ULTIMA_INTERACCION","ESTADO","NOTAS_COACHING","ULTIMO_DOCUMENTO_URL"]
+                "ULTIMA_INTERACCION","ESTADO","NOTAS_COACHING","ULTIMO_DOCUMENTO_URL",
+                "VENDEDOR_ASIGNADO","VENDEDOR_ASIGNADO_PHONE",
+                "PRIMERA_FICHA_CODIGO","PRIMERA_FICHA_TITULO","PRIMERA_FICHA_LIGA",
+                "CRM_INICIADO"]
 
 def _sheets_client():
     """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
@@ -1381,6 +1530,42 @@ def registrar_contacto_bitacora(phone, primer_mensaje, detectado=""):
     except Exception as e:
         return {"registrado": False, "motivo": str(e)[:200]}
 
+def _calificacion_perfil(nombre="", operacion="", presupuesto="", zona="",
+                         tipo="", interes="", notas=""):
+    """Calificación cualitativa de 1 a 5 de qué tan listo está el PERFIL
+    del cliente para cerrar -- distinta del score de lead (0-100), que
+    mide qué tan caliente/urgente es. Esta mide qué tan COMPLETO está su
+    perfil de compra/renta:
+      1 = No calificado (solo dio nombre o ni eso)
+      2 = Datos básicos (operación + alguna pista de zona/tipo)
+      3 = Perfil parcial (presupuesto + zona + tipo, falta crédito claro)
+      4 = Bien calificado (todo lo anterior + forma de pago resuelta)
+      5 = Listo para cerrar (todo lo anterior + mostró intención real de avanzar)
+    """
+    texto = f"{interes} {notas}".lower()
+    tiene_nombre = bool(nombre and nombre.strip())
+    tiene_operacion = bool(operacion)
+    tiene_presupuesto = bool(presupuesto)
+    tiene_zona = bool(zona)
+    tiene_tipo = bool(tipo)
+    tiene_pago_resuelto = any(p in texto for p in [
+        "credito aprobado", "crédito aprobado", "de contado", "contado",
+        "infonavit activo", "enganche"])
+    quiere_avanzar = any(p in texto for p in [
+        "quiero verla", "quiero visitarla", "agenda", "agendar", "visita",
+        "sí quiero", "si quiero", "listo para", "cuando podemos ver"])
+
+    if not tiene_nombre or not tiene_operacion:
+        return 1
+    if not (tiene_zona or tiene_tipo):
+        return 2
+    if not (tiene_presupuesto and tiene_zona and tiene_tipo):
+        return 3
+    if not tiene_pago_resuelto and not quiere_avanzar:
+        return 4
+    return 5
+
+
 def _calcular_score_lead(nombre="", interes="", operacion="", presupuesto="", zona="", notas=""):
     """Score 0-100 de 'qué tan caliente' está el lead, para que el equipo
     sepa a quién llamar primero. Basado en señales que YA se capturan hoy
@@ -1404,11 +1589,12 @@ def _calcular_score_lead(nombre="", interes="", operacion="", presupuesto="", zo
     return min(score, 100)
 
 
-def _actualizar_score_lead_si_sube(folio, nuevo_score):
+def _actualizar_score_lead_si_sube(folio, nuevo_score, nueva_calificacion=None):
     """Si el lead ya estaba registrado y ahora sabemos más de él (dio su
-    presupuesto, mencionó crédito, pidió visita...), subimos su score en
-    el Sheet -- nunca lo bajamos, porque una respuesta corta de un turno
-    no debe hacer parecer más frío a un lead que ya se sabía interesado."""
+    presupuesto, mencionó crédito, pidió visita...), subimos su score y su
+    calificación de perfil en el Sheet -- nunca los bajamos, porque una
+    respuesta corta de un turno no debe hacer parecer más frío/menos
+    calificado a un lead que ya se sabía interesado."""
     if not (GOOGLE_CREDS_JSON and SHEET_ID):
         return
     import gspread
@@ -1419,28 +1605,38 @@ def _actualizar_score_lead_si_sube(folio, nuevo_score):
     libro = gspread.authorize(creds).open_by_key(SHEET_ID)
     sh = libro.worksheet("Leads MAX")
     headers = sh.row_values(1)
-    col_score = None
+    col_score = col_calif = None
     for idx, h in enumerate(headers, start=1):
-        if h.strip().upper().startswith("SCORE_LEAD"):
+        hu = h.strip().upper()
+        if hu.startswith("SCORE_LEAD"):
             col_score = idx
-            break
-    if col_score is None:
-        return  # se crea la columna en el próximo registro nuevo, no aquí
+        elif hu.startswith("CALIFICACION_PERFIL"):
+            col_calif = idx
     celda_folio = sh.find(folio, in_column=1)
     if not celda_folio:
         return
-    actual = sh.cell(celda_folio.row, col_score).value
-    try:
-        actual = int(actual) if actual else 0
-    except ValueError:
-        actual = 0
-    if nuevo_score > actual:
-        sh.update_cell(celda_folio.row, col_score, nuevo_score)
+    if col_score:
+        actual = sh.cell(celda_folio.row, col_score).value
+        try:
+            actual = int(actual) if actual else 0
+        except ValueError:
+            actual = 0
+        if nuevo_score > actual:
+            sh.update_cell(celda_folio.row, col_score, nuevo_score)
+    if col_calif and nueva_calificacion is not None:
+        actual_calif = sh.cell(celda_folio.row, col_calif).value
+        try:
+            actual_calif = int(actual_calif) if actual_calif else 0
+        except ValueError:
+            actual_calif = 0
+        if nueva_calificacion > actual_calif:
+            sh.update_cell(celda_folio.row, col_calif, nueva_calificacion)
 
 
 def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
-                   zona="", notas=""):
+                   zona="", notas="", tipo=""):
     nuevo_score = _calcular_score_lead(nombre, interes, operacion, presupuesto, zona, notas)
+    calificacion = _calificacion_perfil(nombre, operacion, presupuesto, zona, tipo, interes, notas)
     # Candado: si este número ya se registró en las últimas 24h,
     # regresar el mismo folio en vez de crear otro -- pero SÍ actualizamos
     # su score si con esta nueva info se ve más caliente que antes (p.ej.
@@ -1449,7 +1645,7 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
     previo = REGISTRADOS.get(phone)
     if previo and time.time() - previo[1] < 86400:
         try:
-            _actualizar_score_lead_si_sube(previo[0], nuevo_score)
+            _actualizar_score_lead_si_sube(previo[0], nuevo_score, calificacion)
         except Exception:
             pass  # el folio ya es válido aunque falle solo la actualización de score
         return {"registrado": False, "folio": previo[0],
@@ -1468,22 +1664,38 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
         try:
             sh = libro.worksheet("Leads MAX")
         except Exception:
-            sh = libro.add_worksheet(title="Leads MAX", rows=1000, cols=11)
+            sh = libro.add_worksheet(title="Leads MAX", rows=1000, cols=14)
             sh.append_row(["FOLIO", "FECHA Y HORA", "WHATSAPP", "NOMBRE",
                            "OPERACIÓN", "INTERÉS", "PRESUPUESTO", "ZONA",
-                           "NOTAS", "ESTATUS", "SCORE_LEAD (0-100)"])
+                           "NOTAS", "ESTATUS", "SCORE_LEAD (0-100)",
+                           "CALIFICACION_PERFIL (1-5)", "VENDEDOR_ASIGNADO", "CHAT_COMPLETO"])
         n = len(sh.get_all_values())  # incluye encabezado
         folio = f"ACIERTA-{n:04d}"
+
+        # AQUÍ SOLO SE REGISTRA EL LEAD (folio, score, calificación) -- la
+        # asignación real de vendedor y el arranque del CRM AIDA NO pasan
+        # aquí. Solo se disparan cuando YA se cumplen las 3 condiciones que
+        # definió Javier: nombre + teléfono + al menos una ficha enviada
+        # (ver _intentar_asignar_vendedor_automatico, al final de esta
+        # función y también enganchada en enviar_ficha/enviar_ficha_liga).
+        chat_completo = _formatear_chat_para_vendedor(phone)
+
         sh.append_row([folio, hora_gdl(), phone, nombre,
-                       operacion, interes, presupuesto, zona, notas, "NUEVO", nuevo_score])
-        # Si el Sheet ya existía de antes de este cambio, la columna
-        # SCORE_LEAD puede no estar en el encabezado -- la agregamos sola,
-        # sin tocar ninguna columna ni dato que ya tuvieras.
+                       operacion, interes, presupuesto, zona, notas, "NUEVO", nuevo_score,
+                       calificacion, "", chat_completo])
+        # Si el Sheet ya existía de antes de este cambio, las columnas nuevas
+        # pueden no estar en el encabezado -- se agregan solas, sin tocar
+        # ninguna columna ni dato que ya tuvieras.
         try:
             headers = sh.row_values(1)
-            if not any(h.strip().upper().startswith("SCORE_LEAD") for h in headers):
-                sh.update_cell(1, len(headers) + 1, "SCORE_LEAD (0-100)")
-                sh.update_cell(n + 1, len(headers) + 1, nuevo_score)
+            nuevas = {"SCORE_LEAD (0-100)": nuevo_score,
+                     "CALIFICACION_PERFIL (1-5)": calificacion,
+                     "CHAT_COMPLETO": chat_completo}
+            for col_nombre, valor in nuevas.items():
+                if not any(h.strip().upper().startswith(col_nombre.split(" (")[0].upper()) for h in headers):
+                    headers.append(col_nombre)
+                    sh.update_cell(1, len(headers), col_nombre)
+                    sh.update_cell(n + 1, len(headers), valor)
         except Exception:
             pass  # el lead ya quedó guardado aunque esto falle
         REGISTRADOS[phone] = (folio, time.time())
@@ -1491,6 +1703,17 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
             _actualizar_bitacora_con_lead(phone, folio, operacion, interes)
         except Exception:
             pass  # nunca dejar que esto tumbe el registro del lead ya exitoso
+
+        try:
+            memoria_guardar(phone, NOMBRE=nombre, OPERACION=operacion,
+                            PRESUPUESTO=presupuesto, ZONA=zona)
+        except Exception:
+            pass  # el guardado async del despachador lo reintentará de todos modos
+        try:
+            _intentar_asignar_vendedor_automatico(phone, operacion_hint=operacion)
+        except Exception as e:
+            print(f"[MAX-CRM] Error en asignación automática para {phone}: {e}", flush=True)
+
         return {"registrado": True, "folio": folio}
     except Exception as e:
         return {"registrado": False, "motivo": str(e)[:200]}
@@ -1585,7 +1808,9 @@ TOOLS = [
          "radio_km": {"type": "number", "description": "Radio de búsqueda en km. Default 1.5 si el cliente no especifica."},
          "operacion": {"type": "string", "enum": ["VENTA", "RENTA"]},
          "tipo": {"type": "string"},
-         "precio_max": {"type": "number"}},
+         "precio_max": {"type": "number"},
+         "recamaras_min": {"type": "number"},
+         "banos_min": {"type": "number"}},
       "required": ["nombre_lugar"]}},
     {
     "name": "precalificar_credito",
@@ -1673,11 +1898,12 @@ TOOLS = [
     }
 },
 {"name": "registrar_lead",
-     "description": "Registra o actualiza el lead en el CRM cuando ya tengas al menos nombre + operación + interés. Úsala UNA vez por conversación cuando el prospecto esté calificado.",
+     "description": "Registra o actualiza el lead en el CRM cuando ya tengas al menos nombre + operación + interés. Úsala UNA vez por conversación cuando el prospecto esté calificado. Esto AUTOMÁTICAMENTE le asigna un vendedor real desde ahora (no esperes a que el cliente confirme visita para que tenga un vendedor asignado) y calcula su calificación de perfil (1-5, qué tan listo está para cerrar).",
      "input_schema": {"type": "object", "properties": {
          "nombre": {"type": "string"}, "interes": {"type": "string"},
          "operacion": {"type": "string"}, "presupuesto": {"type": "string"},
-         "zona": {"type": "string"}, "notas": {"type": "string"}},
+         "zona": {"type": "string"}, "tipo": {"type": "string", "description": "Tipo de propiedad si ya se sabe (casa/depto/terreno) -- ayuda a calcular mejor la calificación de perfil"},
+         "notas": {"type": "string"}},
       "required": ["nombre", "operacion"]}},
     {"name": "avisar_humano",
      "description": "Notifica al equipo humano de Acierta. Úsala cuando: el cliente haga una pregunta legal/fiscal que no debes responder, o sea uno de los CASOS ESPECIALES (reclamo de propietario, agente que quiere colaborar, interés en trabajar aquí). Para cuando el cliente quiera AGENDAR VISITA a una o varias propiedades ya vistas, usa iniciar_recorrido_crm en su lugar -- ese sí arranca el seguimiento completo con el vendedor asignado.",
@@ -1702,6 +1928,8 @@ TOOLS = [
 ]
 
 SYSTEM_PROMPT = """Eres MAX, el asesor digital de Acierta Max, inmobiliaria con 20 años de experiencia en la Zona Metropolitana de Guadalajara, dirigida por Javier Mendoza. Conversas por WhatsApp en español mexicano, cálido, profesional y BREVE (máximo 3-4 líneas por mensaje; WhatsApp no es para párrafos largos).
+
+LA BREVEDAD NO ES OPCIONAL: WhatsApp corta y oculta detrás de "Read more" cualquier mensaje largo -- si te pasas, la parte final (a veces la pregunta o el dato más importante) queda escondida y el cliente ni la ve. Cuando tengas mucho que decir (una tabla + análisis + una pregunta, por ejemplo), NUNCA lo metas todo en un solo mensaje largo -- parte la idea en 2 o 3 mensajes cortos y naturales, como lo harías escribiendo tú mismo por WhatsApp. Prioriza que la pregunta o el dato accionable quede en un mensaje corto y visible, no enterrado al final de un párrafo largo.
 
 CONSISTENCIA DE GÉNERO: te presentas como "el asesor digital" (masculino). Cuando hables de ti mismo en primera persona con adjetivos, usa concordancia masculina ("tengo que ser honesto", "quedé atento", "estoy seguro") — nunca femenina ("honesta", "atenta", "segura"). Es un detalle pequeño pero rompe la consistencia del personaje si se mezcla.
 
@@ -1797,6 +2025,8 @@ MANEJO DE OBJECIONES (usa esto para no quedarte sin qué decir cuando el cliente
 
 
 SISTEMA DE ESTRELLAS PARA MOSTRAR OPCIONES: cuando uses buscar_inventario_zmg, pásale precio_max, recamaras_min y banos_min con lo que el cliente te dio — la herramienta regresa TODAS las opciones relevantes (no solo las que calzan exacto), cada una con 'estrellas_match' de 2.5 a 5 (en medias estrellas). La PRIMERA vez que muestres varias opciones en una conversación, explícale al cliente el sistema con algo como: "Te voy a mostrar varias opciones, calificadas de 2.5 a 5 estrellas según qué tan bien cumplen lo que buscas — así ves todo el panorama, no solo lo que calza perfecto." Las estrellas SOLO consideran presupuesto/recámaras/baños/m² porque son los únicos datos que el sistema confirma. Si el cliente pidió coto con casa club, alberca, gimnasio u otra amenidad (paso 7 arriba), esas NUNCA entran en las estrellas — dilo aparte y con honestidad: "esa característica en particular no la tengo confirmada en el sistema, la ficha oficial o el asesor te la confirman."
+
+NUNCA CAMBIES EL TIPO DE PROPIEDAD SIN AVISAR: si el cliente pidió departamento y no encuentras opciones que cumplan bien, NUNCA le mandes una casa (o viceversa) como si fuera lo que pidió. Dile explícitamente: "No encontré departamentos que calcen bien con eso, pero sí encontré esta casa que cumple tus demás criterios — ¿te interesa aunque sea casa en vez de depto, o prefieres que ajustemos algo más para seguir buscando departamento?" Cambiar el tipo en silencio genera confusión real (el cliente puede no notar el cambio y perder tiempo revisando algo que no quería).
 
 DE LAS ESTRELLAS A LA VISITA (CRM AIDA): en cuanto el cliente diga que quiere visitar/agendar una o varias de las propiedades que le mostraste (ej. "la 1 y la 3, sí quiero verlas", "me interesa la segunda"):
 1. SEGURIDAD PRIMERO — pídele nombre completo y una foto de su identificación oficial, con esta explicación honesta (adapta el tono, no la copies literal siempre igual): "Antes de agendar, por tu seguridad y la del asesor que te va a atender, te pedimos tu nombre completo y una foto de tu identificación oficial — así también te localizamos más rápido si hace falta. Acierta Max certifica a todos sus asesores, y tu información se maneja de forma confidencial." Si el cliente pregunta por qué o se siente incómodo, sé transparente: es una medida de seguridad real, dado el contexto de inseguridad hacia agentes inmobiliarios en Guadalajara — no es un trámite arbitrario.
@@ -2103,12 +2333,9 @@ def run_tool(name, args, phone):
             ), daemon=True).start()
         elif name == "registrar_lead":
             out = registrar_lead(phone, **args)
-            # Sincronizar con memoria persistente. YA NO se notifica al
-            # vendedor aquí -- ese aviso (con el cuestionario viejo de 6
-            # preguntas) quedó reemplazado por el CRM AIDA nuevo, que se
-            # dispara con iniciar_recorrido_crm cuando el cliente ya eligió
-            # propiedades específicas para visitar (etapa más útil para el
-            # vendedor que un lead recién llegado sin rumbo claro todavía).
+            # registrar_lead YA notifica al vendedor asignado de inmediato
+            # (ver dentro de la función) -- aquí solo falta sincronizar
+            # con la memoria persistente del cliente.
             nombre_reg = args.get("nombre","")
             folio_reg = out.get("folio","")
             if nombre_reg and folio_reg:
@@ -2160,7 +2387,9 @@ def run_tool(name, args, phone):
                                         radio_km=args.get("radio_km", 1.5),
                                         operacion=args.get("operacion"),
                                         tipo=args.get("tipo"),
-                                        precio_max=args.get("precio_max"))
+                                        precio_max=args.get("precio_max"),
+                                        recamaras_min=args.get("recamaras_min"),
+                                        banos_min=args.get("banos_min"))
         else:
             out = {"error": f"herramienta desconocida {name}"}
     except Exception as e:
@@ -2954,7 +3183,8 @@ def _distancia_km(lat1, lon1, lat2, lon2):
 
 
 def buscar_cerca_de_lugar(phone, nombre_lugar, radio_km=1.5, operacion=None,
-                          tipo=None, precio_max=None, limite=8):
+                          tipo=None, precio_max=None, recamaras_min=None,
+                          banos_min=None, limite=8):
     """Busca propiedades cerca de un punto de referencia (landmark), ej.
     'Andares', 'Centro Magno', usando la lat/lon REAL de cada propiedad
     (viene directo del scraper desde 2026-09, no es una estimación por
@@ -2981,10 +3211,15 @@ def buscar_cerca_de_lugar(phone, nombre_lugar, radio_km=1.5, operacion=None,
                 continue
             if tipo and tipo.lower() not in (p.get("Tipo") or "").lower():
                 continue
-            if precio_max and (p.get("Precio") or 0) > float(precio_max):
+            # Igual que buscar_inventario_zmg: precio ya no excluye de tajo
+            # salvo lo absurdamente fuera de rango -- se refleja en estrellas.
+            if precio_max and (p.get("Precio") or 0) > float(precio_max) * 3:
                 continue
             p2 = dict(p)
             p2["_distancia_km"] = round(dist, 2)
+            p2["_estrellas"] = _calcular_estrellas(p, precio_max=precio_max,
+                                                   recamaras_min=recamaras_min,
+                                                   banos_min=banos_min)
             candidatas.append(p2)
 
     if not candidatas:
@@ -2997,17 +3232,23 @@ def buscar_cerca_de_lugar(phone, nombre_lugar, radio_km=1.5, operacion=None,
                         f"no tenga cobertura de coordenadas todavía. Ofrece buscar_inventario_zmg "
                         f"por municipio/colonia como alternativa.")}
 
-    candidatas.sort(key=lambda x: x["_distancia_km"])
+    # Prioridad: estrellas de match primero (igual que buscar_inventario_zmg),
+    # distancia como desempate -- así lo más cercano Y mejor calzado gana,
+    # no solo lo más cercano sin importar si cumple lo pedido.
+    candidatas.sort(key=lambda x: (-x["_estrellas"], x["_distancia_km"]))
     mostradas = candidatas[:int(limite or 8)]
     ULTIMA_BUSQUEDA[phone] = mostradas
     out = [{
         "numero": i + 1, "titulo": p.get("Título/Colonia"), "municipio": p.get("Municipio"),
         "tipo": p.get("Tipo"), "precio": p.get("Precio"), "recamaras": p.get("Recámaras"),
         "banos": p.get("Baños"), "m2": p.get("m²"), "liga": p.get("Liga"),
-        "distancia_km": p["_distancia_km"],
+        "distancia_km": p["_distancia_km"], "estrellas_match": p["_estrellas"],
     } for i, p in enumerate(mostradas)]
     return {"total_coincidencias": len(candidatas), "propiedades": out,
             "nota": (f"'{nombre_lugar}' ubicado en ({lat_centro:.4f}, {lon_centro:.4f}). "
+                    f"'estrellas_match' funciona igual que en buscar_inventario_zmg (2.5-5, "
+                    f"explícaselo al cliente si es la primera vez que se lo muestras en esta "
+                    f"conversación). "
                     f"Guardado como lista activa -- usa seleccionar_de_lista con el número "
                     f"si el cliente elige una.")}
 
@@ -3262,6 +3503,14 @@ def enviar_ficha_liga(phone, liga):
         return {"enviada": False,
                 "error": "el envío por WhatsApp falló o solo se completó parcialmente",
                 "nota": "NO confirmes al cliente que se la mandaste; dile que hubo un problema técnico y vuelve a intentar o pide un momento"}
+    try:
+        if not _es_numero_interno(phone):
+            if not memoria_leer(phone).get("PRIMERA_FICHA_LIGA"):
+                memoria_guardar(phone, PRIMERA_FICHA_CODIGO=p.get("codigo_eb", ""),
+                                PRIMERA_FICHA_TITULO=titulo_prop, PRIMERA_FICHA_LIGA=liga)
+            _intentar_asignar_vendedor_automatico(phone)
+    except Exception as e:
+        print(f"[MAX-CRM] Error en asignación automática tras ficha de bolsa ({phone}): {e}", flush=True)
     return {"enviada": True, "titulo": p.get("Título/Colonia"),
             "nota": "ficha enviada; continúa la conversación"}
 
@@ -4418,6 +4667,8 @@ def _ficha_html(ficha):
     <h3>Perfil general</h3>
     <table>
       {fila("Score de lead", f'<span class="score">{l.get("SCORE_LEAD (0-100)","")}</span>' if l.get("SCORE_LEAD (0-100)") else "")}
+      {fila("Calificación de perfil", f'{l.get("CALIFICACION_PERFIL (1-5)")}/5' if l.get("CALIFICACION_PERFIL (1-5)") else "")}
+      {fila("Vendedor asignado", l.get("VENDEDOR_ASIGNADO"))}
       {fila("Folio", l.get("FOLIO"))}
       {fila("Operación", p.get("OPERACION") or l.get("OPERACIÓN"))}
       {fila("Presupuesto", p.get("PRESUPUESTO") or l.get("PRESUPUESTO"))}
@@ -4430,6 +4681,9 @@ def _ficha_html(ficha):
   </div>
   {html_crm}
   {html_betty}
+  {(lambda chat: f'''<div class="tarjeta"><details><summary style="cursor:pointer; font-weight:600;">💬 Ver chat completo guardado</summary>
+    <pre style="white-space:pre-wrap; font-size:13px; margin-top:10px;">{chat}</pre></details></div>''' if chat else "")(
+      (ficha["crm"][-1].get("CHAT_COMPLETO") if ficha["crm"] else "") or l.get("CHAT_COMPLETO", ""))}
   {"<p style='color:#888;'>No se encontró información de este número.</p>" if not ficha["encontrado"] else ""}
 </div></body></html>"""
 
