@@ -343,7 +343,7 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
             lista_texto = "\n".join(
                 f"• {p.get('titulo','(sin título)')} — {p.get('codigo_eb','')} — {p.get('liga','')}"
                 for p in propiedades)
-            wati_send_text(vendedor_phone,
+            ok_msg = wati_send_text(vendedor_phone,
                 f"➕ MÁS PROPIEDADES DE INTERÉS — {registro_existente.get('FOLIO')}\n\n"
                 f"El cliente {nombre_cliente} también quiere ver:\n{lista_texto}")
             for p in propiedades:
@@ -352,8 +352,23 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
                         enviar_ficha_liga(vendedor_phone, p["liga"])
                     except Exception:
                         pass
+            # Antes esta rama (la que toma iniciar_recorrido_crm cuando el
+            # cliente confirma visita DESPUÉS de la asignación automática)
+            # nunca avisaba a Javier de forma explícita -- solo la rama de
+            # creación nueva lo hacía. Se pareja el comportamiento aquí.
+            if JAVIER_PERSONAL:
+                estado_notif = ("Ya se le avisó al vendedor." if ok_msg else
+                                "⚠️ El aviso al vendedor NO se pudo entregar (probablemente "
+                                "no tiene sesión abierta de WhatsApp con Acierta Max) -- "
+                                "avísale tú directamente.")
+                wati_send_text(JAVIER_PERSONAL,
+                    f"➕ CLIENTE CONFIRMÓ VISITA — {registro_existente.get('FOLIO')}\n\n"
+                    f"Cliente: {nombre_cliente} ({phone_cliente})\n"
+                    f"Vendedor: {vendedor_nombre}\n"
+                    f"Propiedades:\n{lista_texto}\n\n{estado_notif}")
             return {"creado": True, "folio_crm": registro_existente.get("FOLIO"),
-                    "vendedor": vendedor_nombre, "actualizado": True}
+                    "vendedor": vendedor_nombre, "actualizado": True,
+                    "notificacion_enviada": bool(ok_msg)}
 
         m = memoria_leer(phone_cliente)
         vendedor_phone_previo = m.get("VENDEDOR_ASIGNADO_PHONE")
