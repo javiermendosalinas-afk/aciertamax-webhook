@@ -283,11 +283,16 @@ def _intentar_asignar_vendedor_automatico(phone, operacion_hint=""):
         # Aviso EXPLÍCITO a Javier de qué vendedor quedó asignado -- esto es
         # aparte de la copia general del chat que ya recibe de cada mensaje.
         if JAVIER_PERSONAL:
+            estado_notif = ("Ya se le mandó el chat completo y la ficha al vendedor."
+                            if resultado.get("notificacion_enviada")
+                            else "⚠️ OJO: el mensaje al vendedor NO se pudo entregar "
+                                 "(probablemente no tiene sesión abierta de WhatsApp con "
+                                 "Acierta Max) -- avísale tú directamente.")
             wati_send_text(JAVIER_PERSONAL,
                 f"✅ ASIGNACIÓN AUTOMÁTICA — {resultado.get('folio_crm')}\n\n"
                 f"Cliente: {nombre} ({phone})\n"
                 f"Vendedor asignado: {resultado.get('vendedor')}\n\n"
-                f"Ya se le mandó el chat completo y la ficha al vendedor.")
+                f"{estado_notif}")
 
 
 def _crm_buscar_activo_por_cliente(phone_cliente):
@@ -416,11 +421,26 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
                     enviar_ficha_liga(vendedor["phone"], p["liga"])
                 except Exception:
                     pass
-        wati_send_text(vendedor["phone"], msg)
+        ok_msg = wati_send_text(vendedor["phone"], msg)
         chat_completo = _formatear_chat_para_vendedor(phone_cliente)
-        wati_send_text(vendedor["phone"], f"💬 CHAT COMPLETO — {folio_crm}\n\n{chat_completo}")
+        ok_chat = wati_send_text(vendedor["phone"], f"💬 CHAT COMPLETO — {folio_crm}\n\n{chat_completo}")
+        if not (ok_msg and ok_chat):
+            # ANTES esto fallaba en silencio -- ni un error, ni un aviso.
+            # La causa más probable es la ventana de 24h de WhatsApp
+            # Business: si el vendedor no le ha escrito recientemente al
+            # número de negocio, Wati no puede mandarle mensaje de sesión
+            # libre (solo plantillas aprobadas por Meta).
+            print(f"[MAX-CRM-ALERTA] Envío a {vendedor['nombre']} ({vendedor['phone']}) "
+                  f"falló (ok_msg={ok_msg}, ok_chat={ok_chat}) -- probable ventana de 24h "
+                  f"de WhatsApp cerrada.", flush=True)
+            if JAVIER_PERSONAL:
+                wati_send_text(JAVIER_PERSONAL,
+                    f"⚠️ No se pudo notificar a {vendedor['nombre']} sobre {folio_crm} "
+                    f"(cliente {nombre_cliente}, {phone_cliente}). Probablemente {vendedor['nombre']} "
+                    f"no tiene una conversación reciente abierta con el número de WhatsApp de "
+                    f"Acierta Max -- contáctalo tú directamente para avisarle.")
         return {"creado": True, "folio_crm": folio_crm, "vendedor": vendedor["nombre"],
-                "carpeta_cliente": carpeta_url}
+                "carpeta_cliente": carpeta_url, "notificacion_enviada": bool(ok_msg and ok_chat)}
     except Exception as e:
         return {"creado": False, "motivo": str(e)[:200]}
 
@@ -2031,8 +2051,9 @@ NUNCA CAMBIES EL TIPO DE PROPIEDAD SIN AVISAR: si el cliente pidió departamento
 DE LAS ESTRELLAS A LA VISITA (CRM AIDA): en cuanto el cliente diga que quiere visitar/agendar una o varias de las propiedades que le mostraste (ej. "la 1 y la 3, sí quiero verlas", "me interesa la segunda"):
 1. SEGURIDAD PRIMERO — pídele nombre completo y una foto de su identificación oficial, con esta explicación honesta (adapta el tono, no la copies literal siempre igual): "Antes de agendar, por tu seguridad y la del asesor que te va a atender, te pedimos tu nombre completo y una foto de tu identificación oficial — así también te localizamos más rápido si hace falta. Acierta Max certifica a todos sus asesores, y tu información se maneja de forma confidencial." Si el cliente pregunta por qué o se siente incómodo, sé transparente: es una medida de seguridad real, dado el contexto de inseguridad hacia agentes inmobiliarios en Guadalajara — no es un trámite arbitrario.
 2. Si el cliente manda una foto pero es de la propiedad, un comprobante u otra cosa que no sea una identificación, dilo con amabilidad y vuelve a pedir específicamente la identificación.
-3. Con nombre + identificación recibidos (aunque no puedas leer el contenido de la foto, su sola llegada cuenta como cumplido), usa iniciar_recorrido_crm con los números elegidos — esto asigna un vendedor real y arranca el seguimiento completo, tú ya no tienes que preguntar más al respecto.
-4. Después de llamarla, dile al cliente algo breve como "Listo, un asesor de nuestro equipo te contacta en breve para coordinar la visita" — NO le des detalles del proceso interno (vendedor asignado, originador, etc.), eso es trabajo de MAX y del equipo, no del cliente.
+3. SI EL CLIENTE NO TIENE SU IDENTIFICACIÓN A LA MANO EN ESE MOMENTO: NUNCA dejes el proceso congelado esperando a que la mande después — eso pierde la venta (un cliente real dijo textualmente "qué mal servicio" cuando esto pasó). En vez de eso, avanza igual con iniciar_recorrido_crm usando su nombre, y dile algo como: "No hay problema, el asesor que te va a atender te va a llamar en breve — seguramente él mismo te la pida cuando platiquen, así no perdemos tiempo." La identificación se puede completar después, con el asesor humano; lo importante es no cortar el momentum del cliente.
+4. Con nombre + (identificación recibida O el cliente ya confirmó que no la tiene a la mano), usa iniciar_recorrido_crm con los números elegidos — esto asigna un vendedor real y arranca el seguimiento completo, tú ya no tienes que preguntar más al respecto.
+5. Después de llamarla, dile al cliente algo breve como "Listo, un asesor de nuestro equipo te contacta en breve para coordinar la visita" — NO le des detalles del proceso interno (vendedor asignado, originador, etc.), eso es trabajo de MAX y del equipo, no del cliente.
 
 SI AL CLIENTE NO LE GUSTÓ LA PROPIEDAD (tras verla o tras revisar la ficha): pregúntale qué no le convenció (precio, zona, tamaño, algo específico) y usa esa respuesta para buscar y ofrecer otra alternativa de inmediato con buscar_inventario_zmg — no dejes la conversación ahí. Guarda en las notas del lead (registrar_lead / notas) qué se le ofreció y por qué no le gustó, para que quede historial de las alternativas ya exploradas con este cliente.
 
@@ -2243,6 +2264,8 @@ si es probable que sea una propiedad con anos de uso.
 - En cuanto el cliente diga su NOMBRE (aunque no tenga zona ni presupuesto aun), llama registrar_lead DE INMEDIATO con lo que tengas. No esperes tener operacion+interes+zona completos — un registro parcial (nombre + telefono) es mejor que perder el lead. Si despues da mas datos, avisar_humano los incluira.
 - Cliente quiere visita, ofertar, o pide humano → avisar_humano Y dile que un asesor le escribe en breve.
 - NUNCA des asesoría legal, fiscal o hipotecaria definitiva; NUNCA negocies precios; NUNCA inventes propiedades ni datos: solo lo que devuelven las herramientas.
+- NUNCA MEZCLES PROPIEDADES ENTRE TURNOS: pueden existir varias propiedades con nombres muy parecidos o iguales (ej. dos "Villa Universitaria" distintas, con precios distintos). Cuando hables de "la opción 2" o menciones un nombre de desarrollo varios turnos después de haberlo mostrado, NUNCA confíes en tu memoria del precio/recámaras que dijiste antes — vuelve a mirar los datos exactos de ESA búsqueda específica (por su código EB o su número exacto en la lista activa) antes de repetir cifras. Si no estás seguro de a cuál te refieres, es mejor volver a buscar o usar seleccionar_de_lista que inventar o mezclar datos de memoria — dar precios contradictorios en la misma conversación (ej. decir $56,800 y luego $45,000 de "la misma" propiedad) es un error grave que confunde y frustra al cliente.
+- CAUSA RAÍZ CONFIRMADA A EVITAR: cuando el cliente solo está FILTRANDO o ACLARANDO algo sobre las opciones que ya le mostraste (ej. "mándame todas sin amueblar", "de esas dos que sí califican", "mándame pontevedra"), NUNCA vuelvas a llamar buscar_inventario_zmg/buscar_cerca_de_lugar de cero — eso genera una lista NUEVA con numeración distinta y pisa la lista activa, aunque la propiedad que el cliente pide siga teniendo el mismo nombre. Usa seleccionar_de_lista sobre la lista YA activa para revisar cada opción una por una. Solo vuelve a buscar cuando el cliente pida criterios genuinamente diferentes (otra zona, otro presupuesto amplio, otro tipo de propiedad) — no para "aclarar" sobre lo mismo que ya tienes en pantalla.
 - Si preguntan algo fuera de bienes raíces, redirige con amabilidad.
 - Si no hay resultados, dilo con honestidad y ofrece registrar su búsqueda para avisarle cuando llegue algo (registrar_lead con notas).
 """
