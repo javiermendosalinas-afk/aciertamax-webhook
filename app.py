@@ -1120,6 +1120,22 @@ def wati_send_text(phone, text):
     r = requests.post(url, headers=wati_headers(),
                       params={"messageText": text}, timeout=20)
     ok = r.status_code in (200, 201)
+    # CRÍTICO: Wati (como muchas APIs) puede regresar 200 aunque el envío
+    # haya fallado -- el resultado real viene en el cuerpo JSON, no en el
+    # código HTTP. Revisamos el cuerpo explícitamente y lo dejamos en el
+    # log siempre, porque varios envíos "exitosos" según el status code
+    # nunca llegaron de verdad.
+    cuerpo = None
+    try:
+        cuerpo = r.json()
+        if isinstance(cuerpo, dict):
+            resultado_campo = cuerpo.get("result")
+            if resultado_campo is False:
+                ok = False
+    except Exception:
+        pass
+    print(f"[MAX-WATI] Envío a {phone_norm}: status={r.status_code} ok={ok} "
+          f"cuerpo={str(cuerpo)[:300] if cuerpo is not None else r.text[:300]}", flush=True)
     if ok:
         _reenviar_a_javier(phone, max_resp=text)
     return ok
