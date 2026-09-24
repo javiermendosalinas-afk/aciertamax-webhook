@@ -253,6 +253,22 @@ def _crm_sheet():
 def _crm_fila_a_dict(headers, fila):
     return {headers[i]: (fila[i] if i < len(fila) else "") for i in range(len(headers))}
 
+def _resumen_propiedades_para_plantilla(propiedades, max_chars=250):
+    """Texto compacto 'Título (EB-XXXX)' por propiedad, para meter en el
+    único parámetro de la plantilla 'notificacion_lead' -- el vendedor
+    necesita el código EB para buscar al originador, así que SIEMPRE debe
+    ir aquí, no solo en el mensaje normal que puede fallar."""
+    partes = []
+    for p in propiedades:
+        titulo = (p.get("titulo") or "Propiedad").strip()
+        codigo = p.get("codigo_eb") or "sin código"
+        partes.append(f"{titulo} ({codigo})")
+    texto = "; ".join(partes)
+    if len(texto) > max_chars:
+        texto = texto[:max_chars - 3] + "..."
+    return texto
+
+
 def _intentar_asignar_vendedor_automatico(phone, operacion_hint=""):
     """Dispara la asignación real de vendedor + arranque del CRM AIDA
     SOLO cuando se cumplen las 3 condiciones que definió Javier:
@@ -288,11 +304,16 @@ def _intentar_asignar_vendedor_automatico(phone, operacion_hint=""):
                             else "⚠️ OJO: el mensaje al vendedor NO se pudo entregar "
                                  "(probablemente no tiene sesión abierta de WhatsApp con "
                                  "Acierta Max) -- avísale tú directamente.")
-            wati_send_text(JAVIER_PERSONAL,
+            notificar_interno(
+                JAVIER_PERSONAL,
                 f"✅ ASIGNACIÓN AUTOMÁTICA — {resultado.get('folio_crm')}\n\n"
                 f"Cliente: {nombre} ({phone})\n"
                 f"Vendedor asignado: {resultado.get('vendedor')}\n\n"
-                f"{estado_notif}")
+                f"{estado_notif}",
+                resumen_para_plantilla=(f"Cliente: {nombre} | WA: {phone} | "
+                    f"Vendedor: {resultado.get('vendedor')} | "
+                    f"Ficha: {_resumen_propiedades_para_plantilla(propiedades)} | "
+                    f"Folio: {resultado.get('folio_crm')}"))
 
 
 def _crm_buscar_activo_por_cliente(phone_cliente):
@@ -343,9 +364,13 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
             lista_texto = "\n".join(
                 f"• {p.get('titulo','(sin título)')} — {p.get('codigo_eb','')} — {p.get('liga','')}"
                 for p in propiedades)
-            ok_msg = wati_send_text(vendedor_phone,
+            ok_msg = notificar_interno(
+                vendedor_phone,
                 f"➕ MÁS PROPIEDADES DE INTERÉS — {registro_existente.get('FOLIO')}\n\n"
-                f"El cliente {nombre_cliente} también quiere ver:\n{lista_texto}")
+                f"El cliente {nombre_cliente} también quiere ver:\n{lista_texto}",
+                resumen_para_plantilla=(f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
+                    f"Ficha: {_resumen_propiedades_para_plantilla(propiedades)} | "
+                    f"Folio: {registro_existente.get('FOLIO')}"))
             for p in propiedades:
                 if p.get("liga"):
                     try:
@@ -358,14 +383,18 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
             # creación nueva lo hacía. Se pareja el comportamiento aquí.
             if JAVIER_PERSONAL:
                 estado_notif = ("Ya se le avisó al vendedor." if ok_msg else
-                                "⚠️ El aviso al vendedor NO se pudo entregar (probablemente "
-                                "no tiene sesión abierta de WhatsApp con Acierta Max) -- "
-                                "avísale tú directamente.")
-                wati_send_text(JAVIER_PERSONAL,
+                                "⚠️ El aviso normal al vendedor falló, pero se mandó por "
+                                "plantilla de respaldo si esa también estaba disponible.")
+                notificar_interno(
+                    JAVIER_PERSONAL,
                     f"➕ CLIENTE CONFIRMÓ VISITA — {registro_existente.get('FOLIO')}\n\n"
                     f"Cliente: {nombre_cliente} ({phone_cliente})\n"
                     f"Vendedor: {vendedor_nombre}\n"
-                    f"Propiedades:\n{lista_texto}\n\n{estado_notif}")
+                    f"Propiedades:\n{lista_texto}\n\n{estado_notif}",
+                    resumen_para_plantilla=(f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
+                        f"Vendedor: {vendedor_nombre} | "
+                        f"Ficha: {_resumen_propiedades_para_plantilla(propiedades)} | "
+                        f"Folio: {registro_existente.get('FOLIO')}"))
             return {"creado": True, "folio_crm": registro_existente.get("FOLIO"),
                     "vendedor": vendedor_nombre, "actualizado": True,
                     "notificacion_enviada": bool(ok_msg)}
@@ -436,24 +465,31 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
                     enviar_ficha_liga(vendedor["phone"], p["liga"])
                 except Exception:
                     pass
-        ok_msg = wati_send_text(vendedor["phone"], msg)
+        ok_msg = notificar_interno(
+            vendedor["phone"], msg,
+            resumen_para_plantilla=(f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
+                f"Ficha: {_resumen_propiedades_para_plantilla(propiedades)} | "
+                f"Folio: {folio_crm}"))
         chat_completo = _formatear_chat_para_vendedor(phone_cliente)
+        # El chat completo NO cabe en la plantilla de una sola variable --
+        # si el mensaje normal ya falló, no tiene caso reintentarlo con la
+        # plantilla (el contenido no encaja). Se manda tal cual, sabiendo
+        # que puede no llegar si el ticket sigue cerrado.
         ok_chat = wati_send_text(vendedor["phone"], f"💬 CHAT COMPLETO — {folio_crm}\n\n{chat_completo}")
         if not (ok_msg and ok_chat):
-            # ANTES esto fallaba en silencio -- ni un error, ni un aviso.
-            # La causa más probable es la ventana de 24h de WhatsApp
-            # Business: si el vendedor no le ha escrito recientemente al
-            # número de negocio, Wati no puede mandarle mensaje de sesión
-            # libre (solo plantillas aprobadas por Meta).
             print(f"[MAX-CRM-ALERTA] Envío a {vendedor['nombre']} ({vendedor['phone']}) "
-                  f"falló (ok_msg={ok_msg}, ok_chat={ok_chat}) -- probable ventana de 24h "
-                  f"de WhatsApp cerrada.", flush=True)
+                  f"falló (ok_msg={ok_msg}, ok_chat={ok_chat}).", flush=True)
             if JAVIER_PERSONAL:
-                wati_send_text(JAVIER_PERSONAL,
+                notificar_interno(
+                    JAVIER_PERSONAL,
                     f"⚠️ No se pudo notificar a {vendedor['nombre']} sobre {folio_crm} "
                     f"(cliente {nombre_cliente}, {phone_cliente}). Probablemente {vendedor['nombre']} "
                     f"no tiene una conversación reciente abierta con el número de WhatsApp de "
-                    f"Acierta Max -- contáctalo tú directamente para avisarle.")
+                    f"Acierta Max -- contáctalo tú directamente para avisarle.",
+                    resumen_para_plantilla=(f"⚠️ No se notificó a {vendedor['nombre']} | "
+                        f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
+                        f"Ficha: {_resumen_propiedades_para_plantilla(propiedades)} | "
+                        f"Folio: {folio_crm}"))
         return {"creado": True, "folio_crm": folio_crm, "vendedor": vendedor["nombre"],
                 "carpeta_cliente": carpeta_url, "notificacion_enviada": bool(ok_msg and ok_chat)}
     except Exception as e:
@@ -1139,6 +1175,53 @@ def wati_send_text(phone, text):
     if ok:
         _reenviar_a_javier(phone, max_resp=text)
     return ok
+
+
+def wati_send_template_message(phone, template_name, parametros_texto):
+    """Manda una plantilla aprobada por Meta -- funciona SIEMPRE, sin
+    importar la ventana de 24h ni el estado del ticket en Wati (a
+    diferencia de wati_send_text). `parametros_texto` es una lista de
+    strings, uno por cada {{N}} de la plantilla, en orden."""
+    phone_norm = _normalizar_phone_wati(phone)
+    url = f"{WATI_BASE_URL}/api/v2/sendTemplateMessage"
+    payload = {
+        "template_name": template_name,
+        "broadcast_name": template_name,
+        "parameters": [{"name": str(i + 1), "value": v} for i, v in enumerate(parametros_texto)],
+    }
+    try:
+        headers = dict(wati_headers())
+        headers["Content-Type"] = "application/json"
+        r = requests.post(url, headers=headers, params={"whatsappNumber": phone_norm},
+                          json=payload, timeout=20)
+        try:
+            cuerpo = r.json()
+        except Exception:
+            cuerpo = r.text
+        ok = r.status_code in (200, 201) and (
+            not isinstance(cuerpo, dict) or cuerpo.get("result") is not False)
+        print(f"[MAX-WATI-PLANTILLA] Envío plantilla '{template_name}' a {phone_norm}: "
+              f"status={r.status_code} ok={ok} cuerpo={str(cuerpo)[:300]}", flush=True)
+        return ok
+    except Exception as e:
+        print(f"[MAX-WATI-PLANTILLA] Error enviando plantilla a {phone_norm}: {e}", flush=True)
+        return False
+
+
+def notificar_interno(phone, texto_completo, resumen_para_plantilla):
+    """Para avisos a VENDEDORES o a Javier (nunca para clientes): intenta
+    el mensaje normal primero (gratis, texto libre); si falla -- lo más
+    probable, ticket cerrado/ventana de 24h -- cae de respaldo a la
+    plantilla 'notificacion_lead' aprobada por Meta, que siempre llega.
+    `resumen_para_plantilla` debe ser una sola línea corta con lo
+    esencial (cliente, teléfono, operación, folio, vendedor), porque la
+    plantilla tiene un solo parámetro de texto libre."""
+    ok = wati_send_text(phone, texto_completo)
+    if not ok:
+        ok = wati_send_template_message(phone, "notificacion_lead", [resumen_para_plantilla])
+    return ok
+
+
 
 def wati_send_image(phone, image_url, caption=""):
     phone = _normalizar_phone_wati(phone)
