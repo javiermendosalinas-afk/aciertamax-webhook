@@ -224,14 +224,24 @@ def _betty_revisar_seguimientos():
             intentos = 0
         if intentos >= INTENTOS_ANTES_DE_ESCALAR:
             if JAVIER_PERSONAL:
-                wati_send_text(JAVIER_PERSONAL,
+                notificar_interno(
+                    JAVIER_PERSONAL,
                     f"⚠️ Betty lleva {intentos} intentos sin responder sobre "
-                    f"{fila.get('NOMBRE_CLIENTE')} ({fila.get('FOLIO')}). Por favor interven directamente.")
+                    f"{fila.get('NOMBRE_CLIENTE')} ({fila.get('FOLIO')}). Por favor interven directamente.",
+                    resumen_para_plantilla=(f"Betty sin responder ({intentos} intentos) | "
+                        f"Cliente: {fila.get('NOMBRE_CLIENTE')} | Necesidad: {fila.get('NECESIDAD')} | "
+                        f"Folio: {fila.get('FOLIO')}"),
+                    template_name="seguimiento_lead")
             continue
         if proximo and ahora >= proximo:
-            wati_send_text(BETTY_PHONE,
+            notificar_interno(
+                BETTY_PHONE,
                 f"Hola! Seguimiento {fila.get('FOLIO')} — ¿ya contactaste a "
-                f"{fila.get('NOMBRE_CLIENTE')} para lo de crédito? (sí/no)")
+                f"{fila.get('NOMBRE_CLIENTE')} para lo de crédito? (sí/no)",
+                resumen_para_plantilla=(f"Cliente: {fila.get('NOMBRE_CLIENTE')} | "
+                    f"Necesidad: {fila.get('NECESIDAD')} | Intento #{intentos + 1} | "
+                    f"Folio: {fila.get('FOLIO')}"),
+                template_name="seguimiento_lead")
             sh.update_cell(idx + 1, col["PROXIMO_SEGUIMIENTO_TS"], str(ahora + 2 * 3600))
             sh.update_cell(idx + 1, col["INTENTOS_SEGUIMIENTO"], str(intentos + 1))
 
@@ -565,20 +575,32 @@ def _crm_revisar_seguridad_visitas():
             vendedor = fila.get("VENDEDOR")
             vendedor_phone = fila.get("VENDEDOR_PHONE")
             folio = fila.get("FOLIO")
-            wati_send_text(vendedor_phone,
+            notificar_interno(
+                vendedor_phone,
                 f"📍 No he recibido tu ubicación en más de {MINUTOS_TOLERANCIA_ALERTA} min "
-                f"({folio}). ¿Todo bien? Mándamela en cuanto puedas.")
+                f"({folio}). ¿Todo bien? Mándamela en cuanto puedas.",
+                resumen_para_plantilla=(f"📍 Sin ubicación hace {int(minutos_sin_ubicacion)} min | "
+                    f"Folio: {folio} | Confirma que todo está bien"),
+                template_name="seguimiento_lead")
             if JAVIER_PERSONAL:
                 if ya_hubo_alerta_antes:
-                    wati_send_text(JAVIER_PERSONAL,
+                    notificar_interno(
+                        JAVIER_PERSONAL,
                         f"🚨 SIGUE SIN RESPONDER: {vendedor} lleva {int(minutos_sin_ubicacion)} min "
                         f"sin mandar ubicación ({folio}) — ya se le insistió antes y sigue sin "
-                        f"contestar. Por favor contáctalo directamente o considera medidas adicionales.")
+                        f"contestar. Por favor contáctalo directamente o considera medidas adicionales.",
+                        resumen_para_plantilla=(f"🚨 SIGUE SIN RESPONDER — {vendedor} sin ubicación "
+                            f"{int(minutos_sin_ubicacion)} min | Folio: {folio} | Contáctalo ya"),
+                        template_name="seguimiento_lead")
                 else:
-                    wati_send_text(JAVIER_PERSONAL,
+                    notificar_interno(
+                        JAVIER_PERSONAL,
                         f"⚠️ ALERTA DE SEGURIDAD: {vendedor} no ha mandado ubicación en más de "
                         f"{MINUTOS_TOLERANCIA_ALERTA} min durante una visita activa ({folio}). "
-                        f"Se le pidió confirmar. Por favor da seguimiento directo.")
+                        f"Se le pidió confirmar. Por favor da seguimiento directo.",
+                        resumen_para_plantilla=(f"⚠️ ALERTA DE SEGURIDAD — {vendedor} sin ubicación "
+                            f"{int(minutos_sin_ubicacion)} min | Folio: {folio}"),
+                        template_name="seguimiento_lead")
             sh.update_cell(idx + 1, col["ALERTA_ENVIADA"], str(ahora))
 
 
@@ -749,6 +771,18 @@ def _crm_pendientes_de_seguimiento():
             pendientes.append((idx + 1, fila))
     return pendientes
 
+def _codigos_eb_de_propiedades(propiedades_texto):
+    """Extrae los códigos EB del campo PROPIEDADES del CRM (formato
+    'codigo|liga; codigo|liga'), para incluirlos en los antecedentes de
+    las plantillas de respaldo."""
+    codigos = []
+    for parte in (propiedades_texto or "").split(";"):
+        codigo = parte.split("|")[0].strip()
+        if codigo:
+            codigos.append(codigo)
+    return ", ".join(codigos) if codigos else "sin código"
+
+
 def _crm_revisar_seguimientos():
     """Manda el check-in correspondiente a cada registro vencido, y
     reprograma el siguiente en 2 horas (según la cadencia que pidió
@@ -765,13 +799,19 @@ def _crm_revisar_seguimientos():
             intentos = int(registro.get("INTENTOS_SEGUIMIENTO") or 0)
         except ValueError:
             intentos = 0
+        codigos_eb = _codigos_eb_de_propiedades(registro.get("PROPIEDADES"))
 
         if intentos >= INTENTOS_ANTES_DE_ESCALAR:
             if JAVIER_PERSONAL:
-                wati_send_text(JAVIER_PERSONAL,
+                notificar_interno(
+                    JAVIER_PERSONAL,
                     f"⚠️ {registro.get('VENDEDOR')} lleva {intentos} intentos sin responder sobre "
                     f"{registro.get('NOMBRE_CLIENTE')} ({registro.get('FOLIO')}). Por favor "
-                    f"interven directamente -- el sistema deja de insistirle solo hasta que tú actúes.")
+                    f"interven directamente -- el sistema deja de insistirle solo hasta que tú actúes.",
+                    resumen_para_plantilla=(f"Vendedor: {registro.get('VENDEDOR')} sin responder "
+                        f"({intentos} intentos) | Cliente: {registro.get('NOMBRE_CLIENTE')} | "
+                        f"Ficha: {codigos_eb} | Folio: {registro.get('FOLIO')}"),
+                    template_name="seguimiento_lead")
             # No se reprograma más -- queda esperando que Javier intervenga
             # o que el vendedor responda espontáneamente (lo que sí se
             # sigue procesando normal si escribe).
@@ -784,18 +824,28 @@ def _crm_revisar_seguimientos():
                 # ya se agendó -- este check-in es el de "¿cómo salió la visita?"
                 col_fase = CRM_COLUMNAS.index("FASE") + 1
                 sh.update_cell(fila_num, col_fase, "Interes")
-                wati_send_text(vendedor_phone,
+                notificar_interno(
+                    vendedor_phone,
                     f"Hola! ¿Cómo salió la visita con {registro.get('NOMBRE_CLIENTE','el cliente')}? "
-                    f"Cuéntame brevemente para dar seguimiento.")
+                    f"Cuéntame brevemente para dar seguimiento.",
+                    resumen_para_plantilla=(f"¿Cómo salió la visita? | Cliente: "
+                        f"{registro.get('NOMBRE_CLIENTE')} | Ficha: {codigos_eb} | "
+                        f"Cita: {registro.get('FECHA_HORA_CITA')} | Folio: {registro.get('FOLIO')}"),
+                    template_name="seguimiento_lead")
                 sh.update_cell(fila_num, col_proximo, "")  # se reprograma solo si vuelve a fallar
                 sh.update_cell(fila_num, col_intentos, str(intentos + 1))
                 continue
             faltante = []
             if not cliente_ok: faltante.append("al cliente")
             if not originador_ok: faltante.append("al originador")
-            wati_send_text(vendedor_phone,
+            notificar_interno(
+                vendedor_phone,
                 f"Hola! Seguimiento de {registro.get('FOLIO')} — {registro.get('NOMBRE_CLIENTE')}. "
-                f"¿Ya contactaste {' y '.join(faltante)}?")
+                f"¿Ya contactaste {' y '.join(faltante)}?",
+                resumen_para_plantilla=(f"Cliente: {registro.get('NOMBRE_CLIENTE')} | "
+                    f"Ficha: {codigos_eb} | Pendiente: contactar {' y '.join(faltante)} | "
+                    f"Intento #{intentos + 1} | Folio: {registro.get('FOLIO')}"),
+                template_name="seguimiento_lead")
             sh.update_cell(fila_num, col_proximo, str(time.time() + 2 * 3600))
             sh.update_cell(fila_num, col_intentos, str(intentos + 1))
 
@@ -1208,17 +1258,18 @@ def wati_send_template_message(phone, template_name, parametros_texto):
         return False
 
 
-def notificar_interno(phone, texto_completo, resumen_para_plantilla):
+def notificar_interno(phone, texto_completo, resumen_para_plantilla, template_name="notificacion_lead"):
     """Para avisos a VENDEDORES o a Javier (nunca para clientes): intenta
     el mensaje normal primero (gratis, texto libre); si falla -- lo más
-    probable, ticket cerrado/ventana de 24h -- cae de respaldo a la
-    plantilla 'notificacion_lead' aprobada por Meta, que siempre llega.
+    probable, ticket cerrado/ventana de 24h -- cae de respaldo a una
+    plantilla aprobada por Meta, que siempre llega. Por default usa
+    'notificacion_lead' (asignación de cliente nuevo); para check-ins de
+    seguimiento pasa template_name='seguimiento_lead'.
     `resumen_para_plantilla` debe ser una sola línea corta con lo
-    esencial (cliente, teléfono, operación, folio, vendedor), porque la
-    plantilla tiene un solo parámetro de texto libre."""
+    esencial, porque ambas plantillas tienen un solo parámetro de texto libre."""
     ok = wati_send_text(phone, texto_completo)
     if not ok:
-        ok = wati_send_template_message(phone, "notificacion_lead", [resumen_para_plantilla])
+        ok = wati_send_template_message(phone, template_name, [resumen_para_plantilla])
     return ok
 
 
@@ -3684,7 +3735,16 @@ def _revisar_seguimientos():
         if not libro:
             return
         sh = _get_o_crear_hoja(libro, HOJA_MEMORIA, COLS_MEMORIA)
-        filas = sh.get_all_records()
+        # NO se usa get_all_records(): revienta si el encabezado real del
+        # Sheet tiene columnas duplicadas o vacías (pasa fácil según se van
+        # agregando columnas nuevas con el tiempo). En vez de eso, se arma
+        # cada fila a mano con COLS_MEMORIA -- mismo patrón que _crm_fila_a_dict.
+        valores = sh.get_all_values()
+        filas = []
+        if len(valores) > 1:
+            for fila_valores in valores[1:]:
+                filas.append({COLS_MEMORIA[i]: (fila_valores[i] if i < len(fila_valores) else "")
+                             for i in range(len(COLS_MEMORIA))})
         ahora = time.time()
 
         for fila in filas:
@@ -4336,6 +4396,33 @@ def webhook():
     if any(k for k in data.keys() if "source" in k.lower()):
         print(f"[MAX-DIAGNOSTICO] Campos de origen encontrados: "
               f"{ {k: v for k, v in data.items() if 'source' in k.lower()} }", flush=True)
+
+    # FAST-PATH ACIERTA VERIFICA: si el mensaje es exactamente (o casi
+    # exactamente) la palabra "VERIFICA" -- el CTA de la campaña de
+    # octubre le pide al cliente escribir justo eso -- se responde
+    # directo, sin pasar por el modelo. Se exige que sea la palabra sola
+    # (o con algo de saludo alrededor, máximo 3 palabras) para no
+    # disparar con frases normales como "¿me puedes verificar si...".
+    _texto_normalizado = re.sub(r"[^\wáéíóúñ]", " ", (text or "")).strip().lower()
+    _palabras_verifica = _texto_normalizado.split()
+    if (len(_palabras_verifica) <= 3 and "verifica" in _palabras_verifica):
+        print(f"[MAX-VERIFICA] Palabra clave detectada de {phone}", flush=True)
+        wati_send_text(phone,
+            "¡Hola! 👋 Gracias por tu interés en *ACIERTA VERIFICA* — revisión física básica "
+            "y análisis documental preventivo antes de comprar, rentar o entregar una propiedad. "
+            "\"Antes de firmar, verifica.\" 🔍")
+        wati_send_text(phone,
+            "Un coordinador te va a contactar en breve para cotizar según los m² a revisar "
+            "(desde $45/m², mínimo $3,500 MXN en la ZMG) y agendar tu visita. "
+            "¿Nos compartes tu nombre y la dirección o zona de la propiedad?")
+        try:
+            avisar_humano(phone,
+                f"🔍 NUEVO CONTACTO ACIERTA VERIFICA — {phone} escribió \"{text}\". "
+                f"Necesita cotización y agenda de un coordinador.",
+                categoria=None)
+        except Exception as e:
+            print(f"[MAX-VERIFICA] Error escalando a humano: {e}", flush=True)
+        return jsonify(ok=True, ruta="acierta_verifica")
 
     # ENRUTAMIENTO AL CRM AIDA: si quien escribe es uno de los vendedores
     # Y tiene un expediente activo esperando su respuesta, esto NO pasa
