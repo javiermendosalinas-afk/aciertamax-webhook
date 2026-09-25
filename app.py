@@ -1591,7 +1591,7 @@ COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
                 "PRIMERA_FICHA_CODIGO","PRIMERA_FICHA_TITULO","PRIMERA_FICHA_LIGA",
                 "CRM_INICIADO","VERIFICA_ESPERANDO_DATOS",
                 "IKONO_PREGUNTA_ACTUAL","IKONO_NOMBRE","IKONO_TELEFONO",
-                "IKONO_INDUSTRIA","IKONO_SITUACION"]
+                "IKONO_INDUSTRIA","IKONO_SITUACION","IKONO_CLIENTE"]
 
 def _sheets_client():
     """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
@@ -4658,7 +4658,8 @@ def webhook():
         _tel = m_ikono.get("IKONO_TELEFONO", phone)
         _industria = m_ikono.get("IKONO_INDUSTRIA", "")
         _situacion = text.strip()
-        memoria_guardar(phone, IKONO_SITUACION=_situacion, IKONO_PREGUNTA_ACTUAL="")
+        memoria_guardar(phone, IKONO_SITUACION=_situacion, IKONO_PREGUNTA_ACTUAL="",
+                        IKONO_CLIENTE="Si")
         wati_send_text(phone,
             f"¡Gracias, {_nombre.split()[0] if _nombre else ''}! 🙌 Estoy agendando tu llamada "
             f"de 20 minutos con Javier -- te confirmo el horario en un momento.")
@@ -4688,6 +4689,27 @@ def webhook():
 
         threading.Thread(target=_finalizar_ikono, daemon=True).start()
         return jsonify(ok=True, ruta="ikono_completo")
+
+    # CUALQUIER MENSAJE POSTERIOR de un cliente ya marcado como de IKONO
+    # (cuestionario ya completado) se queda en modo IKONO para siempre --
+    # NUNCA debe caer en el flujo general de bienes raíces. Esto corrigió
+    # un bug real: un cliente de IKONO preguntó "¿puedo cambiar la hora?"
+    # y MAX lo confundió con un cliente viejo de Acierta Max (hasta le
+    # llamó por otro nombre y le mandó un link de Calendly ajeno al tema).
+    if memoria_leer(phone).get("IKONO_CLIENTE") == "Si":
+        print(f"[MAX-IKONO] Mensaje de seguimiento de cliente IKONO {phone}: {text}", flush=True)
+        _nombre_ikono = memoria_leer(phone).get("IKONO_NOMBRE", "")
+        wati_send_text(phone,
+            f"Gracias{', ' + _nombre_ikono.split()[0] if _nombre_ikono else ''} 🙌 Ya le "
+            f"avisé directamente a Javier sobre tu mensaje -- te confirma él mismo en breve.")
+        notificar_interno(
+            JAVIER_PERSONAL,
+            f"🎯 SEGUIMIENTO IKONO — {_nombre_ikono or phone} ({phone}) escribió:\n\"{text}\"\n\n"
+            f"Revisa/ajusta directamente en tu Google Calendar si es sobre la cita.",
+            resumen_para_plantilla=(f"Seguimiento IKONO: {_nombre_ikono or phone} | "
+                f"Mensaje: {text[:150]}"),
+            template_name="seguimiento_lead")
+        return jsonify(ok=True, ruta="ikono_seguimiento")
 
     # ENRUTAMIENTO AL CRM AIDA: si quien escribe es uno de los vendedores
     # Y tiene un expediente activo esperando su respuesta, esto NO pasa
