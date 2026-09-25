@@ -80,8 +80,9 @@ CRM_COLUMNAS = ["FOLIO", "FASE", "TELEFONO_CLIENTE", "NOMBRE_CLIENTE",
                 "VISITA_RESULTADO", "OPERACION", "DOCUMENTACION",
                 "CONCLUIDO", "CREADO", "ULTIMA_ACCION", "PROXIMO_SEGUIMIENTO_TS",
                 "VISITA_ACTIVA", "ULTIMA_UBICACION_TS", "ALERTA_ENVIADA",
-                "CARPETA_CLIENTE_URL", "INTENTOS_SEGUIMIENTO", "CHAT_COMPLETO"]
-INTENTOS_ANTES_DE_ESCALAR = 3  # ~7 horas de silencio (3h + 2h + 2h) antes de avisarte a ti
+                "CARPETA_CLIENTE_URL", "INTENTOS_SEGUIMIENTO", "CHAT_COMPLETO",
+                "ESCALADO_A_JAVIER", "ULTIMA_RESPUESTA_VENDEDOR"]
+INTENTOS_ANTES_DE_ESCALAR = 2  # ~5 horas de silencio (3h + 2h) antes de avisarte a ti
 SEGURIDAD_HOJA = "Seguridad Vendedores"
 SEGURIDAD_COLUMNAS = ["FOLIO_CRM", "VENDEDOR", "VENDEDOR_PHONE", "FECHA_HORA",
                       "LATITUD", "LONGITUD"]
@@ -98,7 +99,8 @@ MINUTOS_TOLERANCIA_ALERTA = 45  # margen antes de avisar a Javier (30 + colchón
 BETTY_HOJA = "Referencias Betty"
 BETTY_COLUMNAS = ["FOLIO", "TELEFONO_CLIENTE", "NOMBRE_CLIENTE", "NECESIDAD",
                   "CONTACTO_BETTY", "CREADO", "ULTIMA_ACCION",
-                  "PROXIMO_SEGUIMIENTO_TS", "CONCLUIDO", "INTENTOS_SEGUIMIENTO"]
+                  "PROXIMO_SEGUIMIENTO_TS", "CONCLUIDO", "INTENTOS_SEGUIMIENTO",
+                  "ESCALADO_A_JAVIER"]
 
 def _betty_sheet():
     import gspread
@@ -126,7 +128,7 @@ def referir_a_betty(phone_cliente, nombre_cliente, necesidad):
         folio_betty = f"BETTY-{n:04d}"
         proximo = time.time() + (3 * 3600)  # primer check-in a Betty: 3 horas
         sh.append_row([folio_betty, phone_cliente, nombre_cliente, necesidad,
-                       "Pendiente", hora_gdl(), hora_gdl(), str(proximo), "No", "0"])
+                       "Pendiente", hora_gdl(), hora_gdl(), str(proximo), "No", "0", "No"])
         msg_betty = (
             f"🏦 NUEVO CLIENTE PARA CRÉDITO — {folio_betty}\n\n"
             f"Cliente: {nombre_cliente}\n"
@@ -181,6 +183,7 @@ def betty_procesar_respuesta(texto):
     sh = _betty_sheet()
     col = {h: i + 1 for i, h in enumerate(BETTY_COLUMNAS)}
     sh.update_cell(fila_num, col["INTENTOS_SEGUIMIENTO"], "0")
+    sh.update_cell(fila_num, col["ESCALADO_A_JAVIER"], "No")
     t = texto.strip().lower()
 
     if any(p in t for p in ["si", "sí", "ya", "listo", "contactado", "lo contacté", "la contacté"]):
@@ -223,15 +226,17 @@ def _betty_revisar_seguimientos():
         except ValueError:
             intentos = 0
         if intentos >= INTENTOS_ANTES_DE_ESCALAR:
-            if JAVIER_PERSONAL:
-                notificar_interno(
-                    JAVIER_PERSONAL,
-                    f"⚠️ Betty lleva {intentos} intentos sin responder sobre "
-                    f"{fila.get('NOMBRE_CLIENTE')} ({fila.get('FOLIO')}). Por favor interven directamente.",
-                    resumen_para_plantilla=(f"Betty sin responder ({intentos} intentos) | "
-                        f"Cliente: {fila.get('NOMBRE_CLIENTE')} | Necesidad: {fila.get('NECESIDAD')} | "
-                        f"Folio: {fila.get('FOLIO')}"),
-                    template_name="seguimiento_lead")
+            if fila.get("ESCALADO_A_JAVIER") != "Si":  # solo se avisa UNA vez
+                if JAVIER_PERSONAL:
+                    notificar_interno(
+                        JAVIER_PERSONAL,
+                        f"⚠️ Betty no atendió sobre {fila.get('NOMBRE_CLIENTE')} ({fila.get('FOLIO')}). "
+                        f"Por favor interven directamente.",
+                        resumen_para_plantilla=(f"Betty no atendió | "
+                            f"Cliente: {fila.get('NOMBRE_CLIENTE')} | Necesidad: {fila.get('NECESIDAD')} | "
+                            f"Folio: {fila.get('FOLIO')}"),
+                        template_name="seguimiento_lead")
+                sh.update_cell(idx + 1, col["ESCALADO_A_JAVIER"], "Si")
             continue
         if proximo and ahora >= proximo:
             notificar_interno(
@@ -455,6 +460,7 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
             hora_gdl(), hora_gdl(), str(proximo),
             "No", "", "No",  # VISITA_ACTIVA, ULTIMA_UBICACION_TS, ALERTA_ENVIADA
             carpeta_url, "0", _formatear_chat_para_vendedor(phone_cliente),
+            "No", "",  # ESCALADO_A_JAVIER, ULTIMA_RESPUESTA_VENDEDOR
         ])
 
         msg = (
@@ -658,8 +664,12 @@ def crm_procesar_respuesta_vendedor(vendedor_phone, texto):
         sh.update_cell(fila_num, col[campo], valor)
 
     # El vendedor SÍ respondió (llegamos hasta aquí, no fue ambiguo) --
-    # se resetea el contador de intentos fallidos.
+    # se resetea el contador de intentos fallidos y la bandera de
+    # escalación, y se guarda el texto real de su respuesta (para poder
+    # construir después un cuestionario de seguimiento más completo).
     actualizar("INTENTOS_SEGUIMIENTO", "0")
+    actualizar("ESCALADO_A_JAVIER", "No")
+    actualizar("ULTIMA_RESPUESTA_VENDEDOR", texto.strip()[:300])
 
     fase = registro.get("FASE")
 
@@ -802,16 +812,19 @@ def _crm_revisar_seguimientos():
         codigos_eb = _codigos_eb_de_propiedades(registro.get("PROPIEDADES"))
 
         if intentos >= INTENTOS_ANTES_DE_ESCALAR:
-            if JAVIER_PERSONAL:
-                notificar_interno(
-                    JAVIER_PERSONAL,
-                    f"⚠️ {registro.get('VENDEDOR')} lleva {intentos} intentos sin responder sobre "
-                    f"{registro.get('NOMBRE_CLIENTE')} ({registro.get('FOLIO')}). Por favor "
-                    f"interven directamente -- el sistema deja de insistirle solo hasta que tú actúes.",
-                    resumen_para_plantilla=(f"Vendedor: {registro.get('VENDEDOR')} sin responder "
-                        f"({intentos} intentos) | Cliente: {registro.get('NOMBRE_CLIENTE')} | "
-                        f"Ficha: {codigos_eb} | Folio: {registro.get('FOLIO')}"),
-                    template_name="seguimiento_lead")
+            col_escalado = CRM_COLUMNAS.index("ESCALADO_A_JAVIER") + 1
+            if registro.get("ESCALADO_A_JAVIER") != "Si":  # solo se avisa UNA vez, no cada hora
+                if JAVIER_PERSONAL:
+                    notificar_interno(
+                        JAVIER_PERSONAL,
+                        f"⚠️ El vendedor {registro.get('VENDEDOR')} no atendió al cliente "
+                        f"{registro.get('NOMBRE_CLIENTE')} ({registro.get('FOLIO')}). Revísalo "
+                        f"en el CRM o habla con él directamente.",
+                        resumen_para_plantilla=(f"Vendedor {registro.get('VENDEDOR')} no atendió | "
+                            f"Cliente: {registro.get('NOMBRE_CLIENTE')} | "
+                            f"Ficha: {codigos_eb} | Folio: {registro.get('FOLIO')}"),
+                        template_name="seguimiento_lead")
+                sh.update_cell(fila_num, col_escalado, "Si")
             # No se reprograma más -- queda esperando que Javier intervenga
             # o que el vendedor responda espontáneamente (lo que sí se
             # sigue procesando normal si escribe).
@@ -1071,6 +1084,118 @@ def _drive_client():
         scopes=["https://www.googleapis.com/auth/drive"])
     return build("drive", "v3", credentials=creds)
 
+# ------------------------------------------------------------------
+# IKONO ALTA DIRECCIÓN — agenda real de llamadas (Google Calendar) +
+# investigación web del prospecto, para el lanzamiento de octubre.
+# Usa el MISMO service account que Sheets/Drive -- Javier debe:
+#   1. Habilitar "Google Calendar API" en el mismo proyecto de Google Cloud.
+#   2. Compartir SU calendario con el correo del service account, con
+#      permiso "Realizar cambios en los eventos".
+# ------------------------------------------------------------------
+IKONO_CALENDAR_ID = os.environ.get("IKONO_CALENDAR_ID", "")  # el email del calendario de Javier
+IKONO_HORA_INICIO = 8   # 8am
+IKONO_HORA_FIN = 10     # 10am
+IKONO_DURACION_MIN = 20
+
+def _calendar_client():
+    from googleapiclient.discovery import build
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_info(
+        json.loads(GOOGLE_CREDS_JSON),
+        scopes=["https://www.googleapis.com/auth/calendar"])
+    return build("calendar", "v3", credentials=creds)
+
+
+def _proximo_slot_ikono_y_agenda(nombre_cliente, telefono_cliente, resumen_situacion):
+    """Busca el próximo horario libre de 20 min entre semana (L-V) de
+    8-10am en el calendario de Javier, y AGENDA el evento ahí mismo.
+    Regresa (fecha_hora_texto, exito, link_evento_o_error)."""
+    if not (GOOGLE_CREDS_JSON and IKONO_CALENDAR_ID):
+        return None, False, "IKONO_CALENDAR_ID no configurado"
+    try:
+        servicio = _calendar_client()
+        import datetime as _dt
+        zona = "America/Mexico_City"
+        ahora = _dt.datetime.now()
+        # Máximo 7 días NATURALES de anticipación (no hábiles) -- si caen
+        # fin de semana en medio, se saltan igual, pero el límite total
+        # de la ventana de búsqueda es de 7 días corridos desde hoy.
+        for dias in range(0, 8):
+            candidato = ahora + _dt.timedelta(days=dias)
+            if candidato.weekday() >= 5:  # sábado=5, domingo=6
+                continue
+            dia_inicio = candidato.replace(hour=IKONO_HORA_INICIO, minute=0, second=0, microsecond=0)
+            dia_fin = candidato.replace(hour=IKONO_HORA_FIN, minute=0, second=0, microsecond=0)
+            if dia_fin < ahora:
+                continue
+            # Trae los eventos ya ocupados ese día en la ventana 8-10am
+            eventos = servicio.events().list(
+                calendarId=IKONO_CALENDAR_ID,
+                timeMin=dia_inicio.isoformat() + "Z", timeMax=dia_fin.isoformat() + "Z",
+                singleEvents=True, orderBy="startTime").execute().get("items", [])
+            ocupados = []
+            for ev in eventos:
+                ini = ev["start"].get("dateTime")
+                fin = ev["end"].get("dateTime")
+                if ini and fin:
+                    ocupados.append((_dt.datetime.fromisoformat(ini.replace("Z", "+00:00")),
+                                     _dt.datetime.fromisoformat(fin.replace("Z", "+00:00"))))
+            # Recorre la ventana en bloques de 20 min buscando uno libre
+            cursor = max(dia_inicio, ahora + _dt.timedelta(minutes=30))  # colchón mínimo de 30 min
+            while cursor + _dt.timedelta(minutes=IKONO_DURACION_MIN) <= dia_fin:
+                fin_bloque = cursor + _dt.timedelta(minutes=IKONO_DURACION_MIN)
+                choca = any(cursor < f and fin_bloque > i for i, f in ocupados)
+                if not choca:
+                    evento = servicio.events().insert(calendarId=IKONO_CALENDAR_ID, body={
+                        "summary": f"IKONO — Llamada con {nombre_cliente}",
+                        "description": f"Tel: {telefono_cliente}\nSituación: {resumen_situacion[:300]}",
+                        "start": {"dateTime": cursor.isoformat(), "timeZone": zona},
+                        "end": {"dateTime": fin_bloque.isoformat(), "timeZone": zona},
+                    }).execute()
+                    fecha_texto = cursor.strftime("%A %d de %B, %H:%M hrs")
+                    return fecha_texto, True, evento.get("htmlLink", "")
+                cursor += _dt.timedelta(minutes=IKONO_DURACION_MIN)
+        return None, False, "No se encontró horario libre en los próximos 7 días"
+    except Exception as e:
+        return None, False, str(e)[:300]
+
+
+def investigar_prospecto_ikono(nombre, industria, telefono):
+    """Llamada APARTE a Claude (no la conversación principal), con la
+    herramienta de búsqueda web habilitada, para investigar al prospecto
+    de IKONO antes de la llamada de Javier. Se mantiene separada del
+    flujo conversacional principal para no complicar el dispatcher de
+    herramientas propias con las herramientas de servidor de Anthropic."""
+    lada = telefono.strip()[-10:-8] if len(telefono.strip()) >= 10 else ""
+    prompt = (
+        f"Investiga en internet a esta persona para preparar una llamada de negocios:\n"
+        f"Nombre: {nombre}\nIndustria/tipo de negocio: {industria}\n"
+        f"Teléfono (para inferir ciudad por LADA si es útil): {telefono}\n\n"
+        f"Busca su perfil de LinkedIn si existe, su rol/empresa actual, y cualquier dato "
+        f"público relevante que correlacione con la industria que mencionó. "
+        f"Responde en español, breve (máximo 5-6 líneas), factual -- si no encuentras nada "
+        f"confiable, dilo directamente en vez de inventar. Si encuentras LinkedIn, incluye el link."
+    )
+    try:
+        r = requests.post(ANTHROPIC_API, timeout=45, headers={
+            "x-api-key": ANTHROPIC_API_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }, json={
+            "model": CLAUDE_MODEL, "max_tokens": 600,
+            "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 4}],
+            "messages": [{"role": "user", "content": prompt}],
+        })
+        if r.status_code != 200:
+            print(f"[MAX-IKONO] Error en investigación web: {r.status_code} {r.text[:300]}", flush=True)
+            return "(no se pudo completar la investigación automática)"
+        data = r.json()
+        texto = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+        return texto.strip() or "(sin resultados relevantes)"
+    except Exception as e:
+        print(f"[MAX-IKONO] Excepción en investigación web: {e}", flush=True)
+        return "(no se pudo completar la investigación automática)"
+
 def _drive_obtener_o_crear_carpeta(nombre, carpeta_padre_id=None):
     servicio = _drive_client()
     query = (f"name = '{nombre}' and mimeType = 'application/vnd.google-apps.folder' "
@@ -1178,6 +1303,28 @@ def _es_numero_interno(phone):
         return True
     return phone_n in {_normalizar_phone_wati(v["phone"]) for v in VENDEDORES}
 
+_CACHE_VENDEDOR_POR_CLIENTE = {}  # phone -> (nombre_vendedor_o_None, timestamp)
+
+def _vendedor_asignado_de(phone):
+    """Para etiquetar la copia que recibe Javier: si este cliente tiene
+    un expediente CRM activo, regresa el nombre del vendedor asignado
+    (o None si no tiene). Con caché de 5 min para no leer el Sheet en
+    cada mensaje -- esto se llama potencialmente en cada envío."""
+    ahora = time.time()
+    cacheado = _CACHE_VENDEDOR_POR_CLIENTE.get(phone)
+    if cacheado and (ahora - cacheado[1]) < 300:
+        return cacheado[0]
+    nombre_vendedor = None
+    try:
+        _, registro = _crm_buscar_activo_por_cliente(phone)
+        if registro:
+            nombre_vendedor = registro.get("VENDEDOR")
+    except Exception:
+        pass  # si falla la consulta, se muestra sin etiqueta -- no es crítico
+    _CACHE_VENDEDOR_POR_CLIENTE[phone] = (nombre_vendedor, ahora)
+    return nombre_vendedor
+
+
 def _reenviar_a_javier(phone, cliente=None, max_resp=None):
     """Copia en tiempo real a Javier de lo que escribe el cliente y/o lo
     que responde MAX, con el teléfono del cliente. Se engancha una sola
@@ -1192,10 +1339,15 @@ def _reenviar_a_javier(phone, cliente=None, max_resp=None):
     if destino == _normalizar_phone_wati(JAVIER_PERSONAL) or destino == _normalizar_phone_wati(HUMAN_HANDOFF or ""):
         return
     try:
+        # Si este cliente ya tiene vendedor asignado, se etiqueta la copia
+        # para que Javier sepa de un vistazo si es "su" cliente asignado
+        # (por el turno de rotación) o solo la copia general de otro caso.
+        vendedor = _vendedor_asignado_de(phone)
+        etiqueta = f" [Asignado a: {vendedor}]" if vendedor else ""
         if cliente:
-            wati_send_text(JAVIER_PERSONAL, f"📩 Cliente {phone}:\n{cliente[:500]}")
+            wati_send_text(JAVIER_PERSONAL, f"📩 Cliente {phone}{etiqueta}:\n{cliente[:500]}")
         if max_resp:
-            wati_send_text(JAVIER_PERSONAL, f"🤖 MAX → {phone}:\n{max_resp[:500]}")
+            wati_send_text(JAVIER_PERSONAL, f"🤖 MAX → {phone}{etiqueta}:\n{max_resp[:500]}")
     except Exception as e:
         print(f"[MAX-FORWARD] Error reenviando a Javier: {e}", flush=True)
 
@@ -1437,7 +1589,9 @@ COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
                 "ULTIMA_INTERACCION","ESTADO","NOTAS_COACHING","ULTIMO_DOCUMENTO_URL",
                 "VENDEDOR_ASIGNADO","VENDEDOR_ASIGNADO_PHONE",
                 "PRIMERA_FICHA_CODIGO","PRIMERA_FICHA_TITULO","PRIMERA_FICHA_LIGA",
-                "CRM_INICIADO","VERIFICA_ESPERANDO_DATOS"]
+                "CRM_INICIADO","VERIFICA_ESPERANDO_DATOS",
+                "IKONO_PREGUNTA_ACTUAL","IKONO_NOMBRE","IKONO_TELEFONO",
+                "IKONO_INDUSTRIA","IKONO_SITUACION"]
 
 def _sheets_client():
     """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
@@ -4457,6 +4611,83 @@ def webhook():
         except Exception:
             pass
         return jsonify(ok=True, ruta="acierta_verifica_datos")
+
+    # FAST-PATH IKONO ALTA DIRECCIÓN: mismo mecanismo que VERIFICA --
+    # palabra clave sola (o casi sola) en el mensaje. Arranca un
+    # cuestionario de 4 preguntas, una por turno, guardado en memoria.
+    if (len(_palabras_verifica) <= 3 and "ikono" in _texto_normalizado.split()):
+        print(f"[MAX-IKONO] Palabra clave detectada de {phone}", flush=True)
+        wati_send_text(phone,
+            "¡Hola! 👋 Gracias por tu interés en *IKONO Alta Dirección* — coaching, "
+            "consultoría, mentoría y conferencias para alta dirección. "
+            "Antes de agendar tu llamada con Javier Mendoza, te hago 4 preguntas rápidas 📋")
+        wati_send_text(phone, "1️⃣ ¿Cuál es tu nombre completo?")
+        try:
+            memoria_guardar(phone, IKONO_PREGUNTA_ACTUAL="1")
+        except Exception:
+            pass
+        return jsonify(ok=True, ruta="ikono_inicio")
+
+    _ikono_pregunta = memoria_leer(phone).get("IKONO_PREGUNTA_ACTUAL", "")
+    if _ikono_pregunta == "1":
+        memoria_guardar(phone, IKONO_NOMBRE=text.strip())
+        wati_send_text(phone,
+            f"2️⃣ Para confirmar, ¿tu teléfono de contacto es este mismo ({phone}), "
+            f"o prefieres que usemos otro?")
+        memoria_guardar(phone, IKONO_PREGUNTA_ACTUAL="2")
+        return jsonify(ok=True, ruta="ikono_p1")
+
+    if _ikono_pregunta == "2":
+        _tel_confirmado = phone if re.search(r"mismo|si|s[ií]|este", text.lower()) and not re.search(r"\d{7,}", text) else re.sub(r"[^\d]", "", text) or phone
+        memoria_guardar(phone, IKONO_TELEFONO=_tel_confirmado)
+        wati_send_text(phone, "3️⃣ ¿De qué industria o tipo de negocio eres?")
+        memoria_guardar(phone, IKONO_PREGUNTA_ACTUAL="3")
+        return jsonify(ok=True, ruta="ikono_p2")
+
+    if _ikono_pregunta == "3":
+        memoria_guardar(phone, IKONO_INDUSTRIA=text.strip())
+        wati_send_text(phone,
+            "4️⃣ Por último, cuéntame brevemente: ¿cuál es la situación actual por la que "
+            "quieres contactar a IKONO Alta Dirección?")
+        memoria_guardar(phone, IKONO_PREGUNTA_ACTUAL="4")
+        return jsonify(ok=True, ruta="ikono_p3")
+
+    if _ikono_pregunta == "4":
+        m_ikono = memoria_leer(phone)
+        _nombre = m_ikono.get("IKONO_NOMBRE", "")
+        _tel = m_ikono.get("IKONO_TELEFONO", phone)
+        _industria = m_ikono.get("IKONO_INDUSTRIA", "")
+        _situacion = text.strip()
+        memoria_guardar(phone, IKONO_SITUACION=_situacion, IKONO_PREGUNTA_ACTUAL="")
+        wati_send_text(phone,
+            f"¡Gracias, {_nombre.split()[0] if _nombre else ''}! 🙌 Estoy agendando tu llamada "
+            f"de 20 minutos con Javier -- te confirmo el horario en un momento.")
+
+        def _finalizar_ikono(_phone=phone, _nombre=_nombre, _tel=_tel,
+                             _industria=_industria, _situacion=_situacion):
+            fecha_texto, agendado, link_o_error = _proximo_slot_ikono_y_agenda(_nombre, _tel, _situacion)
+            if agendado:
+                wati_send_text(_phone,
+                    f"📅 ¡Listo! Tu llamada con Javier Mendoza quedó agendada para el "
+                    f"*{fecha_texto}* (hora Guadalajara). Te esperamos 🙌")
+            else:
+                wati_send_text(_phone,
+                    "Ya tenemos tus datos -- Javier te confirma personalmente el horario "
+                    "de tu llamada en breve. 🙌")
+            resumen_investigacion = investigar_prospecto_ikono(_nombre, _industria, _tel)
+            notificar_interno(
+                JAVIER_PERSONAL,
+                f"🎯 NUEVO PROSPECTO IKONO ALTA DIRECCIÓN\n\n"
+                f"Nombre: {_nombre}\nTeléfono: {_tel}\nIndustria: {_industria}\n"
+                f"Situación: {_situacion}\n\n"
+                f"📅 Llamada: {fecha_texto if agendado else 'PENDIENTE DE AGENDAR - ' + str(link_o_error)}\n\n"
+                f"🔎 Investigación:\n{resumen_investigacion}",
+                resumen_para_plantilla=(f"IKONO: {_nombre} | Tel: {_tel} | "
+                    f"Industria: {_industria} | Llamada: {fecha_texto if agendado else 'pendiente'}"),
+                template_name="notificacion_lead")
+
+        threading.Thread(target=_finalizar_ikono, daemon=True).start()
+        return jsonify(ok=True, ruta="ikono_completo")
 
     # ENRUTAMIENTO AL CRM AIDA: si quien escribe es uno de los vendedores
     # Y tiene un expediente activo esperando su respuesta, esto NO pasa
