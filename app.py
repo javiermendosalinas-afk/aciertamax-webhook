@@ -1437,7 +1437,7 @@ COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
                 "ULTIMA_INTERACCION","ESTADO","NOTAS_COACHING","ULTIMO_DOCUMENTO_URL",
                 "VENDEDOR_ASIGNADO","VENDEDOR_ASIGNADO_PHONE",
                 "PRIMERA_FICHA_CODIGO","PRIMERA_FICHA_TITULO","PRIMERA_FICHA_LIGA",
-                "CRM_INICIADO"]
+                "CRM_INICIADO","VERIFICA_ESPERANDO_DATOS"]
 
 def _sheets_client():
     """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
@@ -1905,16 +1905,22 @@ def registrar_lead(phone, nombre="", interes="", operacion="", presupuesto="",
 
 def avisar_humano(phone, resumen, categoria=None):
     """Escala a Javier/equipo. categoria cambia el encabezado del aviso
-    para que sea escaneable de un vistazo (lead normal vs caso especial)."""
+    para que sea escaneable de un vistazo (lead normal vs caso especial).
+    Usa notificar_interno (con respaldo de plantilla) -- esta función se
+    quedó sin ese respaldo por descuido mientras el resto del CRM sí lo
+    tenía, y por eso los avisos de Acierta Verifica no llegaban."""
     etiquetas = {
         "RECLAMO-PROPIETARIO": "⚠️ RECLAMO DE PROPIETARIO",
         "COLABORACION-AGENTE": "🤝 AGENTE QUIERE COLABORAR",
         "BOLSA-TRABAJO": "📋 INTERÉS EN TRABAJAR AQUÍ",
     }
     encabezado = etiquetas.get(categoria, "🔥 LEAD CALIENTE")
+    ok = True
     if HUMAN_HANDOFF:
-        wati_send_text(HUMAN_HANDOFF,
-            f"{encabezado}\nCliente: {phone}\n{resumen[:600]}")
+        ok = notificar_interno(
+            HUMAN_HANDOFF,
+            f"{encabezado}\nCliente: {phone}\n{resumen[:600]}",
+            resumen_para_plantilla=f"{encabezado} | Cliente: {phone} | {resumen[:150]}")
     # Los casos especiales NO son leads buscando propiedad -- que el hilo
     # proactivo nunca les mande "¿quieres ver opciones frescas?" (suena
     # fuera de lugar para un broker de otra inmobiliaria, un reclamo de
@@ -1924,7 +1930,7 @@ def avisar_humano(phone, resumen, categoria=None):
             memoria_guardar(phone, ESTADO=f"No-Molestar-{categoria}")
         except Exception:
             pass  # no debe tumbar el aviso ya enviado
-    return {"avisado": bool(HUMAN_HANDOFF)}
+    return {"avisado": bool(HUMAN_HANDOFF), "notificacion_enviada": ok}
 
 # ------------------------------------------------------------------
 # AGENTE CLAUDE — definición de herramientas y system prompt
@@ -4422,7 +4428,35 @@ def webhook():
                 categoria=None)
         except Exception as e:
             print(f"[MAX-VERIFICA] Error escalando a humano: {e}", flush=True)
+        try:
+            memoria_guardar(phone, VERIFICA_ESPERANDO_DATOS="Si")
+        except Exception:
+            pass
         return jsonify(ok=True, ruta="acierta_verifica")
+
+    # SEGUNDO PASO DE VERIFICA: si ya se disparó el fast-path de arriba y
+    # seguimos esperando nombre/zona, ESTE mensaje es esa respuesta -- se
+    # procesa aparte, determinístico, para que nunca se mezcle con
+    # conversaciones viejas que pudiera tener el cliente en memoria (eso
+    # pasó en una prueba real: MAX retomó una búsqueda de renta anterior
+    # en vez de registrar los datos de Verifica).
+    if memoria_leer(phone).get("VERIFICA_ESPERANDO_DATOS") == "Si":
+        print(f"[MAX-VERIFICA] Datos de seguimiento recibidos de {phone}: {text}", flush=True)
+        wati_send_text(phone,
+            "¡Gracias! 🙌 Ya quedó anotado — el coordinador de Acierta Verifica te contacta "
+            "en breve con la cotización y para agendar tu visita.")
+        try:
+            avisar_humano(phone,
+                f"🔍 DATOS DE ACIERTA VERIFICA — {phone} respondió: \"{text}\". "
+                f"Ya puedes cotizar y agendar.",
+                categoria=None)
+        except Exception as e:
+            print(f"[MAX-VERIFICA] Error escalando datos a humano: {e}", flush=True)
+        try:
+            memoria_guardar(phone, VERIFICA_ESPERANDO_DATOS="No")
+        except Exception:
+            pass
+        return jsonify(ok=True, ruta="acierta_verifica_datos")
 
     # ENRUTAMIENTO AL CRM AIDA: si quien escribe es uno de los vendedores
     # Y tiene un expediente activo esperando su respuesta, esto NO pasa
