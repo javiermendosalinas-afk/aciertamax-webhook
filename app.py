@@ -60,12 +60,34 @@ _turno_actual = [0]  # indice en VENDEDORES, compartido entre threads
 
 def _siguiente_vendedor():
     """Retorna el vendedor al que le toca este lead (round-robin).
-    Javier es indice 0 — aparece cada 4 leads como parte del ciclo
-    Y ademas recibe copia de todos."""
-    with _TURNO_LOCK:
-        v = VENDEDORES[_turno_actual[0] % len(VENDEDORES)]
-        _turno_actual[0] += 1
-    return v
+    IMPORTANTE: no usa un contador en memoria -- ese contador se reinicia
+    a cero en cada redeploy de Render (bug real: durante una sesión con
+    muchos redeploys, SIEMPRE volvía a tocarle a Javier). En vez de eso,
+    lee el último vendedor asignado en el Sheet CRM AIDA y regresa el
+    siguiente en la lista -- así el turno sobrevive a cualquier reinicio."""
+    ultimo_nombre = None
+    try:
+        sh = _crm_sheet()
+        valores = sh.get_all_values()
+        if len(valores) > 1:
+            idx_vendedor = CRM_COLUMNAS.index("VENDEDOR")
+            # Recorre de abajo hacia arriba buscando la última fila con
+            # un nombre de vendedor válido (por si la última fila está
+            # incompleta o a medio escribir).
+            for fila in reversed(valores[1:]):
+                if idx_vendedor < len(fila) and fila[idx_vendedor].strip():
+                    ultimo_nombre = fila[idx_vendedor].strip()
+                    break
+    except Exception as e:
+        print(f"[MAX-ROTACION] No se pudo leer el último vendedor del Sheet: {e}", flush=True)
+
+    if ultimo_nombre:
+        nombres = [v["nombre"] for v in VENDEDORES]
+        if ultimo_nombre in nombres:
+            siguiente_idx = (nombres.index(ultimo_nombre) + 1) % len(VENDEDORES)
+            return VENDEDORES[siguiente_idx]
+    # Sin historial legible (arranque en limpio) -- empieza en el primero.
+    return VENDEDORES[0]
 
 # ------------------------------------------------------------------
 # CRM AIDA — Atencion / Interes / Deseo / Accion
