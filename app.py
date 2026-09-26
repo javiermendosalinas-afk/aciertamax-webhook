@@ -1591,7 +1591,9 @@ COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
                 "PRIMERA_FICHA_CODIGO","PRIMERA_FICHA_TITULO","PRIMERA_FICHA_LIGA",
                 "CRM_INICIADO","VERIFICA_ESPERANDO_DATOS",
                 "IKONO_PREGUNTA_ACTUAL","IKONO_NOMBRE","IKONO_TELEFONO",
-                "IKONO_INDUSTRIA","IKONO_SITUACION","IKONO_CLIENTE"]
+                "IKONO_INDUSTRIA","IKONO_SITUACION","IKONO_CLIENTE",
+                "VERIFICA_VENDEDOR","VERIFICA_VENDEDOR_PHONE",
+                "VERIFICA_PREGUNTA_ACTUAL","VERIFICA_NOMBRE","VERIFICA_ZONA"]
 
 def _sheets_client():
     """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
@@ -4426,9 +4428,34 @@ def _buscar_eb_en_payload(obj, _profundidad=0):
                 return r
     return None
 
+_MENSAJES_PROCESADOS = {}  # whatsappMessageId -> timestamp
+_MENSAJES_PROCESADOS_LOCK = threading.Lock()
+
+def _es_mensaje_duplicado(msg_id):
+    """Wati/Meta puede reintentar el mismo webhook si el procesamiento
+    tarda (ej. el fast-path de VERIFICA hace varias llamadas seguidas:
+    2 mensajes + notificación + guardar en Sheets). Sin esto, un reintento
+    ejecuta TODO el flujo de nuevo -- se vio en producción: el saludo de
+    VERIFICA le llegó dos veces al mismo cliente."""
+    if not msg_id:
+        return False
+    ahora = time.time()
+    with _MENSAJES_PROCESADOS_LOCK:
+        for k in [k for k, t in _MENSAJES_PROCESADOS.items() if ahora - t > 600]:
+            del _MENSAJES_PROCESADOS[k]
+        if msg_id in _MENSAJES_PROCESADOS:
+            return True
+        _MENSAJES_PROCESADOS[msg_id] = ahora
+        return False
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
+    _msg_id = data.get("id") or data.get("whatsappMessageId")
+    if _msg_id and _es_mensaje_duplicado(_msg_id):
+        print(f"[MAX] Mensaje duplicado ignorado (reintento de webhook): {_msg_id}", flush=True)
+        return jsonify(ok=True, duplicado=True)
     # Nombre de perfil de WhatsApp que manda Wati (puede ser nombre real o
     # nombre generico de negocio/rol) -- se usa mas abajo como PISTA para
     # agent_reply, nunca como verdad absoluta.
@@ -4571,45 +4598,38 @@ def webhook():
             "¡Hola! 👋 Gracias por tu interés en *ACIERTA VERIFICA* — revisión física básica "
             "y análisis documental preventivo antes de comprar, rentar o entregar una propiedad. "
             "\"Antes de firmar, verifica.\" 🔍")
-        wati_send_text(phone,
-            "Un coordinador te va a contactar en breve para cotizar según los m² a revisar "
-            "(desde $45/m², mínimo $3,500 MXN en la ZMG) y agendar tu visita. "
-            "¿Nos compartes tu nombre y la dirección o zona de la propiedad?")
+        wati_send_text(phone, "1️⃣ ¿Cuál es tu nombre?")
         try:
-            avisar_humano(phone,
-                f"🔍 NUEVO CONTACTO ACIERTA VERIFICA — {phone} escribió \"{text}\". "
-                f"Necesita cotización y agenda de un coordinador.",
-                categoria=None)
-        except Exception as e:
-            print(f"[MAX-VERIFICA] Error escalando a humano: {e}", flush=True)
-        try:
-            memoria_guardar(phone, VERIFICA_ESPERANDO_DATOS="Si")
+            memoria_guardar(phone, VERIFICA_PREGUNTA_ACTUAL="1")
         except Exception:
             pass
         return jsonify(ok=True, ruta="acierta_verifica")
 
-    # SEGUNDO PASO DE VERIFICA: si ya se disparó el fast-path de arriba y
-    # seguimos esperando nombre/zona, ESTE mensaje es esa respuesta -- se
-    # procesa aparte, determinístico, para que nunca se mezcle con
-    # conversaciones viejas que pudiera tener el cliente en memoria (eso
-    # pasó en una prueba real: MAX retomó una búsqueda de renta anterior
-    # en vez de registrar los datos de Verifica).
-    if memoria_leer(phone).get("VERIFICA_ESPERANDO_DATOS") == "Si":
-        print(f"[MAX-VERIFICA] Datos de seguimiento recibidos de {phone}: {text}", flush=True)
+    _verifica_pregunta = memoria_leer(phone).get("VERIFICA_PREGUNTA_ACTUAL", "")
+    if _verifica_pregunta == "1":
+        memoria_guardar(phone, VERIFICA_NOMBRE=text.strip())
+        wati_send_text(phone, "2️⃣ ¿Cuál es la dirección o zona de la propiedad a revisar?")
+        memoria_guardar(phone, VERIFICA_PREGUNTA_ACTUAL="2")
+        return jsonify(ok=True, ruta="acierta_verifica_p1")
+
+    if _verifica_pregunta == "2":
+        _m_verifica = memoria_leer(phone)
+        _nombre_v = _m_verifica.get("VERIFICA_NOMBRE", "")
+        _zona_v = text.strip()
+        memoria_guardar(phone, VERIFICA_ZONA=_zona_v, VERIFICA_PREGUNTA_ACTUAL="")
         wati_send_text(phone,
-            "¡Gracias! 🙌 Ya quedó anotado — el coordinador de Acierta Verifica te contacta "
-            "en breve con la cotización y para agendar tu visita.")
-        try:
-            avisar_humano(phone,
-                f"🔍 DATOS DE ACIERTA VERIFICA — {phone} respondió: \"{text}\". "
-                f"Ya puedes cotizar y agendar.",
-                categoria=None)
-        except Exception as e:
-            print(f"[MAX-VERIFICA] Error escalando datos a humano: {e}", flush=True)
-        try:
-            memoria_guardar(phone, VERIFICA_ESPERANDO_DATOS="No")
-        except Exception:
-            pass
+            "¡Gracias! 🙌 Un coordinador te contacta en breve para cotizar según los m² a "
+            "revisar (desde $45/m², mínimo $3,500 MXN en la ZMG) y agendar tu visita.")
+        # VERIFICA es solo a Javier -- NO entra a la rotación de vendedores
+        # de bienes raíces (a diferencia de los leads normales de Acierta Max).
+        if JAVIER_PERSONAL:
+            notificar_interno(
+                JAVIER_PERSONAL,
+                f"🔍 NUEVO CONTACTO ACIERTA VERIFICA\n\n"
+                f"Nombre: {_nombre_v}\nTeléfono: {phone}\nZona/dirección: {_zona_v}",
+                resumen_para_plantilla=(f"VERIFICA: {_nombre_v} | Tel: {phone} | "
+                    f"Zona: {_zona_v}"),
+                template_name="notificacion_lead")
         return jsonify(ok=True, ruta="acierta_verifica_datos")
 
     # FAST-PATH IKONO ALTA DIRECCIÓN: mismo mecanismo que VERIFICA --
