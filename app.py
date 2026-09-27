@@ -273,7 +273,11 @@ def _betty_revisar_seguimientos():
             sh.update_cell(idx + 1, col["INTENTOS_SEGUIMIENTO"], str(intentos + 1))
 
 def _crm_sheet():
-    """Abre (o crea, con encabezados) la pestaña CRM AIDA."""
+    """Abre (o crea, con encabezados) la pestaña CRM AIDA. Si ya existía
+    con menos columnas de las que ahora tiene CRM_COLUMNAS (columnas
+    agregadas después), extiende el encabezado físico -- puramente
+    cosmético para que se vea bien al revisar el Sheet a mano, ya que
+    _crm_fila_a_dict ya no depende de este encabezado para funcionar."""
     import gspread
     from google.oauth2.service_account import Credentials
     creds = Credentials.from_service_account_info(
@@ -281,14 +285,29 @@ def _crm_sheet():
         scopes=["https://www.googleapis.com/auth/spreadsheets"])
     libro = gspread.authorize(creds).open_by_key(SHEET_ID)
     try:
-        return libro.worksheet(CRM_HOJA)
-    except Exception:
+        sh = libro.worksheet(CRM_HOJA)
+        encabezado_actual = sh.row_values(1)
+        if len(encabezado_actual) < len(CRM_COLUMNAS):
+            sh.update(f"A1", [CRM_COLUMNAS])
+        return sh
+    except gspread.WorksheetNotFound:
         sh = libro.add_worksheet(title=CRM_HOJA, rows=2000, cols=len(CRM_COLUMNAS))
         sh.append_row(CRM_COLUMNAS)
         return sh
 
 def _crm_fila_a_dict(headers, fila):
-    return {headers[i]: (fila[i] if i < len(fila) else "") for i in range(len(headers))}
+    """IMPORTANTE: ignora `headers` (la fila 1 real del Sheet) y usa
+    siempre CRM_COLUMNAS -- el Sheet "CRM AIDA" ya existía antes de que
+    se agregaran columnas nuevas (ESCALADO_A_JAVIER, etc.) al código, y
+    su encabezado físico nunca se actualizó. Si se lee con el encabezado
+    real, esas columnas nuevas simplemente no aparecen en el dict nunca
+    (esto causó un bug real en producción: la alerta de "vendedor no
+    atendió" se repetía cada hora sin parar, porque ESCALADO_A_JAVIER
+    jamás se encontraba al leer, sin importar que sí se hubiera guardado
+    "Si" en la celda). Se mantiene el parámetro `headers` sin usar para
+    no tener que tocar las 4 llamadas existentes."""
+    return {CRM_COLUMNAS[i]: (fila[i] if i < len(fila) else "")
+            for i in range(len(CRM_COLUMNAS))}
 
 def _resumen_propiedades_para_plantilla(propiedades, max_chars=250):
     """Texto compacto 'Título (EB-XXXX)' por propiedad, para meter en el
