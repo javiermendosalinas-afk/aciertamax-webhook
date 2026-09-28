@@ -388,7 +388,30 @@ def _crm_buscar_activo_por_cliente(phone_cliente):
     return None, None
 
 
-def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion=""):
+def _msg_vendedor_web(folio_crm, nombre, phone, perfil, carpeta_url=""):
+    """Aviso al vendedor cuando el cliente llega por el camino web (acierta.pro).
+    A diferencia del flujo por WhatsApp, aquí NO hay chat ni ficha: el perfil
+    viene de lo que el cliente contestó en el formulario."""
+    lineas = [f"🆕 NUEVO CLIENTE ASIGNADO (desde acierta.pro) — {folio_crm}", "",
+              f"Cliente: {nombre} ({phone})"]
+    if perfil.get("email"):
+        lineas.append(f"Correo: {perfil['email']}")
+    lineas.append(f"Quiere: {perfil.get('resumen', '')}")
+    if perfil.get("zona"):
+        lineas.append(f"Zona: {perfil['zona']}")
+    if perfil.get("cuando"):
+        lineas.append(f"Para cuándo: {perfil['cuando']}")
+    lineas += ["", "📋 Por favor:",
+               "1. Escríbele por WhatsApp hoy para presentarte (él/ella aceptó que Acierta Max lo contacte).",
+               "2. Confirma zona, presupuesto y forma de pago.",
+               "3. Registra tu avance aquí mismo."]
+    if carpeta_url:
+        lineas += ["", f"📁 Expediente del cliente: {carpeta_url}"]
+    lineas += ["", "En 3 horas te voy a preguntar cómo vas. Cualquier duda, contesta aquí mismo."]
+    return "\n".join(lineas)
+
+
+def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="", perfil_web=None):
     """Arranca el expediente CRM AIDA de un cliente que ya calificó
     propiedades y quiere avanzar a visita. Reutiliza el MISMO vendedor
     que se le asignó desde el primer contacto (registrar_lead) -- nunca
@@ -516,23 +539,27 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
             + f"En 3 horas te voy a preguntar cómo vas. Cualquier duda, contesta aquí mismo.\n\n"
             + f"👇 Te mando el chat completo actualizado en el siguiente mensaje."
         )
+        if perfil_web:
+            msg = _msg_vendedor_web(folio_crm, nombre_cliente, phone_cliente, perfil_web, carpeta_url)
         for p in propiedades:
             if p.get("liga"):
                 try:
                     enviar_ficha_liga(vendedor["phone"], p["liga"])
                 except Exception:
                     pass
-        ok_msg = notificar_interno(
-            vendedor["phone"], msg,
-            resumen_para_plantilla=(f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
-                f"Ficha: {_resumen_propiedades_para_plantilla(propiedades)} | "
-                f"Folio: {folio_crm}"))
+        resumen_pl = (f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
+                      f"Web: {(perfil_web or {}).get('resumen', '')[:140]} | Folio: {folio_crm}"
+                      if perfil_web else
+                      f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
+                      f"Ficha: {_resumen_propiedades_para_plantilla(propiedades)} | Folio: {folio_crm}")
+        ok_msg = notificar_interno(vendedor["phone"], msg, resumen_para_plantilla=resumen_pl)
         chat_completo = _formatear_chat_para_vendedor(phone_cliente)
         # El chat completo NO cabe en la plantilla de una sola variable --
         # si el mensaje normal ya falló, no tiene caso reintentarlo con la
         # plantilla (el contenido no encaja). Se manda tal cual, sabiendo
         # que puede no llegar si el ticket sigue cerrado.
-        ok_chat = wati_send_text(vendedor["phone"], f"💬 CHAT COMPLETO — {folio_crm}\n\n{chat_completo}")
+        # Un lead web todavía no tiene chat: no se manda un "chat completo" vacío.
+        ok_chat = True if perfil_web else wati_send_text(vendedor["phone"], f"💬 CHAT COMPLETO — {folio_crm}\n\n{chat_completo}")
         if not (ok_msg and ok_chat):
             print(f"[MAX-CRM-ALERTA] Envío a {vendedor['nombre']} ({vendedor['phone']}) "
                   f"falló (ok_msg={ok_msg}, ok_chat={ok_chat}).", flush=True)
@@ -545,9 +572,10 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="")
                     f"Acierta Max -- contáctalo tú directamente para avisarle.",
                     resumen_para_plantilla=(f"⚠️ No se notificó a {vendedor['nombre']} | "
                         f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
-                        f"Ficha: {_resumen_propiedades_para_plantilla(propiedades)} | "
+                        f"{('Web: ' + perfil_web.get('resumen', '')[:120]) if perfil_web else 'Ficha: ' + _resumen_propiedades_para_plantilla(propiedades)} | "
                         f"Folio: {folio_crm}"))
         return {"creado": True, "folio_crm": folio_crm, "vendedor": vendedor["nombre"],
+                "vendedor_phone": vendedor["phone"],
                 "carpeta_cliente": carpeta_url, "notificacion_enviada": bool(ok_msg and ok_chat)}
     except Exception as e:
         return {"creado": False, "motivo": str(e)[:200]}
@@ -5270,6 +5298,296 @@ def ver_ficha(phone):
         return "No autorizado", 401
     ficha = obtener_ficha_completa(phone)
     return _ficha_html(ficha)
+
+
+# ------------------------------------------------------------------
+# CAMINO WEB — alta de leads desde acierta.pro/camino.html
+# El cliente da su nombre, WhatsApp y (opcional) correo con consentimiento
+# explícito. Se guarda en "Leads MAX", se asigna vendedor por rotación
+# (mismo mecanismo que WhatsApp) y se avisa al vendedor y a Javier.
+# Es un endpoint PÚBLICO: valida todo, limita la frecuencia y solo acepta
+# valores de listas cerradas (excepto nombre/zona/notas, que se limpian).
+# ------------------------------------------------------------------
+import hmac
+import hashlib
+
+CAMINO_ORIGENES = {"https://acierta.pro", "https://www.acierta.pro"}
+_CAMINO_HITS = {}
+_CAMINO_LOCK = threading.Lock()
+_CAMINO_OP = {"compra": "compra", "renta": "renta", "vender": "captación"}
+_CAMINO_TIPO = {"casa": "Casa", "departamento": "Departamento", "terreno": "Terreno",
+                "local": "Local comercial", "oficina": "Oficina", "bodega": "Bodega/nave",
+                "otro": "Otro", "nose": "Aún no lo sabe"}
+_CAMINO_USO = {"vivir": "para vivir", "invertir": "para invertir", "negocio": "para negocio"}
+_CAMINO_CUANDO = {"ya": "lo antes posible (menos de 30 días)", "1a3": "en 1 a 3 meses",
+                  "mas3": "en más de 3 meses / explorando"}
+_CAMINO_MUNI = {"Guadalajara", "Zapopan", "Tlajomulco de Zúñiga", "Tlaquepaque", "Tonalá", "cualquiera"}
+_CAMINO_CREDITO = {"banco": "crédito bancario", "infonavit": "Infonavit",
+                   "cofinavit": "Cofinavit (Infonavit + banco)", "contado": "de contado", "nose": "aún no lo sabe"}
+
+
+def _camino_resp(payload, status=200):
+    resp = jsonify(payload)
+    resp.status_code = status
+    origen = request.headers.get("Origin", "")
+    if origen in CAMINO_ORIGENES:
+        resp.headers["Access-Control-Allow-Origin"] = origen
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        resp.headers["Access-Control-Max-Age"] = "600"
+    return resp
+
+
+def _camino_ip():
+    xff = request.headers.get("X-Forwarded-For", "")
+    return (xff.split(",")[0].strip() if xff else "") or (request.remote_addr or "?")
+
+
+def _camino_limite(clave, maximo, ventana_s):
+    """True si todavía está dentro del límite (y registra el intento)."""
+    ahora = time.time()
+    with _CAMINO_LOCK:
+        hits = [t for t in _CAMINO_HITS.get(clave, []) if ahora - t < ventana_s]
+        if len(hits) >= maximo:
+            _CAMINO_HITS[clave] = hits
+            return False
+        hits.append(ahora)
+        _CAMINO_HITS[clave] = hits
+        if len(_CAMINO_HITS) > 5000:  # limpieza básica para no crecer sin fin
+            for k in [k for k, v in _CAMINO_HITS.items() if not v or ahora - v[-1] > 86400]:
+                _CAMINO_HITS.pop(k, None)
+    return True
+
+
+def _camino_limpiar(valor, maximo):
+    """Texto libre seguro: sin caracteres de control, longitud acotada y sin
+    que una celda de Google Sheets pueda interpretarse como fórmula."""
+    t = re.sub(r"[\x00-\x1f\x7f]", " ", str(valor or ""))
+    t = re.sub(r"\s+", " ", t).strip()[:maximo]
+    if t[:1] in ("=", "+", "-", "@"):
+        t = "'" + t
+    return t
+
+
+def _camino_tel(valor):
+    d = re.sub(r"\D", "", str(valor or ""))
+    if d.startswith("521") and len(d) == 13:
+        d = d[3:]
+    elif d.startswith("52") and len(d) == 12:
+        d = d[2:]
+    return "521" + d if len(d) == 10 else None
+
+
+def _camino_email(valor):
+    e = str(valor or "").strip()
+    if not e:
+        return ""
+    if len(e) <= 120 and re.match(r"^[^@\s]{1,64}@[^@\s]{1,100}\.[^@\s]{2,}$", e):
+        return e
+    return None
+
+
+def _camino_num(valor, maximo=1_000_000_000):
+    try:
+        n = float(valor)
+    except (TypeError, ValueError):
+        return None
+    return n if 0 < n <= maximo else None
+
+
+def _camino_token(folio, tel):
+    llave = (os.environ.get("CAMINO_SECRET") or os.environ.get("WATI_API_KEY") or "camino").encode()
+    return hmac.new(llave, f"{folio}|{tel}".encode(), hashlib.sha256).hexdigest()[:24]
+
+
+def _camino_json():
+    if (request.content_length or 0) > 8192:
+        return None
+    return request.get_json(silent=True)
+
+
+@app.route("/api/camino", methods=["POST", "OPTIONS"])
+def api_camino():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    origen = request.headers.get("Origin", "")
+    if origen and origen not in CAMINO_ORIGENES:
+        return _camino_resp({"ok": False, "error": "Origen no permitido."}, 403)
+    d = _camino_json()
+    if not isinstance(d, dict):
+        return _camino_resp({"ok": False, "error": "Solicitud inválida."}, 400)
+    if d.get("empresa"):  # campo trampa para bots: se descarta en silencio
+        return _camino_resp({"ok": True, "folio": "", "vendedor": ""})
+    if not _camino_limite("ip:" + _camino_ip(), 8, 3600):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos. Intenta de nuevo en un rato."}, 429)
+
+    if d.get("consentimiento") is not True:
+        return _camino_resp({"ok": False, "error": "Necesitamos tu consentimiento para guardar tus datos y contactarte."}, 400)
+    nombre = _camino_limpiar(d.get("nombre"), 80)
+    if len(nombre) < 2:
+        return _camino_resp({"ok": False, "error": "Escribe tu nombre."}, 400)
+    tel = _camino_tel(d.get("whatsapp"))
+    if not tel:
+        return _camino_resp({"ok": False, "error": "Escribe tu WhatsApp a 10 dígitos."}, 400)
+    email = _camino_email(d.get("email"))
+    if email is None:
+        return _camino_resp({"ok": False, "error": "Revisa tu correo."}, 400)
+    op = _CAMINO_OP.get(d.get("operacion"))
+    if not op:
+        return _camino_resp({"ok": False, "error": "Elige qué quieres hacer."}, 400)
+    tipo = d.get("tipo") if d.get("tipo") in _CAMINO_TIPO else "nose"
+    uso = d.get("uso") if d.get("uso") in _CAMINO_USO else ""
+    cuando = d.get("cuando") if d.get("cuando") in _CAMINO_CUANDO else ""
+    muni = d.get("municipio") if d.get("municipio") in _CAMINO_MUNI else "cualquiera"
+    colonia = _camino_limpiar(d.get("colonia"), 60)
+    zona = (muni if muni != "cualquiera" else "Cualquier zona de la ZMG") + (f" ({colonia})" if colonia else "")
+    if not _camino_limite("tel:" + tel, 3, 86400):
+        return _camino_resp({"ok": False, "error": "Ya recibimos tus datos hoy. Un asesor te contactará."}, 429)
+
+    interes = _CAMINO_TIPO[tipo] + (f" {_CAMINO_USO[uso]}" if uso else "")
+    resumen = f"{op.upper()} · {_CAMINO_TIPO[tipo]}" + (f" · {_CAMINO_USO[uso]}" if uso else "")
+    perfil = {"email": email, "resumen": resumen, "zona": zona,
+              "cuando": _CAMINO_CUANDO.get(cuando, "")}
+    aviso = _camino_limpiar(d.get("aviso_version"), 40)
+    notas = (f"[WEB camino] Correo: {email or 'no dio'} | Para cuándo: {perfil['cuando'] or 'n/d'} | "
+             f"Consentimiento aviso de privacidad {aviso or 'n/d'}: {hora_gdl()} | "
+             f"Urgencia: {'ya, pronto' if cuando == 'ya' else 'normal'}")
+    try:
+        # ¿Ya tiene expediente abierto? No se duplica: se le avisa al mismo vendedor.
+        fila_ex, reg_ex = _crm_buscar_activo_por_cliente(tel)
+        if fila_ex and reg_ex:
+            vend_nombre = reg_ex.get("VENDEDOR", "")
+            vend_phone = reg_ex.get("VENDEDOR_PHONE", "")
+            folio_ex = reg_ex.get("FOLIO", "")
+            if vend_phone:
+                notificar_interno(
+                    vend_phone,
+                    f"🔁 {nombre} ({tel}) volvió a llenar el formulario de acierta.pro — {folio_ex}\n"
+                    f"Quiere: {resumen}\nZona: {zona}\nPara cuándo: {perfil['cuando'] or 'n/d'}",
+                    resumen_para_plantilla=f"Cliente: {nombre} | WA: {tel} | Web: {resumen[:120]} | Folio: {folio_ex}")
+            return _camino_resp({"ok": True, "folio": folio_ex, "vendedor": vend_nombre,
+                                 "existente": True, "token": _camino_token(folio_ex, tel)})
+
+        res = registrar_lead(tel, nombre=nombre, interes=interes, operacion=op, presupuesto="",
+                             zona=zona, notas=notas, tipo=_CAMINO_TIPO[tipo])
+        folio = res.get("folio")
+        if not folio:
+            print(f"[MAX-CAMINO] No se pudo registrar el lead: {res}", flush=True)
+            return _camino_resp({"ok": False, "error": "No pudimos guardar tus datos. Escríbenos por WhatsApp."}, 503)
+        try:
+            memoria_guardar(tel, ZONA=zona, OPERACION=op,
+                            NOTAS_COACHING=f"Llegó por el camino web de acierta.pro: {resumen}; zona {zona}; "
+                                           f"para cuándo: {perfil['cuando'] or 'n/d'}. Ya dio consentimiento para ser contactado.")
+        except Exception:
+            pass
+        cr = crm_crear_registro(tel, nombre, [], operacion=op, perfil_web=perfil)
+        vendedor = cr.get("vendedor", "") if cr.get("creado") else ""
+        if cr.get("creado"):
+            try:
+                memoria_guardar(tel, CRM_INICIADO="Si")
+            except Exception:
+                pass
+        if JAVIER_PERSONAL:
+            estado = (f"Vendedor asignado: {vendedor} ({cr.get('folio_crm')})" if vendedor else
+                      "⚠️ NO se pudo asignar vendedor automáticamente — asígnalo tú.")
+            notificar_interno(
+                JAVIER_PERSONAL,
+                f"🌐 NUEVO LEAD WEB — {folio}\n\nCliente: {nombre} ({tel})\nQuiere: {resumen}\nZona: {zona}\n"
+                f"Para cuándo: {perfil['cuando'] or 'n/d'}\n{estado}",
+                resumen_para_plantilla=f"Web: {nombre} | WA: {tel} | {resumen[:100]} | {estado[:60]} | Folio: {folio}")
+        return _camino_resp({"ok": True, "folio": folio, "vendedor": vendedor,
+                             "token": _camino_token(folio, tel)})
+    except Exception as e:
+        print(f"[MAX-CAMINO] Error: {e}", flush=True)
+        return _camino_resp({"ok": False, "error": "No pudimos guardar tus datos. Escríbenos por WhatsApp."}, 500)
+
+
+@app.route("/api/camino/completar", methods=["POST", "OPTIONS"])
+def api_camino_completar():
+    """Al final del camino: guarda presupuesto, forma de pago y demás detalles
+    en el lead ya creado, y avisa UNA vez al vendedor con el perfil completo."""
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    origen = request.headers.get("Origin", "")
+    if origen and origen not in CAMINO_ORIGENES:
+        return _camino_resp({"ok": False, "error": "Origen no permitido."}, 403)
+    d = _camino_json()
+    if not isinstance(d, dict):
+        return _camino_resp({"ok": False, "error": "Solicitud inválida."}, 400)
+    if not _camino_limite("ipc:" + _camino_ip(), 20, 3600):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos."}, 429)
+    folio = _camino_limpiar(d.get("folio"), 20)
+    tel = _camino_tel(d.get("whatsapp"))
+    if not (folio and tel and hmac.compare_digest(str(d.get("token", "")), _camino_token(folio, tel))):
+        return _camino_resp({"ok": False, "error": "No autorizado."}, 403)
+    if not _camino_limite("fol:" + folio, 3, 86400):
+        return _camino_resp({"ok": False, "error": "Ya actualizamos tu proceso."}, 429)
+
+    presupuesto = _camino_num(d.get("presupuesto"))
+    credito = d.get("credito") if d.get("credito") in _CAMINO_CREDITO else ""
+    verifica = d.get("verifica") is True
+    ingresos = _camino_num(d.get("ingresos"), 10_000_000)
+    rec = d.get("recamaras") if str(d.get("recamaras", "")) in ("1", "2", "3", "4", "5") else ""
+    nota_libre = _camino_limpiar(d.get("notas"), 200)
+    es_renta = d.get("operacion") == "renta"
+    pres_txt = (f"${presupuesto:,.0f}" + (" /mes" if es_renta else "")) if presupuesto else ""
+    partes = []
+    if pres_txt:
+        partes.append(f"Presupuesto: {pres_txt}")
+    if credito:
+        partes.append(f"Forma de pago: {_CAMINO_CREDITO[credito]}")
+    if ingresos:
+        partes.append(f"Ingresos aprox. del hogar: ${ingresos:,.0f}/mes")
+    if rec:
+        partes.append(f"Recámaras: {rec}+")
+    partes.append("Quiere Acierta Verifica: " + ("SÍ" if verifica else "no por ahora"))
+    if nota_libre:
+        partes.append(f"Comentario: {nota_libre}")
+    detalle = " | ".join(partes)
+    try:
+        libro, _ = _sheets_client()
+        if not libro:
+            return _camino_resp({"ok": False, "error": "No disponible por ahora."}, 503)
+        sh = libro.worksheet("Leads MAX")
+        celda = sh.find(folio, in_column=1)
+        if not celda:
+            return _camino_resp({"ok": False, "error": "Folio no encontrado."}, 404)
+        fila = sh.row_values(celda.row)
+        headers = sh.row_values(1)
+        def col(prefijo):
+            for i, h in enumerate(headers, start=1):
+                if h.strip().upper().startswith(prefijo):
+                    return i
+            return None
+        c_pres, c_notas = col("PRESUPUESTO"), col("NOTAS")
+        if c_pres and pres_txt:
+            sh.update_cell(celda.row, c_pres, pres_txt)
+        if c_notas:
+            previa = fila[c_notas - 1] if len(fila) >= c_notas else ""
+            sh.update_cell(celda.row, c_notas, (previa + " || " if previa else "") + "[WEB completo] " + detalle)
+        nombre = fila[3] if len(fila) > 3 else ""
+        operacion = fila[4] if len(fila) > 4 else ""
+        zona = fila[7] if len(fila) > 7 else ""
+        interes = fila[5] if len(fila) > 5 else ""
+        nuevo = _calcular_score_lead(nombre, interes, operacion, pres_txt, zona, detalle + " credito " + (credito or ""))
+        calif = _calificacion_perfil(nombre, operacion, pres_txt, zona, interes, interes, detalle)
+        _actualizar_score_lead_si_sube(folio, nuevo, calif)
+        try:
+            memoria_guardar(tel, PRESUPUESTO=pres_txt,
+                            NOTAS_COACHING=f"Completó el camino web: {detalle}")
+        except Exception:
+            pass
+        _, reg = _crm_buscar_activo_por_cliente(tel)
+        if reg and reg.get("VENDEDOR_PHONE"):
+            notificar_interno(
+                reg["VENDEDOR_PHONE"],
+                f"➕ {nombre} completó su perfil en acierta.pro — {reg.get('FOLIO', folio)}\n\n{detalle.replace(' | ', chr(10))}",
+                resumen_para_plantilla=f"Cliente: {nombre} | WA: {tel} | {detalle[:150]} | Folio: {reg.get('FOLIO', folio)}")
+        return _camino_resp({"ok": True})
+    except Exception as e:
+        print(f"[MAX-CAMINO] Error al completar {folio}: {e}", flush=True)
+        return _camino_resp({"ok": False, "error": "No pudimos actualizar tu proceso."}, 500)
 
 
 @app.route("/health", methods=["GET"])
