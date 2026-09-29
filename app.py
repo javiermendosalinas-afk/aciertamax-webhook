@@ -899,7 +899,7 @@ def _clientes_abiertos_de(vendedor_phone):
             out.append((fila.get("FOLIO"), fila.get("NOMBRE_CLIENTE") or "cliente"))
     return out
 
-_REPORTE_DIA_TRIGGER = re.compile(r"^\s*reporte\s*d[ií]a\s*$", re.IGNORECASE)
+_REPORTE_DIA_TRIGGER = re.compile(r"^\s*(mi\s+)?reporte\s+(del?\s+)?d[ií]a\s*[.!]?\s*$", re.IGNORECASE)
 
 def _reporte_dia_manejar(vendedor_phone, texto):
     """Reporte del día: redes -> networking -> un mensaje por cada cliente
