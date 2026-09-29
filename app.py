@@ -21,6 +21,7 @@ import io
 import math
 import json
 import time
+import datetime
 import threading
 import re
 import requests
@@ -103,7 +104,14 @@ CRM_COLUMNAS = ["FOLIO", "FASE", "TELEFONO_CLIENTE", "NOMBRE_CLIENTE",
                 "CONCLUIDO", "CREADO", "ULTIMA_ACCION", "PROXIMO_SEGUIMIENTO_TS",
                 "VISITA_ACTIVA", "ULTIMA_UBICACION_TS", "ALERTA_ENVIADA",
                 "CARPETA_CLIENTE_URL", "INTENTOS_SEGUIMIENTO", "CHAT_COMPLETO",
-                "ESCALADO_A_JAVIER", "ULTIMA_RESPUESTA_VENDEDOR"]
+                "ESCALADO_A_JAVIER", "ULTIMA_RESPUESTA_VENDEDOR",
+                # Checklist de visita (originador) -- pedido por Javier 2026-09-29
+                "ORIGINADOR_NOMBRE", "ORIGINADOR_TEL", "ORIGINADOR_COMISION",
+                "ORIGINADOR_PUNTUAL", "ORIGINADOR_INFO_OK", "ORIGINADOR_FICHA_OK",
+                "ORIGINADOR_EXTRANOS",
+                # Checklist de visita (cliente) y acuerdos
+                "CLIENTE_CAPACIDAD", "CLIENTE_OBLIGADO_SOLIDARIO", "CLIENTE_INTERES",
+                "VISITA_ACUERDOS"]
 INTENTOS_ANTES_DE_ESCALAR = 2  # ~5 horas de silencio (3h + 2h) antes de avisarte a ti
 SEGURIDAD_HOJA = "Seguridad Vendedores"
 SEGURIDAD_COLUMNAS = ["FOLIO_CRM", "VENDEDOR", "VENDEDOR_PHONE", "FECHA_HORA",
@@ -708,11 +716,289 @@ def _crm_buscar_por_vendedor_pendiente(vendedor_phone, texto=""):
         return activos[0][0], activos[0][1], activos
     return None, None, activos  # ambiguo: 2+ activos, sin folio especificado
 
+
+# ------------------------------------------------------------------
+# CHECKLIST DE VISITA -- pedido por Javier (2026-09-29): al terminar una
+# visita, el coach reporta primero al ORIGINADOR (quien tiene la
+# propiedad en exclusiva) y luego perfila al CLIENTE. Es un parser
+# determinístico (como el resto del CRM): la secuencia de pasos vive
+# aquí, en datos, no repartida en ifs sueltos.
+#
+# Cada paso: (id, campo_crm, pregunta, tipo)
+#   tipo "texto"  -> se guarda tal cual (recortado a 300 caracteres)
+#   tipo "sinoDudosa" -> normaliza a "Si" / "No" / "Dudosa"
+#   tipo "sino"   -> normaliza a "Si" / "No"
+#   tipo "interes" -> normaliza a "Autentico" / "Dudoso" / "Perdida de tiempo"
+# ------------------------------------------------------------------
+CHECKLIST_VISITA_COMUN_1 = [
+    ("originador_nombre", "ORIGINADOR_NOMBRE", "1️⃣ Vamos con el checklist de la visita. Empecemos con el *originador* "
+        "(quien tiene la propiedad en exclusiva). ¿Cuál es su nombre?", "texto"),
+    ("originador_tel", "ORIGINADOR_TEL", "2️⃣ ¿Su teléfono o WhatsApp?", "texto"),
+    ("originador_comision", "ORIGINADOR_COMISION", "3️⃣ ¿Qué comisión acordaron compartir con él? (ej. 50/50, o el % que sea)", "texto"),
+    ("originador_puntual", "ORIGINADOR_PUNTUAL", "4️⃣ ¿Llegó a tiempo el originador a la visita? (Sí/No)", "sino"),
+    ("originador_info_ok", "ORIGINADOR_INFO_OK", "5️⃣ ¿Ofreció bien la información de la propiedad? (Sí/No)", "sino"),
+    ("originador_ficha_ok", "ORIGINADOR_FICHA_OK", "6️⃣ ¿La propiedad es tal cual la información de la ficha? (Sí/No)", "sino"),
+    ("originador_extranos", "ORIGINADOR_EXTRANOS", "7️⃣ ¿Encontraste algo extraño? Descríbelo, o escribe \"ninguno\".", "texto"),
+]
+# El paso 8 cambia de pregunta según VENTA/RENTA (se arma en tiempo real).
+CHECKLIST_VISITA_OBLIGADO = ("cliente_obligado", "CLIENTE_OBLIGADO_SOLIDARIO",
+    "9️⃣ ¿Tiene obligado solidario? (Sí/No/Pendiente)", "sinoPendiente")
+CHECKLIST_VISITA_COMUN_2 = [
+    ("cliente_interes", "CLIENTE_INTERES",
+        "🔟 En tu opinión, ¿el interés del cliente es auténtico, o sientes que te está "
+        "haciendo perder el tiempo? (Auténtico/Dudoso/Pérdida de tiempo)", "interes"),
+    ("recorrido", "VISITA_RESULTADO", "Cuéntame el recorrido completo de la visita (notas libres).", "texto"),
+    ("acuerdos", "VISITA_ACUERDOS", "Por último, ¿qué acuerdos quedaron con el cliente?", "texto"),
+]
+
+def _checklist_visita_pasos(operacion):
+    """Arma la secuencia completa de pasos según la operación del expediente."""
+    op = (operacion or "").strip().lower()
+    paso8 = ("cliente_capacidad", "CLIENTE_CAPACIDAD",
+        "8️⃣ Ahora del cliente: ¿confirmaste que tiene capacidad de pago mensual? (Sí/No/Dudosa)"
+        if "renta" in op else
+        "8️⃣ Ahora del cliente: ¿confirmaste que tiene capacidad de compra? (Sí/No/Dudosa)", "sinoDudosa")
+    pasos = list(CHECKLIST_VISITA_COMUN_1) + [paso8]
+    if "renta" in op:
+        pasos.append(CHECKLIST_VISITA_OBLIGADO)
+    pasos += CHECKLIST_VISITA_COMUN_2
+    return pasos
+
+def _normalizar_checklist(texto, tipo):
+    t = (texto or "").strip().lower()
+    if tipo == "sino":
+        if any(p in t for p in ("si", "sí", "yes", "ok", "claro")): return "Si"
+        if "no" in t.split(): return "No"
+        return None
+    if tipo == "sinoDudosa":
+        if "dud" in t: return "Dudosa"
+        if any(p in t for p in ("si", "sí", "yes", "ok")): return "Si"
+        if t.split() and t.split()[0] == "no": return "No"
+        return None
+    if tipo == "sinoPendiente":
+        if "pendiente" in t or "dud" in t: return "Pendiente"
+        if any(p in t for p in ("si", "sí", "yes", "ok")): return "Si"
+        if t.split() and t.split()[0] == "no": return "No"
+        return None
+    if tipo == "interes":
+        if "aut" in t: return "Autentico"
+        if "perd" in t or "tiempo" in t: return "Perdida de tiempo"
+        if "dud" in t: return "Dudoso"
+        return None
+    return texto.strip()[:300]  # "texto"
+
+def iniciar_checklist_visita(vendedor_phone, folio, operacion):
+    pasos = _checklist_visita_pasos(operacion)
+    memoria_guardar(vendedor_phone, VISITA_CHECKLIST_FOLIO=folio, VISITA_CHECKLIST_PASO=pasos[0][0])
+    wati_send_text(vendedor_phone, pasos[0][2])
+
+def _checklist_visita_procesar(vendedor_phone, texto):
+    """Si este vendedor tiene un checklist de visita en curso, procesa la
+    respuesta como la siguiente pregunta de la secuencia. Regresa False
+    si no había checklist activo (para que el llamador siga de largo)."""
+    m = memoria_leer(vendedor_phone)
+    paso_actual = m.get("VISITA_CHECKLIST_PASO", "")
+    folio = m.get("VISITA_CHECKLIST_FOLIO", "")
+    if not paso_actual or not folio:
+        return False
+
+    fila_num, registro, _ = _crm_buscar_por_vendedor_pendiente(vendedor_phone, folio)
+    if not registro or registro.get("FOLIO") != folio:
+        # El expediente ya no está activo (se concluyó por otra vía) -- se limpia el estado
+        memoria_guardar(vendedor_phone, VISITA_CHECKLIST_FOLIO="", VISITA_CHECKLIST_PASO="")
+        return False
+
+    pasos = _checklist_visita_pasos(registro.get("OPERACION"))
+    idx = next((i for i, p in enumerate(pasos) if p[0] == paso_actual), None)
+    if idx is None:
+        memoria_guardar(vendedor_phone, VISITA_CHECKLIST_FOLIO="", VISITA_CHECKLIST_PASO="")
+        return False
+
+    _id, campo, _pregunta, tipo = pasos[idx]
+    valor = _normalizar_checklist(texto, tipo)
+    if valor is None:
+        reintento = ("Contéstame Sí, No o Dudosa 🙂" if tipo == "sinoDudosa"
+                     else "Contéstame Sí, No o Pendiente 🙂" if tipo == "sinoPendiente"
+                     else "Contéstame Sí o No 🙂" if tipo == "sino"
+                     else "Contéstame Auténtico, Dudoso, o \"pérdida de tiempo\" 🙂")
+        wati_send_text(vendedor_phone, reintento)
+        return True
+
+    memoria_guardar(vendedor_phone, **{f"VISITA_TMP_{campo}": valor})
+
+    if idx + 1 < len(pasos):
+        siguiente = pasos[idx + 1]
+        memoria_guardar(vendedor_phone, VISITA_CHECKLIST_PASO=siguiente[0])
+        wati_send_text(vendedor_phone, siguiente[2])
+        return True
+
+    # Último paso: se guardan TODOS los campos temporales en el CRM de una vez.
+    sh = _crm_sheet()
+    col = {h: i + 1 for i, h in enumerate(CRM_COLUMNAS)}
+    m_final = memoria_leer(vendedor_phone)
+    for _id2, campo2, _p2, _t2 in pasos:
+        val = m_final.get(f"VISITA_TMP_{campo2}")
+        if val is not None:
+            sh.update_cell(fila_num, col[campo2], val)
+    sh.update_cell(fila_num, col["FASE"], "Deseo")
+    sh.update_cell(fila_num, col["ULTIMA_ACCION"], hora_gdl())
+
+    limpiar = {f"VISITA_TMP_{c}": "" for _i, c, _p, _t in pasos}
+    limpiar.update(VISITA_CHECKLIST_FOLIO="", VISITA_CHECKLIST_PASO="")
+    memoria_guardar(vendedor_phone, **limpiar)
+
+    op = (registro.get("OPERACION") or "").lower()
+    doc_msg = ("Para avanzar con la renta, pídele al cliente: identificación oficial, "
+               "comprobante de ingresos (3-4x la renta), aval con propiedad en Jalisco, "
+               "y referencias." if "renta" in op else
+               "Para avanzar con la compra, pídele al cliente: identificación oficial, "
+               "comprobante de ingresos, y si es crédito, precalificación bancaria o "
+               "Infonavit vigente.")
+    interes_val = m_final.get("VISITA_TMP_CLIENTE_INTERES", "")
+    aviso_interes = ("\n\n⚠️ Marcaste el interés como \"pérdida de tiempo\" -- avísame si prefieres "
+                      "que lo concluyamos en vez de seguir invirtiendo tiempo en este cliente."
+                      if interes_val == "Perdida de tiempo" else "")
+    wati_send_text(vendedor_phone, f"Checklist completo, gracias 🙌. {doc_msg}{aviso_interes}")
+    return True
+
+
+# ------------------------------------------------------------------
+# REPORTE DEL DÍA -- pedido por Javier (2026-09-29): en un día sin
+# visita, el coach reporta redes sociales, networking, y seguimiento
+# a cada cliente abierto que tenga. Se guarda para consulta; NO se le
+# reenvía a Javier a diario (él solo pidió el reporte de los LUNES).
+# ------------------------------------------------------------------
+ACTIVIDAD_HOJA = "Actividad Diaria"
+ACTIVIDAD_COLUMNAS = ["FECHA", "VENDEDOR_PHONE", "TIPO", "FOLIO", "DETALLE"]
+
+def _actividad_sheet():
+    import gspread
+    from google.oauth2.service_account import Credentials
+    creds = Credentials.from_service_account_info(
+        json.loads(GOOGLE_CREDS_JSON),
+        scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    libro = gspread.authorize(creds).open_by_key(SHEET_ID)
+    try:
+        return libro.worksheet(ACTIVIDAD_HOJA)
+    except Exception:
+        sh = libro.add_worksheet(title=ACTIVIDAD_HOJA, rows=3000, cols=len(ACTIVIDAD_COLUMNAS))
+        sh.append_row(ACTIVIDAD_COLUMNAS)
+        return sh
+
+def _clientes_abiertos_de(vendedor_phone):
+    """Lista (folio, nombre) de los expedientes activos (no concluidos) de este vendedor."""
+    sh = _crm_sheet()
+    valores = sh.get_all_values()
+    if len(valores) < 2:
+        return []
+    headers = valores[0]
+    out = []
+    for idx in range(1, len(valores)):
+        fila = _crm_fila_a_dict(headers, valores[idx])
+        if fila.get("VENDEDOR_PHONE") == vendedor_phone and fila.get("CONCLUIDO") != "Si":
+            out.append((fila.get("FOLIO"), fila.get("NOMBRE_CLIENTE") or "cliente"))
+    return out
+
+_REPORTE_DIA_TRIGGER = re.compile(r"^\s*reporte\s*d[ií]a\s*$", re.IGNORECASE)
+
+def _reporte_dia_manejar(vendedor_phone, texto):
+    """Reporte del día: redes -> networking -> un mensaje por cada cliente
+    abierto. Regresa False si no aplica (ni es el disparador, ni hay uno
+    en curso), para que el llamador siga con el resto del enrutamiento."""
+    m = memoria_leer(vendedor_phone)
+    paso = m.get("REPORTE_DIA_PASO", "")
+
+    if not paso:
+        if not _REPORTE_DIA_TRIGGER.match(texto or ""):
+            return False
+        pendientes = [f for f, _n in _clientes_abiertos_de(vendedor_phone)]
+        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="redes",
+                         REPORTE_DIA_PENDIENTES=",".join(pendientes))
+        wati_send_text(vendedor_phone,
+            "📋 Reporte del día\n1️⃣ ¿Publicaste algo en redes sociales hoy? Cuéntame qué (o escribe \"no\").")
+        return True
+
+    def _guardar(tipo, folio, detalle):
+        try:
+            _actividad_sheet().append_row([hora_gdl(), vendedor_phone, tipo, folio, (detalle or "").strip()[:500]])
+        except Exception as e:
+            print(f"[MAX-REPORTE-DIA] Error guardando actividad: {e}", flush=True)
+
+    if paso == "redes":
+        _guardar("redes", "", texto)
+        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="networking")
+        wati_send_text(vendedor_phone,
+            "2️⃣ ¿Hiciste networking o investigaste alguna oportunidad? Cuéntame (o escribe \"no\").")
+        return True
+
+    if paso == "networking":
+        _guardar("networking", "", texto)
+        pendientes = [f for f in m.get("REPORTE_DIA_PENDIENTES", "").split(",") if f]
+        return _reporte_dia_siguiente_cliente(vendedor_phone, pendientes)
+
+    if paso == "cliente":
+        folio_actual = m.get("REPORTE_DIA_ACTUAL", "")
+        _guardar("cliente", folio_actual, texto)
+        pendientes = [f for f in m.get("REPORTE_DIA_PENDIENTES", "").split(",") if f]
+        return _reporte_dia_siguiente_cliente(vendedor_phone, pendientes)
+
+    return False
+
+def _reporte_dia_siguiente_cliente(vendedor_phone, pendientes):
+    if not pendientes:
+        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="", REPORTE_DIA_PENDIENTES="", REPORTE_DIA_ACTUAL="")
+        wati_send_text(vendedor_phone, "Reporte del día guardado, gracias 🙌")
+        return True
+    folio = pendientes[0]
+    nombres = dict(_clientes_abiertos_de(vendedor_phone))
+    nombre = nombres.get(folio, folio)
+    memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="cliente", REPORTE_DIA_ACTUAL=folio,
+                     REPORTE_DIA_PENDIENTES=",".join(pendientes[1:]))
+    wati_send_text(vendedor_phone, f"Cliente {nombre} ({folio}): ¿qué hiciste hoy con él/ella?")
+    return True
+
+# ------------------------------------------------------------------
+# REPORTE DE LOS LUNES -- pedido por Javier: cada lunes, cada vendedor
+# con clientes abiertos recibe la lista y debe mandar su plan para no
+# perderlos. La respuesta se reenvía a Javier tal cual (no se
+# reinterpreta): es su reporte, él lo lee directo.
+# ------------------------------------------------------------------
+def _enviar_reportes_lunes():
+    for v in VENDEDORES:
+        phone = v["phone"]
+        abiertos = _clientes_abiertos_de(phone)
+        if not abiertos:
+            continue
+        lista = "\n".join(f"• {folio} — {nombre}" for folio, nombre in abiertos)
+        wati_send_text(phone,
+            f"📅 Buen lunes {v.get('nombre', '')}. Aquí tus clientes abiertos:\n{lista}\n\n"
+            f"Mándame tu plan para cada uno, para no perderlos (un solo mensaje está bien).")
+        memoria_guardar(phone, REPORTE_LUNES_PENDIENTE="Si")
+
+def _reporte_lunes_manejar(vendedor_phone, texto):
+    """Si a este vendedor se le pidió su plan de los lunes, esta respuesta
+    ES ese plan: se reenvía a Javier tal cual, sin reinterpretarla."""
+    if memoria_leer(vendedor_phone).get("REPORTE_LUNES_PENDIENTE") != "Si":
+        return False
+    memoria_guardar(vendedor_phone, REPORTE_LUNES_PENDIENTE="")
+    nombre_v = next((v.get("nombre", vendedor_phone) for v in VENDEDORES if v["phone"] == vendedor_phone), vendedor_phone)
+    if JAVIER_PERSONAL:
+        notificar_interno(JAVIER_PERSONAL,
+            f"📅 PLAN DEL LUNES -- {nombre_v}:\n\n{texto.strip()}",
+            resumen_para_plantilla=f"Plan lunes de {nombre_v}: {texto.strip()[:150]}")
+    wati_send_text(vendedor_phone, "Recibido, gracias 🙌")
+    return True
+
 def crm_procesar_respuesta_vendedor(vendedor_phone, texto):
     """Parser determinístico (NO usa el modelo) de la respuesta de un
     vendedor a un check-in del CRM. Se mantiene simple y predecible a
     propósito -- esto mueve el pipeline de ventas real, no conviene
     dejarlo a interpretación libre de un LLM."""
+    # El checklist de visita tiene prioridad: si está en curso, esta
+    # respuesta es la siguiente pregunta de la secuencia, no una
+    # respuesta normal de CRM.
+    if _checklist_visita_procesar(vendedor_phone, texto):
+        return True
     fila_num, registro, activos = _crm_buscar_por_vendedor_pendiente(vendedor_phone, texto)
     if not activos:
         return False  # no hay expediente activo de este vendedor; no es una respuesta de CRM
@@ -775,7 +1061,8 @@ def crm_procesar_respuesta_vendedor(vendedor_phone, texto):
         if "termine la visita" in t or "terminé la visita" in t or "termine visita" in t:
             actualizar("VISITA_ACTIVA", "No")
             actualizar("ULTIMA_ACCION", hora_gdl())
-            wati_send_text(vendedor_phone, "Perfecto, ya no te voy a pedir ubicación. Cuéntame cómo salió 🙌")
+            wati_send_text(vendedor_phone, "Perfecto, ya no te voy a pedir ubicación. Vamos con el checklist 🙌")
+            iniciar_checklist_visita(vendedor_phone, registro.get("FOLIO"), registro.get("OPERACION"))
             return True
 
         cambios = []
@@ -4093,6 +4380,20 @@ def _loop_proactivo():
             # debe tumbar el seguimiento a clientes, y viceversa.
             print(f"[MAX-CRM] Error en revision de seguimientos CRM: {e}", flush=True)
         try:
+            # Reporte de los lunes: se manda una sola vez por semana, en la
+            # primera revisión de la hora 8-9am hora GDL de cada lunes.
+            # El marcador vive en memoria bajo una clave fija (no es un
+            # teléfono real) para que sobreviva un redeploy del servidor.
+            _fecha_hoy, _hora_hoy = hora_gdl().split(" ")
+            _dia_semana = datetime.date.fromisoformat(_fecha_hoy).weekday()  # 0 = lunes
+            if _dia_semana == 0 and 8 <= int(_hora_hoy.split(":")[0]) < 9:
+                _ultimo = memoria_leer("SISTEMA_REPORTES").get("ULTIMO_LUNES_ENVIADO", "")
+                if _ultimo != _fecha_hoy:
+                    _enviar_reportes_lunes()
+                    memoria_guardar("SISTEMA_REPORTES", ULTIMO_LUNES_ENVIADO=_fecha_hoy)
+        except Exception as e:
+            print(f"[MAX-LUNES] Error en reporte de los lunes: {e}", flush=True)
+        try:
             _betty_revisar_seguimientos()
         except Exception as e:
             print(f"[MAX-CRM] Error en revision de seguimientos de Betty: {e}", flush=True)
@@ -4811,6 +5112,10 @@ def webhook():
         try:
             if crm_procesar_respuesta_vendedor(phone, text):
                 return jsonify(ok=True, ruta="crm_vendedor")
+            if _reporte_lunes_manejar(phone, text):
+                return jsonify(ok=True, ruta="reporte_lunes")
+            if _reporte_dia_manejar(phone, text):
+                return jsonify(ok=True, ruta="reporte_dia")
         except Exception as e:
             print(f"[MAX-CRM] Error procesando respuesta de vendedor {phone}: {e}", flush=True)
         # Si no había expediente pendiente para este número, sigue de largo
