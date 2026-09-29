@@ -886,7 +886,8 @@ def _actividad_sheet():
         return sh
 
 def _clientes_abiertos_de(vendedor_phone):
-    """Lista (folio, nombre) de los expedientes activos (no concluidos) de este vendedor."""
+    """Ficha resumida de cada expediente activo (no concluido) de este
+    vendedor: folio, nombre, fase del funnel y teléfono de contacto."""
     sh = _crm_sheet()
     valores = sh.get_all_values()
     if len(valores) < 2:
@@ -896,27 +897,26 @@ def _clientes_abiertos_de(vendedor_phone):
     for idx in range(1, len(valores)):
         fila = _crm_fila_a_dict(headers, valores[idx])
         if fila.get("VENDEDOR_PHONE") == vendedor_phone and fila.get("CONCLUIDO") != "Si":
-            out.append((fila.get("FOLIO"), fila.get("NOMBRE_CLIENTE") or "cliente"))
+            out.append({"folio": fila.get("FOLIO"), "nombre": fila.get("NOMBRE_CLIENTE") or "cliente",
+                        "fase": fila.get("FASE") or "Atencion", "telefono": fila.get("TELEFONO_CLIENTE") or "sin registrar"})
     return out
 
 _REPORTE_DIA_TRIGGER = re.compile(r"^\s*(mi\s+)?reporte\s+(del?\s+)?d[ií]a\s*[.!]?\s*$", re.IGNORECASE)
 
 def _reporte_dia_manejar(vendedor_phone, texto):
-    """Reporte del día: redes -> networking -> un mensaje por cada cliente
-    abierto. Regresa False si no aplica (ni es el disparador, ni hay uno
-    en curso), para que el llamador siga con el resto del enrutamiento."""
+    """Reporte del día: primero un mensaje por cada cliente abierto (con
+    su funnel y teléfono a la vista, para que el coach conteste con
+    contexto), y al final redes sociales y networking. Regresa False si
+    no aplica (ni es el disparador, ni hay uno en curso)."""
     m = memoria_leer(vendedor_phone)
     paso = m.get("REPORTE_DIA_PASO", "")
 
     if not paso:
         if not _REPORTE_DIA_TRIGGER.match(texto or ""):
             return False
-        pendientes = [f for f, _n in _clientes_abiertos_de(vendedor_phone)]
-        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="redes",
-                         REPORTE_DIA_PENDIENTES=",".join(pendientes))
-        wati_send_text(vendedor_phone,
-            "📋 Reporte del día\n1️⃣ ¿Publicaste algo en redes sociales hoy? Cuéntame qué (o escribe \"no\").")
-        return True
+        pendientes = [c["folio"] for c in _clientes_abiertos_de(vendedor_phone)]
+        wati_send_text(vendedor_phone, "📋 Reporte del día")
+        return _reporte_dia_siguiente_cliente(vendedor_phone, pendientes)
 
     def _guardar(tipo, folio, detalle):
         try:
@@ -924,37 +924,41 @@ def _reporte_dia_manejar(vendedor_phone, texto):
         except Exception as e:
             print(f"[MAX-REPORTE-DIA] Error guardando actividad: {e}", flush=True)
 
-    if paso == "redes":
-        _guardar("redes", "", texto)
-        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="networking")
-        wati_send_text(vendedor_phone,
-            "2️⃣ ¿Hiciste networking o investigaste alguna oportunidad? Cuéntame (o escribe \"no\").")
-        return True
-
-    if paso == "networking":
-        _guardar("networking", "", texto)
-        pendientes = [f for f in m.get("REPORTE_DIA_PENDIENTES", "").split(",") if f]
-        return _reporte_dia_siguiente_cliente(vendedor_phone, pendientes)
-
     if paso == "cliente":
         folio_actual = m.get("REPORTE_DIA_ACTUAL", "")
         _guardar("cliente", folio_actual, texto)
         pendientes = [f for f in m.get("REPORTE_DIA_PENDIENTES", "").split(",") if f]
         return _reporte_dia_siguiente_cliente(vendedor_phone, pendientes)
 
+    if paso == "redes":
+        _guardar("redes", "", texto)
+        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="networking")
+        wati_send_text(vendedor_phone,
+            "Y de publicidad, ¿hiciste networking o investigaste alguna oportunidad? Cuéntame (o escribe \"no\").")
+        return True
+
+    if paso == "networking":
+        _guardar("networking", "", texto)
+        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="", REPORTE_DIA_PENDIENTES="", REPORTE_DIA_ACTUAL="")
+        wati_send_text(vendedor_phone, "Reporte del día guardado, gracias 🙌")
+        return True
+
     return False
 
 def _reporte_dia_siguiente_cliente(vendedor_phone, pendientes):
     if not pendientes:
-        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="", REPORTE_DIA_PENDIENTES="", REPORTE_DIA_ACTUAL="")
-        wati_send_text(vendedor_phone, "Reporte del día guardado, gracias 🙌")
+        # Ya no hay clientes pendientes -- ahora sí, al final, redes y networking.
+        memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="redes", REPORTE_DIA_PENDIENTES="", REPORTE_DIA_ACTUAL="")
+        wati_send_text(vendedor_phone, "Ya viste a todos tus clientes abiertos. ¿Publicaste algo en redes sociales hoy? Cuéntame qué (o escribe \"no\").")
         return True
     folio = pendientes[0]
-    nombres = dict(_clientes_abiertos_de(vendedor_phone))
-    nombre = nombres.get(folio, folio)
+    ficha = next((c for c in _clientes_abiertos_de(vendedor_phone) if c["folio"] == folio), None)
+    if not ficha:  # el expediente ya no existe/se concluyó entre tanto -- se salta
+        return _reporte_dia_siguiente_cliente(vendedor_phone, pendientes[1:])
     memoria_guardar(vendedor_phone, REPORTE_DIA_PASO="cliente", REPORTE_DIA_ACTUAL=folio,
                      REPORTE_DIA_PENDIENTES=",".join(pendientes[1:]))
-    wati_send_text(vendedor_phone, f"Cliente {nombre} ({folio}): ¿qué hiciste hoy con él/ella?")
+    wati_send_text(vendedor_phone,
+        f"👤 {ficha['nombre']} ({folio})\nFase: {ficha['fase']}\nTeléfono: {ficha['telefono']}\n\n¿Qué hiciste hoy con él/ella?")
     return True
 
 # ------------------------------------------------------------------
@@ -969,7 +973,7 @@ def _enviar_reportes_lunes():
         abiertos = _clientes_abiertos_de(phone)
         if not abiertos:
             continue
-        lista = "\n".join(f"• {folio} — {nombre}" for folio, nombre in abiertos)
+        lista = "\n".join(f"• {c['folio']} — {c['nombre']} ({c['fase']})" for c in abiertos)
         wati_send_text(phone,
             f"📅 Buen lunes {v.get('nombre', '')}. Aquí tus clientes abiertos:\n{lista}\n\n"
             f"Mándame tu plan para cada uno, para no perderlos (un solo mensaje está bien).")
