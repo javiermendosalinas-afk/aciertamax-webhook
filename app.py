@@ -1646,6 +1646,14 @@ def _normalizar_phone_wati(phone):
         return "521" + p
     return p
 
+def _ultimos10(phone):
+    """Los 10 dígitos del número de celular, sin importar cómo venga el
+    prefijo de país -- México manda a veces 521XXXXXXXXXX (13) y a veces
+    52XXXXXXXXXX (12, sin el '1' extra); comparar solo esto evita que un
+    vendedor deje de ser reconocido por esa inconsistencia."""
+    d = re.sub(r"\D", "", str(phone or ""))
+    return d[-10:] if len(d) >= 10 else d
+
 JAVIER_PERSONAL = os.environ.get("JAVIER_PERSONAL_NUMBER", "5213325773277")
 BETTY_PHONE = os.environ.get("BETTY_PHONE_NUMBER", "3311964181")  # responsable de crédito
 
@@ -5107,8 +5115,8 @@ def webhook():
     # parser determinístico aparte (crm_procesar_respuesta_vendedor),
     # porque mover el pipeline de ventas real no debe depender de que un
     # LLM interprete bien un "sí"/"no" suelto.
-    _tel_vendedores = {_normalizar_phone_wati(v["phone"]) for v in VENDEDORES}
-    if _normalizar_phone_wati(phone) in _tel_vendedores:
+    _tel_vendedores = {_ultimos10(v["phone"]) for v in VENDEDORES}
+    if _ultimos10(phone) in _tel_vendedores:
         try:
             if crm_procesar_respuesta_vendedor(phone, text):
                 return jsonify(ok=True, ruta="crm_vendedor")
