@@ -21,6 +21,7 @@ import io
 import math
 import json
 import time
+import random
 import datetime
 import threading
 import re
@@ -5724,6 +5725,62 @@ def _camino_json():
     return request.get_json(silent=True)
 
 
+# ------------------------------------------------------------------
+# VERIFICACIÓN DE WHATSAPP -- pedido por Javier (2026-09-30): antes de
+# dejar continuar en el camino, se confirma que el WhatsApp es real con
+# un código corto de 2 dígitos (no 6 -- suficiente para este propósito,
+# que es filtrar números inventados, no seguridad de alto riesgo).
+# ------------------------------------------------------------------
+_CAMINO_VERIF = {}   # tel (formato 521XXXXXXXXXX) -> {"codigo": "42", "expira": ts}
+_CAMINO_VERIFICADOS = {}   # tel -> ts de cuándo se verificó (válido por 30 min, tiempo de sobra para terminar el formulario)
+
+@app.route("/api/camino/verificar/enviar", methods=["POST", "OPTIONS"])
+def api_camino_verificar_enviar():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _camino_json()
+    if d is None:
+        return _camino_resp({"ok": False, "error": "Solicitud inválida."}, 400)
+    tel = _camino_tel(d.get("whatsapp"))
+    if not tel:
+        return _camino_resp({"ok": False, "error": "Escribe tu WhatsApp a 10 dígitos."}, 400)
+    if not _camino_limite("verif:" + tel, 3, 600):
+        return _camino_resp({"ok": False, "error": "Ya te mandamos varios códigos. Espera unos minutos e intenta de nuevo."}, 429)
+    if not _camino_limite("verif:ip:" + (request.remote_addr or ""), 15, 3600):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos. Intenta más tarde."}, 429)
+    codigo = f"{random.randint(0, 99):02d}"
+    with _CAMINO_LOCK:
+        _CAMINO_VERIF[tel] = {"codigo": codigo, "expira": time.time() + 600}
+        if len(_CAMINO_VERIF) > 5000:
+            _CAMINO_VERIF.clear()  # limpieza básica, igual que _CAMINO_HITS
+    if not wati_send_text(tel, f"Tu código para confirmar tu WhatsApp en acierta.pro es: {codigo}"):
+        return _camino_resp({"ok": False, "error": "No pudimos enviar el código. Intenta de nuevo."}, 502)
+    return _camino_resp({"ok": True})
+
+@app.route("/api/camino/verificar/confirmar", methods=["POST", "OPTIONS"])
+def api_camino_verificar_confirmar():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _camino_json()
+    if d is None:
+        return _camino_resp({"ok": False, "error": "Solicitud inválida."}, 400)
+    tel = _camino_tel(d.get("whatsapp"))
+    codigo = re.sub(r"\D", "", str(d.get("codigo") or ""))
+    if not tel or not codigo:
+        return _camino_resp({"ok": False, "error": "Falta el WhatsApp o el código."}, 400)
+    if not _camino_limite("verifconf:" + tel, 8, 600):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos. Pide un código nuevo."}, 429)
+    with _CAMINO_LOCK:
+        entrada = _CAMINO_VERIF.get(tel)
+    if not entrada or entrada["expira"] < time.time():
+        return _camino_resp({"ok": False, "error": "Tu código expiró. Pide uno nuevo."}, 400)
+    if codigo != entrada["codigo"]:
+        return _camino_resp({"ok": False, "error": "Código incorrecto."}, 400)
+    with _CAMINO_LOCK:
+        _CAMINO_VERIF.pop(tel, None)
+        _CAMINO_VERIFICADOS[tel] = time.time()
+    return _camino_resp({"ok": True})
+
 @app.route("/api/camino", methods=["POST", "OPTIONS"])
 def api_camino():
     if request.method == "OPTIONS":
@@ -5747,6 +5804,10 @@ def api_camino():
     tel = _camino_tel(d.get("whatsapp"))
     if not tel:
         return _camino_resp({"ok": False, "error": "Escribe tu WhatsApp a 10 dígitos."}, 400)
+    with _CAMINO_LOCK:
+        ts_verif = _CAMINO_VERIFICADOS.get(tel)
+    if not ts_verif or time.time() - ts_verif > 1800:
+        return _camino_resp({"ok": False, "error": "Primero confirma tu WhatsApp con el código que te enviamos."}, 400)
     email = _camino_email(d.get("email"))
     if email is None:
         return _camino_resp({"ok": False, "error": "Revisa tu correo."}, 400)
