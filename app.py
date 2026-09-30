@@ -50,11 +50,11 @@ GMAIL_PASS          = os.environ.get("GMAIL_PASS", "")
 # Los demas reciben solo el que les toco en turno.
 # ------------------------------------------------------------------
 VENDEDORES = [
-    {"nombre": "Javier Mendoza", "phone": os.environ.get("VENDEDOR_JAVIER",  "3325773277")},
-    {"nombre": "Ubaldo Mendez",  "phone": os.environ.get("VENDEDOR_UBALDO",  "3319128128")},
-    {"nombre": "Leticia",        "phone": os.environ.get("VENDEDOR_LETICIA", "3316183775")},
-    {"nombre": "Gloria Navarro", "phone": os.environ.get("VENDEDOR_GLORIA",  "3331270050")},
-    {"nombre": "Paola",          "phone": os.environ.get("VENDEDOR_PAOLA",   "3338998750")},
+    {"nombre": "Javier Mendoza",  "phone": os.environ.get("VENDEDOR_JAVIER",  "3325773277")},
+    {"nombre": "Ubaldo Mendez",   "phone": os.environ.get("VENDEDOR_UBALDO",  "3319128128")},
+    {"nombre": "Leticia Enriquez","phone": os.environ.get("VENDEDOR_LETICIA", "3316183775")},
+    {"nombre": "Gloria Navarro",  "phone": os.environ.get("VENDEDOR_GLORIA",  "3331270050")},
+    {"nombre": "Paola Valencia",  "phone": os.environ.get("VENDEDOR_PAOLA",   "3338998750")},
 ]
 JAVIER_PHONE = VENDEDORES[0]["phone"]  # siempre recibe copia de todo
 _TURNO_LOCK = threading.Lock()
