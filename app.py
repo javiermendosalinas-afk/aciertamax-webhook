@@ -420,7 +420,7 @@ def _msg_vendedor_web(folio_crm, nombre, phone, perfil, carpeta_url=""):
     return "\n".join(lineas)
 
 
-def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="", perfil_web=None):
+def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="", perfil_web=None, vendedor_preferido=None):
     """Arranca el expediente CRM AIDA de un cliente que ya calificó
     propiedades y quiere avanzar a visita. Reutiliza el MISMO vendedor
     que se le asignó desde el primer contacto (registrar_lead) -- nunca
@@ -490,7 +490,14 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
         m = memoria_leer(phone_cliente)
         vendedor_phone_previo = m.get("VENDEDOR_ASIGNADO_PHONE")
         vendedor_nombre_previo = m.get("VENDEDOR_ASIGNADO")
-        if vendedor_phone_previo and vendedor_nombre_previo:
+        # Si el cliente dijo que ya conoce a un coach específico, se respeta
+        # eso por encima de cualquier otra cosa (incluso si ya tenía uno
+        # distinto asignado de antes) -- pidió a esa persona, se le da.
+        preferido = next((v for v in VENDEDORES if vendedor_preferido and v["nombre"].lower() == vendedor_preferido.strip().lower()), None)
+        if preferido:
+            vendedor = preferido
+            memoria_guardar(phone_cliente, VENDEDOR_ASIGNADO=vendedor["nombre"], VENDEDOR_ASIGNADO_PHONE=vendedor["phone"])
+        elif vendedor_phone_previo and vendedor_nombre_previo:
             vendedor = {"nombre": vendedor_nombre_previo, "phone": vendedor_phone_previo}
         else:
             # No debería pasar (registrar_lead ya asigna a todo contacto),
@@ -5859,7 +5866,7 @@ def api_camino():
                                            f"para cuándo: {perfil['cuando'] or 'n/d'}. Ya dio consentimiento para ser contactado.")
         except Exception:
             pass
-        cr = crm_crear_registro(tel, nombre, [], operacion=op, perfil_web=perfil)
+        cr = crm_crear_registro(tel, nombre, [], operacion=op, perfil_web=perfil, vendedor_preferido=_camino_limpiar(d.get("coach_conocido"), 40))
         vendedor = cr.get("vendedor", "") if cr.get("creado") else ""
         if cr.get("creado"):
             try:
