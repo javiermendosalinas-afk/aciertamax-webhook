@@ -5778,7 +5778,15 @@ def api_camino_verificar_enviar():
         _CAMINO_VERIF[tel] = {"codigo": codigo, "expira": time.time() + 600}
         if len(_CAMINO_VERIF) > 5000:
             _CAMINO_VERIF.clear()  # limpieza básica, igual que _CAMINO_HITS
-    if not wati_send_text(tel, f"Tu código para confirmar tu WhatsApp en acierta.pro es: {codigo}"):
+    # IMPORTANTE: quien llena este formulario casi nunca le ha escrito antes a
+    # nuestro WhatsApp -- no hay sesion/ticket abierto, asi que wati_send_text
+    # (mensaje de texto libre) va a fallar siempre para un visitante nuevo. Por
+    # eso cae de respaldo a una plantilla aprobada por Meta, igual que ya
+    # corregimos hoy para el seguimiento a clientes y la copia a Javier.
+    enviado = wati_send_text(tel, f"Tu código para confirmar tu WhatsApp en acierta.pro es: {codigo}")
+    if not enviado:
+        enviado = wati_send_template_message(tel, "codigo_verificacion", [codigo])
+    if not enviado:
         return _camino_resp({"ok": False, "error": "No pudimos enviar el código. Intenta de nuevo."}, 502)
     return _camino_resp({"ok": True})
 
