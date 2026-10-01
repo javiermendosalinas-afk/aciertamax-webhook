@@ -1706,7 +1706,10 @@ def _reenviar_a_javier(phone, cliente=None, max_resp=None):
     que responde MAX, con el teléfono del cliente. Se engancha una sola
     vez dentro de wati_send_text para cubrir TODAS las rutas de salida
     (fast-path de ficha, campaña, respuesta general del modelo, seguimiento
-    proactivo) sin tener que tocar cada punto de envío por separado."""
+    proactivo) sin tener que tocar cada punto de envío por separado.
+    Igual que _max_enviar_seguimiento: si el ticket de Javier en Wati está
+    cerrado, el mensaje de texto normal falla, así que cae de respaldo a
+    una plantilla aprobada ('copia_interna') para que la copia SÍ le llegue."""
     if not JAVIER_PERSONAL:
         return
     destino = _normalizar_phone_wati(phone)
@@ -1721,9 +1724,13 @@ def _reenviar_a_javier(phone, cliente=None, max_resp=None):
         vendedor = _vendedor_asignado_de(phone)
         etiqueta = f" [Asignado a: {vendedor}]" if vendedor else ""
         if cliente:
-            wati_send_text(JAVIER_PERSONAL, f"📩 Cliente {phone}{etiqueta}:\n{cliente[:500]}")
+            texto = f"📩 Cliente {phone}{etiqueta}:\n{cliente[:500]}"
+            if not wati_send_text(JAVIER_PERSONAL, texto):
+                wati_send_template_message(JAVIER_PERSONAL, "copia_interna", [texto[:600]])
         if max_resp:
-            wati_send_text(JAVIER_PERSONAL, f"🤖 MAX → {phone}{etiqueta}:\n{max_resp[:500]}")
+            texto = f"🤖 MAX → {phone}{etiqueta}:\n{max_resp[:500]}"
+            if not wati_send_text(JAVIER_PERSONAL, texto):
+                wati_send_template_message(JAVIER_PERSONAL, "copia_interna", [texto[:600]])
     except Exception as e:
         print(f"[MAX-FORWARD] Error reenviando a Javier: {e}", flush=True)
 
