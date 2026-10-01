@@ -4249,18 +4249,29 @@ def enviar_ficha_liga(phone, liga):
 SEGUIMIENTO_ENVIADO = {}  # phone -> set de tipos ya enviados (evita spam)
 
 def _max_enviar_seguimiento(phone, tipo, mensaje):
-    """Envia mensaje proactivo y lo registra para no repetir."""
+    """Envia mensaje proactivo y lo registra para no repetir.
+    IMPORTANTE: este seguimiento se dispara, por diseño, a las 24h/48h/72h
+    de silencio del cliente -- exactamente cuando la ventana de sesion de
+    WhatsApp (24h) ya se cerro. Un mensaje de texto libre (wati_send_text)
+    SIEMPRE va a fallar en ese momento, por politica de WhatsApp, no por un
+    error de Wati. Por eso cae de respaldo a una plantilla aprobada por
+    Meta, igual que ya hace notificar_interno() para avisos a vendedores."""
     enviados = SEGUIMIENTO_ENVIADO.get(phone, set())
     if tipo in enviados:
         return  # ya se envio este tipo de seguimiento
     try:
-        ok = wati_send_text(phone, mensaje)  # proactivo al cliente — sesion activa requerida
+        ok = wati_send_text(phone, mensaje)  # casi siempre falla aqui (sesion ya cerrada) -- es normal
+        if not ok:
+            ok = wati_send_template_message(phone, "seguimiento_cliente", [mensaje[:600]])
         if ok:
             enviados.add(tipo)
             SEGUIMIENTO_ENVIADO[phone] = enviados
             # Actualizar estado en memoria
             memoria_guardar(phone, ESTADO=f"Seguimiento-{tipo}")
             print(f"[MAX-PRO] Seguimiento '{tipo}' enviado a {phone}", flush=True)
+        else:
+            print(f"[MAX-PRO] Seguimiento '{tipo}' a {phone} fallo tambien por plantilla "
+                  f"-- revisar que la plantilla 'seguimiento_cliente' exista y este aprobada en Wati", flush=True)
     except Exception as e:
         print(f"[MAX-PRO] Error enviando seguimiento a {phone}: {e}", flush=True)
 
