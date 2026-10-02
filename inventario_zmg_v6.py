@@ -163,6 +163,7 @@ def parsear_tarjetas(html):
         # del nombre de archivo de image_url.
         img = tarjeta.select_one("img")
         img_alt = img.get("alt", "") if img else ""
+        image_url = data.get("image_url", "") or (img.get("src", "") if img else "")
         codigo_eb = extraer_codigo_eb(img_alt, data.get("image_url", ""))
 
         url_rel = data.get("url", "") or ""
@@ -180,6 +181,7 @@ def parsear_tarjetas(html):
             "tipo": tipo,
             "titulo": data.get("title", ""),
             "codigo_eb": codigo_eb,
+            "foto": image_url,
             "lat": tarjeta.get("data-lat"),
             "lon": tarjeta.get("data-long"),
         })
@@ -254,6 +256,7 @@ def main():
                     "Baños": f["banos"],
                     "m²": f["m2"],
                     "codigo_eb": f["codigo_eb"],
+                    "Foto": f["foto"],
                     "Liga": f["href"],
                     "lat": f["lat"],
                     "lon": f["lon"],
@@ -267,7 +270,7 @@ def main():
         sys.exit(1)
 
     columnas = ["Municipio", "Colonia", "Operación", "Precio", "Moneda", "Título/Colonia",
-                "Tipo", "Recámaras", "Baños", "m²", "codigo_eb", "Liga", "lat", "lon",
+                "Tipo", "Recámaras", "Baños", "m²", "codigo_eb", "Foto", "Liga", "lat", "lon",
                 "Fuente", "Fecha_Corrida"]
 
     salida = f"inventario_zmg_{fecha_corrida}.csv"
