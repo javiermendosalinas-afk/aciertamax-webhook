@@ -2495,7 +2495,7 @@ TOOLS = [
          "desarrollo": {"type": "string", "enum": ["block", "santa_ana", "bellavittoria", "villa_dhara", "eleve"]}},
       "required": ["desarrollo"]}},
     {"name": "buscar_inventario_zmg",
-     "description": "Busca en la BOLSA COMPLETA de la ZMG (venta desde $2,000,000 y renta desde $13,000/mes, propias y compartidas). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para búsquedas de compra desde $2M o renta desde $13,000. Usa 'operacion' (VENTA o RENTA) para no mezclar. Si el cliente nombra una COLONIA, fraccionamiento, DESARROLLO/TORRE (ej. 'Madeiras', 'Andares', 'Torre Ágave') o da un CÓDIGO EB (ej. 'EB-VW0579'), usa el parámetro 'texto' con ese nombre o código para filtrar de verdad — el 'texto' busca en título, colonia, código EB y liga. SIEMPRE PUEDES verificar un código EB con esta herramienta: NUNCA le digas al cliente que 'no puedes verificar un código desde aquí' — sí puedes, pon el código EB en 'texto' y busca. NO vuelvas a mostrar la lista genérica del municipio disfrazada de 'colonias vecinas'. Regresa título, precio, recámaras y liga.",
+     "description": "Busca en la BOLSA COMPLETA de la ZMG: venta y renta de CUALQUIER precio en Guadalajara, Zapopan, Tlaquepaque, Tonalá y Tlajomulco (casas, departamentos, terrenos, locales, oficinas, bodegas y naves; propias y compartidas, el mismo inventario de acierta.pro). Úsala cuando buscar_propiedades no tenga suficientes opciones, o directamente para cualquier búsqueda de compra o renta, sin importar el presupuesto. Usa 'operacion' (VENTA o RENTA) para no mezclar. Si el cliente nombra una COLONIA, fraccionamiento, DESARROLLO/TORRE (ej. 'Madeiras', 'Andares', 'Torre Ágave') o da un CÓDIGO EB (ej. 'EB-VW0579'), usa el parámetro 'texto' con ese nombre o código para filtrar de verdad — el 'texto' busca en título, colonia, código EB y liga. SIEMPRE PUEDES verificar un código EB con esta herramienta: NUNCA le digas al cliente que 'no puedes verificar un código desde aquí' — sí puedes, pon el código EB en 'texto' y busca. NO vuelvas a mostrar la lista genérica del municipio disfrazada de 'colonias vecinas'. Regresa título, precio, recámaras y liga.",
      "input_schema": {"type": "object", "properties": {
          "municipio": {"type": "string", "description": "Guadalajara, Zapopan, Tlaquepaque, Tonalá o Tlajomulco"},
          "operacion": {"type": "string", "enum": ["VENTA", "RENTA"], "description": "VENTA o RENTA — indícalo siempre que sepas cuál busca el cliente"},
@@ -2780,7 +2780,7 @@ REGLA CRÍTICA DE LAS PROPIEDADES EN CAMPAÑA: si el cliente pide la ficha, foto
 
 INVENTARIO — ORDEN DE BÚSQUEDA:
 1. Propiedades en campaña (datos aquí arriba) y buscar_propiedades (inventario propio, venta y renta de todos los precios).
-2. buscar_inventario_zmg: la BOLSA COMPLETA de la ZMG (venta desde $2M y renta desde $13,000/mes). Úsala siempre que el cliente compre desde $2M o rente desde $13,000, o cuando el inventario propio no alcance — especifica 'operacion' (VENTA/RENTA) para no mezclar. ¡Con esta herramienta casi siempre HAY opciones: nunca digas "no tengo" sin consultarla!
+2. buscar_inventario_zmg: la BOLSA COMPLETA de la ZMG, venta y renta de CUALQUIER precio en los 5 municipios (el mismo inventario de acierta.pro). Úsala para cualquier presupuesto, o cuando el inventario propio no alcance — especifica 'operacion' (VENTA/RENTA) para no mezclar. ¡Con esta herramienta casi siempre HAY opciones: nunca digas "no tengo" sin consultarla!
 3. Con propiedades de la bolsa: comparte SOLO los datos del registro (precio, recámaras, baños, m², municipio) + la liga con enviar_ficha_liga. NO inventes amenidades ni detalles: la ficha completa está en la liga. Máximo 3 fichas por turno.
 4. CUANDO EL CLIENTE SE REFIERE A UNA OPCIÓN YA MOSTRADA ("la 3", "esa", "la primera", "la de Ciudad Granja"): usa SIEMPRE seleccionar_de_lista con el número de posición — NUNCA repitas datos de memoria ni adivines cuál era. Si el cliente nombra una zona/colonia que NUNCA apareció en tus resultados (tú no la mencionaste ni el cliente la vio en una lista tuya), es una zona NUEVA que el cliente está pidiendo: haz una NUEVA búsqueda con buscar_inventario_zmg filtrando por esa zona. Si esa nueva búsqueda no trae nada, di la verdad ("no tengo opciones en esa colonia exacta ahorita") y ofrece alternativas reales — jamás inventes un nombre de fraccionamiento o desarrollo que ninguna herramienta te dio.
 
@@ -3818,6 +3818,110 @@ except FileNotFoundError:
     print("[MAX] Sin inventario_zmg.csv ni inventario_zmg_ponderado.csv: "
           "solo inventario propio disponible", flush=True)
 
+# ------------------------------------------------------------------
+# INVENTARIO UNIFICADO CON acierta.pro (oct 2026)
+# La fuente única es data.json del sitio (lo genera el sincronizador
+# mensual de acierta-pro-web, día 3 de cada mes). MAX arranca con el CSV
+# local (respaldo) y en segundo plano lo reemplaza por data.json, ya
+# ponderado con la misma metodología de ponderar_inventario.py. Cada 6 h
+# revisa inventario-meta.json y, si hubo actualización, recarga solo.
+# ------------------------------------------------------------------
+_URL_INV_SITIO = "https://raw.githubusercontent.com/javiermendosalinas-afk/acierta-pro-web/main/"
+_INV_SITIO_VERSION = {"actualizado": None}
+_DESARROLLOS_PROPIOS = {
+    "EB-VI0277": "BellaVittoria", "EB-WG7913": "Villa Dhara / Parque Morelos",
+    "EB-WG7125": "The Block / ITESO", "EB-WM2996": "Eleve Valle Real",
+}
+
+
+def _ponderar_inventario_sitio(items):
+    """Convierte data.json al formato que MAX ya usa (mismas columnas que
+    inventario_zmg_ponderado.csv) y calcula Score_Comercial con los mismos
+    pesos: competitividad de precio/m2 45, completitud 25, precio confiable 20,
+    bono de desarrollo propio 10. Se omiten las fichas en dólares para que
+    MAX no las compare contra presupuestos en pesos."""
+    import statistics
+    filas = []
+    for x in items:
+        if (x.get("moneda") or "MXN").upper() != "MXN":
+            continue
+        tipo = (x.get("tipo") or "").strip()
+        precio = float(x.get("precio") or 0)
+        m2 = float(x.get("m2") or 0)
+        filas.append({
+            "Municipio": x.get("municipio") or "", "Colonia": x.get("colonia") or "",
+            "Operación": x.get("operacion") or "", "Tipo": tipo[:1].upper() + tipo[1:],
+            "Título/Colonia": x.get("titulo") or "", "Precio": int(precio),
+            "Recámaras": int(x["recamaras"]) if x.get("recamaras") not in (None, "") else None,
+            "Baños": x.get("banos"), "m²": m2 or None, "codigo_eb": x.get("eb") or "",
+            "Liga": x.get("liga") or "", "lat": x.get("lat"), "lon": x.get("lon"),
+            "Foto": x.get("foto") or "", "Segmento": x.get("segmento") or "",
+            "Revisar": bool(x.get("revisar")),
+            "precio_m2": (precio / m2) if (precio and m2) else None,
+        })
+    grupos = {}
+    for f in filas:
+        if f["precio_m2"]:
+            grupos.setdefault((f["Municipio"], f["Tipo"], f["Operación"]), []).append(f["precio_m2"])
+    medianas = {k: statistics.median(v) for k, v in grupos.items()}
+    for f in filas:
+        med = medianas.get((f["Municipio"], f["Tipo"], f["Operación"]))
+        pm2 = f["precio_m2"]
+        f["precio_m2_vs_mediana"] = ((med - pm2) / med) if (med and pm2) else None
+        confiable = bool(pm2 and med and med * 0.2 <= pm2 <= med * 4) and not f["Revisar"]
+        f["Precio_Confiable"] = confiable
+        f["Completitud"] = sum(1 for c in ("Recámaras", "Baños", "m²", "Tipo")
+                               if f.get(c) not in (None, "")) / 4
+        comp = min(max(f["precio_m2_vs_mediana"] or 0, 0), 1)
+        propio = _DESARROLLOS_PROPIOS.get(f["codigo_eb"])
+        f["Es_Desarrollo_Propio"] = propio or ""
+        score = comp * 45 + f["Completitud"] * 25 + (20 if confiable else 0) + (10 if propio else 0)
+        score = min(score, 100)
+        if not confiable:
+            score *= 0.3
+        f["Score_Comercial"] = round(score, 1)
+    filas.sort(key=lambda f: f["Score_Comercial"], reverse=True)
+    return filas
+
+
+def _actualizar_inventario_desde_sitio(forzar=False):
+    """Descarga data.json del sitio si cambió. Reemplaza INVENTARIO_ZMG en su
+    lugar (misma lista, para que todo el código que ya la usa vea el nuevo
+    contenido). Si algo falla, se queda el inventario vigente."""
+    try:
+        meta = requests.get(_URL_INV_SITIO + "inventario-meta.json", timeout=20).json()
+        version = meta.get("actualizado")
+        if not forzar and version and version == _INV_SITIO_VERSION["actualizado"]:
+            return False
+        r = requests.get(_URL_INV_SITIO + "data.json", timeout=60)
+        r.raise_for_status()
+        items = r.json()
+        nuevas = _ponderar_inventario_sitio(items)
+        # Freno de seguridad: si viene muy incompleto, no se toca lo vigente
+        if len(nuevas) < 3000:
+            print(f"[MAX-INV] data.json trae solo {len(nuevas)} fichas: se conserva el inventario vigente", flush=True)
+            return False
+        INVENTARIO_ZMG[:] = nuevas
+        _INV_SITIO_VERSION["actualizado"] = version
+        print(f"[MAX-INV] Inventario unificado con acierta.pro: {len(nuevas)} propiedades "
+              f"(versión {version})", flush=True)
+        return True
+    except Exception as e:
+        print(f"[MAX-INV] No se pudo actualizar desde acierta.pro ({e}); se conserva el vigente "
+              f"({len(INVENTARIO_ZMG)} propiedades)", flush=True)
+        return False
+
+
+def _loop_inventario_sitio():
+    _actualizar_inventario_desde_sitio(forzar=True)
+    while True:
+        time.sleep(6 * 3600)
+        _actualizar_inventario_desde_sitio()
+
+
+if os.environ.get("MAX_INVENTARIO_SITIO", "1") != "0":
+    threading.Thread(target=_loop_inventario_sitio, daemon=True).start()
+
 ULTIMA_BUSQUEDA = {}  # phone -> lista de propiedades mostradas en el último resultado
                       # (permite resolver "la 3", "esa" sin adivinar ni inventar)
 
@@ -3991,7 +4095,7 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
                           recamaras_min=None, tipo=None, texto=None, operacion=None,
                           amueblado=None, limite=5, m2_min=None, m2_max=None, niveles=None,
                           banos_min=None):
-    """Busca en la bolsa compartida ZMG (venta desde $2M, renta desde $13,000/mes).
+    """Busca en la bolsa compartida ZMG (venta y renta de cualquier precio, inventario de acierta.pro).
     Guarda el resultado exacto mostrado a ESTE cliente para poder resolver
     referencias como "la 3" con seleccionar_de_lista, sin inventar nada."""
     if not INVENTARIO_ZMG:
@@ -4021,8 +4125,23 @@ def buscar_inventario_zmg(phone, municipio=None, precio_min=None, precio_max=Non
             elif "terreno" in tipo_l or "lote" in tipo_l:
                 if "terreno" not in pt:
                     continue
-            elif "casa" in tipo_l and "casa" not in pt:
-                continue
+            elif "casa" in tipo_l:
+                if "casa" not in pt:
+                    continue
+            else:
+                # Local, oficina, bodega, nave, edificio, quinta, rancho...: antes
+                # cualquier otro tipo no filtraba nada y "local en renta" devolvía
+                # departamentos. Ahora se exige la palabra clave en el tipo.
+                for _clave in ("local", "oficina", "bodega", "nave", "edificio", "quinta", "rancho"):
+                    if _clave in tipo_l:
+                        if _clave not in pt:
+                            break
+                        _clave = None
+                        break
+                else:
+                    _clave = None
+                if _clave:
+                    continue
         if colonias:
             # Buscar el término no solo en el título/colonia, sino también en el
             # código EB y en la liga — así "EB-VW0579" o parte de la URL también
