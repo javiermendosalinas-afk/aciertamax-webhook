@@ -3830,6 +3830,7 @@ except FileNotFoundError:
 # revisa inventario-meta.json y, si hubo actualización, recarga solo.
 # ------------------------------------------------------------------
 _URL_INV_SITIO = "https://raw.githubusercontent.com/javiermendosalinas-afk/acierta-pro-web/main/"
+_URL_BOLSA = "https://raw.githubusercontent.com/javiermendosalinas-afk/aciertamax-bolsa/main/"
 _INV_SITIO_VERSION = {"actualizado": None}
 _DESARROLLOS_PROPIOS = {
     "EB-VI0277": "BellaVittoria", "EB-WG7913": "Villa Dhara / Parque Morelos",
@@ -3893,7 +3894,21 @@ def _actualizar_inventario_desde_sitio(forzar=False):
     contenido). Si algo falla, se queda el inventario vigente."""
     try:
         meta = requests.get(_URL_INV_SITIO + "inventario-meta.json", timeout=20).json()
-        version = meta.get("actualizado")
+        version = str(meta.get("actualizado"))
+        # Bolsa NeoJaus (sitio aparte bolsa.aciertamax.com): MAX también la conoce
+        bolsa_items, bolsa_ver = [], ""
+        try:
+            mb = requests.get(_URL_BOLSA + "inventario-meta.json", timeout=20).json()
+            bolsa_ver = str(mb.get("actualizado") or "")
+            if mb.get("total"):
+                rb = requests.get(_URL_BOLSA + "data.json", timeout=60)
+                rb.raise_for_status()
+                # las que también están en EasyBroker ya vienen en acierta.pro: no se repiten
+                bolsa_items = [x for x in rb.json()
+                               if not any(str(g.get("clave", "")).startswith("EB-") for g in (x.get("tambien_en") or []))]
+        except Exception as e:
+            print(f"[MAX-INV] Bolsa NeoJaus no disponible ({e}); se usa solo acierta.pro", flush=True)
+        version = version + "|" + bolsa_ver
         if not forzar and version and version == _INV_SITIO_VERSION["actualizado"]:
             return False
         r = requests.get(_URL_INV_SITIO + "data.json", timeout=60)
@@ -3904,10 +3919,11 @@ def _actualizar_inventario_desde_sitio(forzar=False):
         if len(nuevas) < 3000:
             print(f"[MAX-INV] data.json trae solo {len(nuevas)} fichas: se conserva el inventario vigente", flush=True)
             return False
-        INVENTARIO_ZMG[:] = nuevas
+        de_bolsa = _ponderar_inventario_sitio(bolsa_items) if bolsa_items else []
+        INVENTARIO_ZMG[:] = nuevas + de_bolsa
         _INV_SITIO_VERSION["actualizado"] = version
         print(f"[MAX-INV] Inventario unificado con acierta.pro: {len(nuevas)} propiedades "
-              f"(versión {version})", flush=True)
+              f"+ bolsa NeoJaus: {len(de_bolsa)} (versión {version})", flush=True)
         return True
     except Exception as e:
         print(f"[MAX-INV] No se pudo actualizar desde acierta.pro ({e}); se conserva el vigente "
@@ -5780,7 +5796,7 @@ def ver_ficha(phone):
 import hmac
 import hashlib
 
-CAMINO_ORIGENES = {"https://acierta.pro", "https://www.acierta.pro"}
+CAMINO_ORIGENES = {"https://acierta.pro", "https://www.acierta.pro", "https://bolsa.aciertamax.com"}
 _CAMINO_HITS = {}
 _CAMINO_LOCK = threading.Lock()
 _CAMINO_OP = {"compra": "compra", "renta": "renta", "vender": "captación"}
