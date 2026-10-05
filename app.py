@@ -909,7 +909,10 @@ def _clientes_abiertos_de(vendedor_phone):
                         "fase": fila.get("FASE") or "Atencion", "telefono": fila.get("TELEFONO_CLIENTE") or "sin registrar"})
     return out
 
-_REPORTE_DIA_TRIGGER = re.compile(r"^\s*(mi\s+)?reporte\s+(del?\s+)?d[ií]a\s*[.!]?\s*$", re.IGNORECASE)
+# Antes exigía que el mensaje dijera SOLO "Reporte del día"; si traía algo más
+# ("Reporte del día. Los atendió Ubaldo") no se reconocía y MAX lo contestaba
+# como si fuera un cliente. Ahora basta con que EMPIECE así.
+_REPORTE_DIA_TRIGGER = re.compile(r"^\s*(mi\s+)?reporte\s+(del?\s+)?d[ií]a\b", re.IGNORECASE)
 
 def _reporte_dia_manejar(vendedor_phone, texto):
     """Reporte del día: primero un mensaje por cada cliente abierto (con
