@@ -3895,7 +3895,7 @@ def _actualizar_inventario_desde_sitio(forzar=False):
     try:
         meta = requests.get(_URL_INV_SITIO + "inventario-meta.json", timeout=20).json()
         version = str(meta.get("actualizado"))
-        # Bolsa NeoJaus (sitio aparte bolsa.aciertamax.com): MAX también la conoce
+        # Bolsa NeoJaus (sitio aparte inmobiliaria.pro): MAX también la conoce
         bolsa_items, bolsa_ver = [], ""
         try:
             mb = requests.get(_URL_BOLSA + "inventario-meta.json", timeout=20).json()
@@ -5796,7 +5796,7 @@ def ver_ficha(phone):
 import hmac
 import hashlib
 
-CAMINO_ORIGENES = {"https://acierta.pro", "https://www.acierta.pro", "https://bolsa.aciertamax.com"}
+CAMINO_ORIGENES = {"https://acierta.pro", "https://www.acierta.pro", "https://inmobiliaria.pro", "https://www.inmobiliaria.pro"}
 _CAMINO_HITS = {}
 _CAMINO_LOCK = threading.Lock()
 _CAMINO_OP = {"compra": "compra", "renta": "renta", "vender": "captación"}
