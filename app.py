@@ -5011,6 +5011,8 @@ def webhook():
     text = (data.get("text") or "").strip()
     if not phone:
         return jsonify(ok=True)
+    if text and _camino_verificacion_entrante(phone, text):
+        return jsonify(ok=True, verificacion=True)
     if not text:
         tipo_msg = (data.get("type") or "").lower()
         print(f"[MAX-DIAGNOSTICO-MEDIA] Mensaje sin texto de {phone}, "
@@ -5914,6 +5916,90 @@ def api_camino_verificar_enviar():
     if not enviado:
         return _camino_resp({"ok": False, "error": "No pudimos enviar el código. Intenta de nuevo."}, 502)
     return _camino_resp({"ok": True})
+
+# ------------------------------------------------------------------
+# VERIFICACIÓN INVERTIDA (4-oct-2026): Meta no deja a esta cuenta crear
+# plantillas de autenticación, y sin plantilla no se le puede escribir
+# primero a un número nuevo. Así que ahora es el CLIENTE quien nos escribe:
+# la página le muestra un botón que abre WhatsApp con "Mi código Acierta es
+# 1234"; el webhook lo recibe desde SU número (eso prueba que el número es
+# suyo), lo marca verificado y le contesta (ya hay sesión abierta de 24 h).
+# La página consulta /estado cada pocos segundos para avanzar sola.
+# ------------------------------------------------------------------
+WHATSAPP_ACIERTA = os.environ.get("WHATSAPP_ACIERTA", "523333777337")
+_RE_CODIGO_ACIERTA = re.compile(r"c[oó]digo\s+acierta(?:\s+es)?\s*:?\s*(\d{4})", re.I)
+
+
+@app.route("/api/camino/verificar/iniciar", methods=["POST", "OPTIONS"])
+def api_camino_verificar_iniciar():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _camino_json()
+    if d is None:
+        return _camino_resp({"ok": False, "error": "Solicitud inválida."}, 400)
+    tel = _camino_tel(d.get("whatsapp"))
+    if not tel:
+        return _camino_resp({"ok": False, "error": "Escribe tu WhatsApp a 10 dígitos."}, 400)
+    if not _camino_limite("verifini:" + tel, 6, 600):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos. Espera unos minutos."}, 429)
+    if not _camino_limite("verifini:ip:" + (request.remote_addr or ""), 30, 3600):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos. Intenta más tarde."}, 429)
+    with _CAMINO_LOCK:
+        if tel in _CAMINO_VERIFICADOS and time.time() - _CAMINO_VERIFICADOS[tel] <= 1800:
+            return _camino_resp({"ok": True, "verificado": True})
+        entrada = _CAMINO_VERIF.get(tel)
+        if entrada and entrada["expira"] > time.time() and len(entrada["codigo"]) == 4:
+            codigo = entrada["codigo"]          # mismo código si lo vuelve a pedir
+        else:
+            codigo = f"{random.randint(0, 9999):04d}"
+        _CAMINO_VERIF[tel] = {"codigo": codigo, "expira": time.time() + 900}
+        if len(_CAMINO_VERIF) > 5000:
+            _CAMINO_VERIF.clear()
+    mensaje = f"Hola, quiero confirmar mi WhatsApp. Mi código Acierta es {codigo}"
+    liga = f"https://wa.me/{WHATSAPP_ACIERTA}?text={quote(mensaje)}"
+    return _camino_resp({"ok": True, "verificado": False, "codigo": codigo, "liga": liga})
+
+
+@app.route("/api/camino/verificar/estado", methods=["POST", "OPTIONS"])
+def api_camino_verificar_estado():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _camino_json()
+    tel = _camino_tel((d or {}).get("whatsapp"))
+    if not tel:
+        return _camino_resp({"ok": False, "error": "Escribe tu WhatsApp a 10 dígitos."}, 400)
+    if not _camino_limite("verifest:" + tel, 400, 900):
+        return _camino_resp({"ok": False, "error": "Demasiadas consultas."}, 429)
+    with _CAMINO_LOCK:
+        ts = _CAMINO_VERIFICADOS.get(tel)
+    return _camino_resp({"ok": True, "verificado": bool(ts and time.time() - ts <= 1800)})
+
+
+def _camino_verificacion_entrante(phone, text):
+    """Si el mensaje entrante es 'Mi código Acierta es 1234', lo procesa y
+    devuelve True (el webhook ya no lo pasa al asistente). Si no, False."""
+    m = _RE_CODIGO_ACIERTA.search(text or "")
+    if not m:
+        return False
+    digitos = re.sub(r"\D", "", phone or "")
+    tel = "521" + digitos[-10:] if len(digitos) >= 10 else None
+    codigo = m.group(1)
+    with _CAMINO_LOCK:
+        entrada = _CAMINO_VERIF.get(tel) if tel else None
+        ok = bool(entrada and entrada["expira"] > time.time() and entrada["codigo"] == codigo)
+        if ok:
+            _CAMINO_VERIF.pop(tel, None)
+            _CAMINO_VERIFICADOS[tel] = time.time()
+    if ok:
+        print(f"[MAX-CAMINO] WhatsApp verificado por mensaje entrante: {tel}", flush=True)
+        wati_send_text(phone, "¡Listo! ✅ Tu WhatsApp quedó confirmado. Regresa a acierta.pro para "
+                              "continuar con tu proceso; la página avanza sola.")
+    else:
+        print(f"[MAX-CAMINO] Código de verificación no válido o vencido de {phone}", flush=True)
+        wati_send_text(phone, "Ese código ya no es válido o venció. En acierta.pro vuelve a presionar "
+                              "\"Verificar por WhatsApp\" y envía el mensaje nuevo, sin cambiarlo.")
+    return True
+
 
 @app.route("/api/camino/verificar/confirmar", methods=["POST", "OPTIONS"])
 def api_camino_verificar_confirmar():
