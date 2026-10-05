@@ -6215,6 +6215,302 @@ def api_camino_completar():
         return _camino_resp({"ok": False, "error": "No pudimos actualizar tu proceso."}, 500)
 
 
+# ------------------------------------------------------------------
+# PORTAL DEL COACH (acierta.pro/asesor) — propuesta personalizada en PDF
+# Pedido por Javier (4-oct-2026): el coach entra con su contraseña, busca
+# al cliente por WhatsApp en el CRM, elige propiedades (con resumen y
+# ventajas que él revisa) y se genera una carta PDF con mapa que se envía
+# al cliente por WhatsApp, con copia al coach y a Javier.
+# Contraseñas: variables de entorno en Render, una por coach:
+#   CLAVE_ASESOR_JAVIER, CLAVE_ASESOR_UBALDO, CLAVE_ASESOR_LETICIA, ...
+# (nunca en el código). Sin su variable, ese coach no puede entrar.
+# ------------------------------------------------------------------
+import base64 as _b64
+import unicodedata as _ud
+
+
+def _asesor_clave_usuario(nombre):
+    primero = (nombre or "").split()[0] if nombre else ""
+    return _ud.normalize("NFKD", primero).encode("ascii", "ignore").decode().lower()
+
+
+def _asesores():
+    out = {}
+    for v in VENDEDORES:
+        u = _asesor_clave_usuario(v["nombre"])
+        out[u] = {"usuario": u, "nombre": v["nombre"], "telefono": v["phone"],
+                  "clave": os.environ.get(f"CLAVE_ASESOR_{u.upper()}", "")}
+    return out
+
+
+def _asesor_llave():
+    return (os.environ.get("ASESOR_SECRET") or os.environ.get("CAMINO_SECRET")
+            or os.environ.get("WATI_API_KEY") or "asesor").encode()
+
+
+def _asesor_token(usuario, horas=12):
+    cuerpo = _b64.urlsafe_b64encode(json.dumps({"u": usuario, "exp": int(time.time() + horas * 3600)}).encode()).decode()
+    firma = hmac.new(_asesor_llave(), cuerpo.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{cuerpo}.{firma}"
+
+
+def _asesor_de_token(token):
+    try:
+        cuerpo, firma = str(token or "").split(".", 1)
+        if not hmac.compare_digest(firma, hmac.new(_asesor_llave(), cuerpo.encode(), hashlib.sha256).hexdigest()[:32]):
+            return None
+        d = json.loads(_b64.urlsafe_b64decode(cuerpo.encode()).decode())
+        if d.get("exp", 0) < time.time():
+            return None
+        a = _asesores().get(d.get("u"))
+        return a if a and a["clave"] else None
+    except Exception:
+        return None
+
+
+def _asesor_json(limite=200_000):
+    if (request.content_length or 0) > limite:
+        return None
+    return request.get_json(silent=True)
+
+
+@app.route("/api/asesor/usuarios", methods=["POST", "OPTIONS"])
+def api_asesor_usuarios():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    lista = [{"usuario": a["usuario"], "nombre": a["nombre"], "activo": bool(a["clave"])} for a in _asesores().values()]
+    return _camino_resp({"ok": True, "usuarios": lista})
+
+
+@app.route("/api/asesor/login", methods=["POST", "OPTIONS"])
+def api_asesor_login():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(4096) or {}
+    if not _camino_limite("asesorlogin:ip:" + _camino_ip(), 10, 900):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos. Espera 15 minutos."}, 429)
+    a = _asesores().get(str(d.get("usuario") or "").lower())
+    clave = str(d.get("clave") or "")
+    if not a or not a["clave"] or not hmac.compare_digest(clave.encode(), a["clave"].encode()):
+        print(f"[MAX-ASESOR] Intento de acceso fallido para '{d.get('usuario')}' desde {_camino_ip()}", flush=True)
+        return _camino_resp({"ok": False, "error": "Usuario o contraseña incorrectos."}, 401)
+    print(f"[MAX-ASESOR] Acceso de {a['nombre']}", flush=True)
+    return _camino_resp({"ok": True, "token": _asesor_token(a["usuario"]), "nombre": a["nombre"]})
+
+
+def _crm_buscar_por_tel10(tel10):
+    """Expediente más reciente del cliente (abierto primero), comparando por
+    los últimos 10 dígitos para no fallar por el prefijo 52/521."""
+    sh = _crm_sheet()
+    valores = sh.get_all_values()
+    if len(valores) < 2:
+        return None
+    headers = valores[0]
+    cerrado = None
+    for idx in range(len(valores) - 1, 0, -1):
+        fila = _crm_fila_a_dict(headers, valores[idx])
+        if _ultimos10(fila.get("TELEFONO_CLIENTE")) == tel10:
+            fila["_fila"] = idx + 1
+            if fila.get("CONCLUIDO") != "Si":
+                return fila
+            cerrado = cerrado or fila
+    return cerrado
+
+
+@app.route("/api/asesor/cliente", methods=["POST", "OPTIONS"])
+def api_asesor_cliente():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(4096) or {}
+    a = _asesor_de_token(d.get("token"))
+    if not a:
+        return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
+    tel = _camino_tel(d.get("whatsapp"))
+    if not tel:
+        return _camino_resp({"ok": False, "error": "Escribe el WhatsApp del cliente a 10 dígitos."}, 400)
+    try:
+        fila = _crm_buscar_por_tel10(_ultimos10(tel)) if (GOOGLE_CREDS_JSON and SHEET_ID) else None
+    except Exception as e:
+        print(f"[MAX-ASESOR] Error leyendo CRM: {e}", flush=True)
+        fila = None
+    if not fila:
+        return _camino_resp({"ok": True, "encontrado": False})
+    ebs = list(dict.fromkeys(re.findall(r"EB-[A-Z0-9]{5,7}", fila.get("PROPIEDADES", "") or "")))
+    return _camino_resp({"ok": True, "encontrado": True,
+                         "nombre": fila.get("NOMBRE_CLIENTE", ""), "folio": fila.get("FOLIO", ""),
+                         "vendedor": fila.get("VENDEDOR", ""), "operacion": fila.get("OPERACION", ""),
+                         "fase": fila.get("FASE", ""), "concluido": fila.get("CONCLUIDO") == "Si",
+                         "propiedades": ebs, "carpeta": fila.get("CARPETA_CLIENTE_URL", ""),
+                         "contexto": (fila.get("CHAT_COMPLETO", "") or "")[-1500:]})
+
+
+def _prop_de_inventario(eb, operacion=""):
+    eb = (eb or "").upper().strip()
+    candidatos = [p for p in INVENTARIO_ZMG if (p.get("codigo_eb") or "").upper() == eb]
+    if operacion:
+        mismos = [p for p in candidatos if (p.get("Operación") or "").upper() == operacion.upper()]
+        candidatos = mismos or candidatos
+    if not candidatos:
+        return None
+    p = candidatos[0]
+    return {"eb": eb, "operacion": p.get("Operación", ""), "titulo": p.get("Título/Colonia", ""),
+            "tipo": p.get("Tipo", ""), "precio": p.get("Precio"), "municipio": p.get("Municipio", ""),
+            "colonia": p.get("Colonia", ""), "recamaras": p.get("Recámaras"), "banos": p.get("Baños"),
+            "m2": p.get("m²"), "foto": p.get("Foto", ""), "lat": p.get("lat"), "lon": p.get("lon"),
+            "liga": p.get("Liga", "")}
+
+
+_PROPUESTAS_PDF = {}   # id -> (bytes, nombre_archivo, ts) respaldo si Drive no está disponible
+
+
+@app.route("/api/asesor/pdf/<pid>", methods=["GET"])
+def api_asesor_pdf(pid):
+    item = _PROPUESTAS_PDF.get(pid)
+    if not item or time.time() - item[2] > 30 * 86400:
+        return "Esta propuesta ya no está disponible. Pídele a tu coach que te la reenvíe.", 404
+    resp = app.response_class(item[0], mimetype="application/pdf")
+    resp.headers["Content-Disposition"] = f'inline; filename="{item[1]}"'
+    return resp
+
+
+def wati_send_file(phone, contenido, nombre_archivo, caption="", mime="application/pdf"):
+    phone_norm = _normalizar_phone_wati(phone)
+    try:
+        r = requests.post(f"{WATI_BASE_URL}/api/v1/sendSessionFile/{phone_norm}", headers=wati_headers(),
+                          params={"caption": caption[:1000]},
+                          files={"file": (nombre_archivo, io.BytesIO(contenido), mime)}, timeout=60)
+        ok = r.status_code in (200, 201)
+        try:
+            cuerpo = r.json()
+            if isinstance(cuerpo, dict) and cuerpo.get("result") is False:
+                ok = False
+        except Exception:
+            cuerpo = r.text[:200]
+        print(f"[MAX-WATI] Archivo a {phone_norm}: status={r.status_code} ok={ok} cuerpo={str(cuerpo)[:200]}", flush=True)
+        return ok
+    except Exception as e:
+        print(f"[MAX-WATI] Error enviando archivo a {phone_norm}: {e}", flush=True)
+        return False
+
+
+def _drive_subir_pdf_publico(contenido, nombre_archivo, folio, nombre_cliente):
+    from googleapiclient.http import MediaIoBaseUpload
+    carpeta_id, _ = _drive_carpeta_cliente(folio or "SIN-FOLIO", nombre_cliente or "cliente")
+    servicio = _drive_client()
+    f = servicio.files().create(body={"name": nombre_archivo, "parents": [carpeta_id]},
+                                media_body=MediaIoBaseUpload(io.BytesIO(contenido), mimetype="application/pdf"),
+                                fields="id, webViewLink").execute()
+    servicio.permissions().create(fileId=f["id"], body={"type": "anyone", "role": "reader"}).execute()
+    return f.get("webViewLink") or f"https://drive.google.com/file/d/{f['id']}/view"
+
+
+@app.route("/api/asesor/propuesta", methods=["POST", "OPTIONS"])
+def api_asesor_propuesta():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json() or {}
+    a = _asesor_de_token(d.get("token"))
+    if not a:
+        return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
+    modo = d.get("modo") if d.get("modo") in ("vista", "enviar") else "vista"
+    cli = d.get("cliente") or {}
+    nombre = _camino_limpiar(cli.get("nombre"), 80)
+    tel = _camino_tel(cli.get("whatsapp"))
+    if len(nombre) < 2:
+        return _camino_resp({"ok": False, "error": "Escribe el nombre del cliente."}, 400)
+    if modo == "enviar" and not tel:
+        return _camino_resp({"ok": False, "error": "Falta el WhatsApp del cliente."}, 400)
+    if not _camino_limite("asesorpdf:" + a["usuario"], 40, 3600):
+        return _camino_resp({"ok": False, "error": "Demasiadas propuestas en poco tiempo. Espera un momento."}, 429)
+    props, faltan = [], []
+    for item in (d.get("propiedades") or [])[:12]:
+        base = _prop_de_inventario(item.get("eb"), item.get("operacion", ""))
+        if not base:
+            faltan.append(str(item.get("eb")))
+            continue
+        base["resumen"] = _camino_limpiar(item.get("resumen"), 600)
+        base["ventajas"] = [_camino_limpiar(str(v).strip(" •-*\t"), 160).lstrip("'")
+                            for v in (item.get("ventajas") or [])[:4] if str(v).strip(" •-*\t")]
+        base["resumen"] = base["resumen"].lstrip("'")
+        props.append(base)
+    if not props:
+        return _camino_resp({"ok": False, "error": "Agrega al menos una propiedad del inventario."}, 400)
+    import propuesta as _prop
+    datos = {"cliente": {"nombre": nombre, "folio": _camino_limpiar(cli.get("folio"), 40)},
+             "coach": {"nombre": a["nombre"], "telefono": _formato_tel_humano(a["telefono"])},
+             "criterios": _camino_limpiar(d.get("criterios"), 300), "nota": _camino_limpiar(d.get("nota"), 900),
+             "propiedades": props}
+    try:
+        pdf = _prop.generar_pdf(datos)
+    except Exception as e:
+        print(f"[MAX-ASESOR] Error generando PDF: {e}", flush=True)
+        return _camino_resp({"ok": False, "error": "No se pudo generar el PDF. Intenta de nuevo."}, 500)
+    archivo = _prop.nombre_archivo(nombre)
+    if modo == "vista":
+        resp = app.response_class(pdf, mimetype="application/pdf")
+        resp.headers["Content-Disposition"] = f'inline; filename="{archivo}"'
+        origen = request.headers.get("Origin", "")
+        if origen in CAMINO_ORIGENES:
+            resp.headers["Access-Control-Allow-Origin"] = origen
+            resp.headers["Vary"] = "Origin"
+        if faltan:
+            resp.headers["X-Propiedades-Omitidas"] = ",".join(faltan)
+        return resp
+
+    # --- ENVIAR ---
+    folio = datos["cliente"]["folio"]
+    liga = ""
+    try:
+        if GOOGLE_CREDS_JSON:
+            liga = _drive_subir_pdf_publico(pdf, archivo, folio, nombre)
+    except Exception as e:
+        print(f"[MAX-ASESOR] No se pudo subir a Drive ({e}); se usa liga de respaldo", flush=True)
+    if not liga:
+        pid = hashlib.sha256(os.urandom(24)).hexdigest()[:28]
+        _PROPUESTAS_PDF[pid] = (pdf, archivo, time.time())
+        liga = f"{request.host_url.rstrip('/').replace('http://', 'https://')}/api/asesor/pdf/{pid}"
+    primer = nombre.split()[0]
+    n = len(props)
+    claves = ", ".join(p["eb"] for p in props)
+    caption = (f"Hola {primer}, soy {a['nombre']}, tu coach de Acierta Max. Te comparto la propuesta con "
+               f"{n} propiedad{'es' if n != 1 else ''} que seleccioné para ti ({claves}). "
+               f"Respóndeme con las claves que te interesen y agendamos tu visita.")
+    via = "archivo"
+    cliente_ok = wati_send_file(tel, pdf, archivo, caption)
+    if not cliente_ok:
+        via = "plantilla"
+        cliente_ok = wati_send_template_message(tel, "seguimiento_cliente", [
+            f"{primer}, tu coach {a['nombre']} te preparó una propuesta con {n} propiedad{'es' if n != 1 else ''} "
+            f"({claves}). Puedes verla aquí: {liga}"])
+    aviso = (f"📄 PROPUESTA ENVIADA — {folio or 'sin folio'}\n\nCliente: {nombre} ({tel})\n"
+             f"Coach: {a['nombre']}\nPropiedades: {claves}\n"
+             f"Entrega al cliente: {'✅ ' + ('PDF por WhatsApp' if via == 'archivo' else 'liga por plantilla') if cliente_ok else '❌ no se pudo entregar'}\n"
+             f"PDF: {liga}")
+    coach_ok = wati_send_file(a["telefono"], pdf, archivo, f"Copia de la propuesta para {nombre} ({claves})")
+    if not coach_ok:
+        coach_ok = notificar_interno(a["telefono"], aviso, f"Propuesta para {nombre} | {claves} | PDF: {liga}")
+    if _ultimos10(a["telefono"]) != _ultimos10(JAVIER_PHONE):
+        notificar_interno(JAVIER_PHONE, aviso, f"Propuesta de {a['nombre']} a {nombre} | {claves} | PDF: {liga}")
+    try:
+        _actividad_sheet().append_row([hora_gdl(), a["telefono"], "propuesta", folio,
+                                       f"{nombre} ({tel}) · {claves} · {'entregada' if cliente_ok else 'NO entregada'} · {liga}"[:500]])
+        if folio and GOOGLE_CREDS_JSON:
+            fila = _crm_buscar_por_tel10(_ultimos10(tel))
+            if fila and fila.get("FOLIO") == folio:
+                col = {h: i + 1 for i, h in enumerate(CRM_COLUMNAS)}
+                _crm_sheet().update_cell(fila["_fila"], col["ULTIMA_ACCION"], f"{hora_gdl()} propuesta PDF ({claves})")
+    except Exception as e:
+        print(f"[MAX-ASESOR] No se pudo registrar la propuesta en el CRM: {e}", flush=True)
+    print(f"[MAX-ASESOR] Propuesta de {a['nombre']} a {tel}: cliente_ok={cliente_ok} via={via} coach_ok={coach_ok}", flush=True)
+    return _camino_resp({"ok": True, "cliente_ok": cliente_ok, "via": via, "coach_ok": coach_ok,
+                         "liga": liga, "omitidas": faltan})
+
+
+def _formato_tel_humano(tel):
+    d = _ultimos10(tel)
+    return f"{d[:2]} {d[2:6]} {d[6:]}" if len(d) == 10 else str(tel or "")
+
+
 @app.route("/health", methods=["GET"])
 def health():
     """Para UptimeRobot (evita cold start de Render)."""

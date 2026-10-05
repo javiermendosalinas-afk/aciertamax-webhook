@@ -4,3 +4,5 @@ requests==2.32.3
 gspread==6.1.2
 google-auth==2.34.0
 google-api-python-client==2.149.0
+fpdf2==2.8.9
+staticmap==0.5.7
