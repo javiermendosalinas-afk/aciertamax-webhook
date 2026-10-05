@@ -1738,7 +1738,7 @@ def _reenviar_a_javier(phone, cliente=None, max_resp=None):
         print(f"[MAX-FORWARD] Error reenviando a Javier: {e}", flush=True)
 
 
-def wati_send_text(phone, text):
+def wati_send_text(phone, text, copiar=True):
     phone_norm = _normalizar_phone_wati(phone)
     url = f"{WATI_BASE_URL}/api/v1/sendSessionMessage/{phone_norm}"
     r = requests.post(url, headers=wati_headers(),
@@ -1760,7 +1760,7 @@ def wati_send_text(phone, text):
         pass
     print(f"[MAX-WATI] Envío a {phone_norm}: status={r.status_code} ok={ok} "
           f"cuerpo={str(cuerpo)[:300] if cuerpo is not None else r.text[:300]}", flush=True)
-    if ok:
+    if ok and copiar:   # copiar=False: mensajes automáticos (Pulso, verificación) que no ameritan copia
         _reenviar_a_javier(phone, max_resp=text)
     return ok
 
@@ -5016,6 +5016,8 @@ def webhook():
         return jsonify(ok=True)
     if text and _camino_verificacion_entrante(phone, text):
         return jsonify(ok=True, verificacion=True)
+    if text and _pulso_entrante(phone, text, data.get("senderName") or ""):
+        return jsonify(ok=True, pulso=True)
     if not text:
         tipo_msg = (data.get("type") or "").lower()
         print(f"[MAX-DIAGNOSTICO-MEDIA] Mensaje sin texto de {phone}, "
@@ -5996,11 +5998,11 @@ def _camino_verificacion_entrante(phone, text):
     if ok:
         print(f"[MAX-CAMINO] WhatsApp verificado por mensaje entrante: {tel}", flush=True)
         wati_send_text(phone, "¡Listo! ✅ Tu WhatsApp quedó confirmado. Regresa a acierta.pro para "
-                              "continuar con tu proceso; la página avanza sola.")
+                              "continuar con tu proceso; la página avanza sola.", copiar=False)
     else:
         print(f"[MAX-CAMINO] Código de verificación no válido o vencido de {phone}", flush=True)
         wati_send_text(phone, "Ese código ya no es válido o venció. En acierta.pro vuelve a presionar "
-                              "\"Verificar por WhatsApp\" y envía el mensaje nuevo, sin cambiarlo.")
+                              "\"Verificar por WhatsApp\" y envía el mensaje nuevo, sin cambiarlo.", copiar=False)
     return True
 
 
@@ -6213,6 +6215,205 @@ def api_camino_completar():
     except Exception as e:
         print(f"[MAX-CAMINO] Error al completar {folio}: {e}", flush=True)
         return _camino_resp({"ok": False, "error": "No pudimos actualizar tu proceso."}, 500)
+
+
+# ------------------------------------------------------------------
+# PULSO INMOBILIARIO ACIERTA.PRO (oct-2026): suscripción al resumen
+# ejecutivo. Dos entradas:
+#  1) Formulario en acierta.pro/pulso -> /api/pulso/suscribir guarda los
+#     datos (pendiente) y regresa una liga wa.me con "PULSO 1234".
+#  2) Cualquiera que escriba PULSO al WhatsApp (campañas, Instagram).
+# Al recibir PULSO por WhatsApp se activa la suscripción, se manda la
+# bienvenida y el PDF de la edición vigente (hay sesión abierta de 24 h,
+# no requiere plantilla) y se marca el contacto en Wati (pulso=si) para
+# que Javier mande las ediciones con "Transmisiones masivas" filtrando
+# por ese atributo. "BAJA PULSO" cancela. Datos en la hoja de Sheets
+# "Suscriptores Pulso". La edición vigente se define en el repo del sitio
+# (pulso/ediciones.json), así que publicar una nueva no requiere tocar MAX.
+# ------------------------------------------------------------------
+PULSO_HOJA = "Suscriptores Pulso"
+PULSO_COLUMNAS = ["FECHA_ALTA", "WHATSAPP", "NOMBRE", "CORREO", "INTERESES", "ORIGEN", "ESTADO",
+                  "FECHA_CONFIRMACION", "FECHA_BAJA", "ULTIMA_EDICION", "AVISO_VERSION"]
+PULSO_EDICIONES_URL = "https://raw.githubusercontent.com/javiermendosalinas-afk/acierta-pro-web/main/pulso/ediciones.json"
+PULSO_INTERESES = ("comprar", "vender", "rentar", "invertir", "verifica")
+_PULSO_PEND = {}            # tel -> {codigo, nombre, correo, intereses, aviso, expira}
+_PULSO_CACHE = {"ed": None, "ts": 0, "pdf": None, "pdf_url": None}
+_PULSO_RECIENTES = {}       # tel -> ts del último PULSO procesado (evita reintentos duplicados del webhook)
+_RE_PULSO = re.compile(r"^\s*(?:hola[,.!\s]*)?pulso\b[^\d]*(\d{4})?", re.I)
+_RE_PULSO_BAJA = re.compile(r"^\s*(baja|cancelar|stop|alto)\s+pulso\b", re.I)
+
+
+def _pulso_edicion():
+    """Edición vigente desde el repo del sitio (cache 1 h) y su PDF (cache)."""
+    if not _PULSO_CACHE["ed"] or time.time() - _PULSO_CACHE["ts"] > 3600:
+        try:
+            r = requests.get(PULSO_EDICIONES_URL, timeout=10)
+            if r.status_code == 200:
+                eds = r.json().get("ediciones") or []
+                vig = next((e for e in eds if e.get("vigente")), eds[0] if eds else None)
+                if vig:
+                    _PULSO_CACHE.update(ed=vig, ts=time.time())
+        except Exception as e:
+            print(f"[MAX-PULSO] No se pudo leer ediciones.json: {e}", flush=True)
+    ed = _PULSO_CACHE["ed"]
+    if ed and ed.get("pdf_raw") and _PULSO_CACHE["pdf_url"] != ed["pdf_raw"]:
+        try:
+            r = requests.get(ed["pdf_raw"], timeout=20)
+            if r.status_code == 200 and r.content[:4] == b"%PDF":
+                _PULSO_CACHE.update(pdf=r.content, pdf_url=ed["pdf_raw"])
+        except Exception as e:
+            print(f"[MAX-PULSO] No se pudo descargar el PDF: {e}", flush=True)
+    return ed, _PULSO_CACHE["pdf"]
+
+
+def _pulso_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, PULSO_HOJA, PULSO_COLUMNAS) if libro else None
+
+
+def _pulso_guardar(tel, cambios):
+    """Alta o actualización por número (últimos 10 dígitos). Nunca duplica."""
+    try:
+        sh = _pulso_hoja()
+        if not sh:
+            return
+        valores = sh.get_all_values()
+        col = {h: i for i, h in enumerate(PULSO_COLUMNAS)}
+        t10 = _ultimos10(tel)
+        for idx in range(1, len(valores)):
+            if _ultimos10(valores[idx][col["WHATSAPP"]] if len(valores[idx]) > col["WHATSAPP"] else "") == t10:
+                fila = valores[idx] + [""] * (len(PULSO_COLUMNAS) - len(valores[idx]))
+                for k, v in cambios.items():
+                    if v not in (None, ""):
+                        fila[col[k]] = v
+                sh.update(f"A{idx + 1}", [fila[:len(PULSO_COLUMNAS)]])
+                return
+        fila = [""] * len(PULSO_COLUMNAS)
+        fila[col["FECHA_ALTA"]] = hora_gdl()
+        fila[col["WHATSAPP"]] = t10
+        for k, v in cambios.items():
+            fila[col[k]] = v or fila[col[k]]
+        sh.append_row(fila)
+    except Exception as e:
+        print(f"[MAX-PULSO] No se pudo guardar en Sheets ({tel}): {e}", flush=True)
+
+
+def _pulso_wati_atributos(tel, atributos, nombre=""):
+    """Marca el contacto en Wati para segmentar las transmisiones masivas."""
+    try:
+        ph = _normalizar_phone_wati(tel)
+        params = [{"name": k, "value": str(v)} for k, v in atributos.items()]
+        r = requests.post(f"{WATI_BASE_URL}/api/v1/updateContactAttributes/{ph}", headers=wati_headers(),
+                          json={"customParams": params}, timeout=15)
+        if r.status_code not in (200, 201) and nombre:
+            requests.post(f"{WATI_BASE_URL}/api/v1/addContact/{ph}", headers=wati_headers(),
+                          json={"name": nombre, "customParams": params}, timeout=15)
+    except Exception as e:
+        print(f"[MAX-PULSO] No se pudieron actualizar atributos en Wati ({tel}): {e}", flush=True)
+
+
+@app.route("/api/pulso/suscribir", methods=["POST", "OPTIONS"])
+def api_pulso_suscribir():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _camino_json()
+    if d is None:
+        return _camino_resp({"ok": False, "error": "Solicitud inválida."}, 400)
+    if d.get("sitio_web"):                      # trampa para bots (campo oculto)
+        return _camino_resp({"ok": True, "codigo": "0000", "liga": "https://acierta.pro"})
+    nombre = _camino_limpiar(d.get("nombre"), 80)
+    tel = _camino_tel(d.get("whatsapp"))
+    correo = _camino_limpiar(d.get("correo"), 120)
+    intereses = [i for i in (d.get("intereses") or []) if i in PULSO_INTERESES]
+    if len(nombre) < 2:
+        return _camino_resp({"ok": False, "error": "Escribe tu nombre."}, 400)
+    if not tel:
+        return _camino_resp({"ok": False, "error": "Escribe tu WhatsApp a 10 dígitos."}, 400)
+    if correo and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", correo):
+        return _camino_resp({"ok": False, "error": "Revisa tu correo electrónico."}, 400)
+    if not d.get("acepta"):
+        return _camino_resp({"ok": False, "error": "Necesitamos tu autorización para enviarte el Pulso."}, 400)
+    if not _camino_limite("pulso:ip:" + _camino_ip(), 20, 3600) or not _camino_limite("pulso:" + tel, 6, 3600):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos. Intenta más tarde."}, 429)
+    with _CAMINO_LOCK:
+        previo = _PULSO_PEND.get(tel)
+        codigo = previo["codigo"] if previo and previo["expira"] > time.time() else f"{random.randint(0, 9999):04d}"
+        _PULSO_PEND[tel] = {"codigo": codigo, "nombre": nombre, "correo": correo, "intereses": intereses,
+                            "aviso": _camino_limpiar(d.get("aviso_version"), 40), "expira": time.time() + 86400}
+        if len(_PULSO_PEND) > 20000:
+            _PULSO_PEND.clear()
+    threading.Thread(target=_pulso_guardar, args=(tel, {
+        "NOMBRE": nombre, "CORREO": correo, "INTERESES": ", ".join(intereses), "ORIGEN": "web",
+        "ESTADO": "pendiente", "AVISO_VERSION": _camino_limpiar(d.get("aviso_version"), 40)}), daemon=True).start()
+    mensaje = f"PULSO {codigo} — Hola, soy {nombre.split()[0]} y quiero recibir el Pulso Inmobiliario de acierta.pro"
+    return _camino_resp({"ok": True, "codigo": codigo,
+                         "liga": f"https://wa.me/{WHATSAPP_ACIERTA}?text={quote(mensaje)}"})
+
+
+def _pulso_bienvenida(phone, nombre, reenvio=False):
+    ed, pdf = _pulso_edicion()
+    primer = (nombre or "").split()[0] if nombre else ""
+    saludo = f"¡Hola{(' ' + primer) if primer else ''}! 👋"
+    if reenvio:
+        texto = f"{saludo} Aquí tienes de nuevo la edición vigente del *Pulso Inmobiliario acierta.pro*."
+    else:
+        texto = (f"{saludo} Ya estás suscrito al *Pulso Inmobiliario acierta.pro* ✅\n\n"
+                 "Te mandaremos un resumen breve y visual con los datos inmobiliarios que importan para "
+                 "comprar, vender, rentar o invertir en Guadalajara, con fuentes visibles. Sin saturarte.\n\n"
+                 "Aquí va tu regalo: la edición más reciente 👇\n\n"
+                 "🔎 Busca propiedades y conoce *ACIERTA VERIFICA* en https://acierta.pro\n"
+                 "Para dejar de recibirlo, escribe *BAJA PULSO* cuando quieras.")
+    wati_send_text(phone, texto, copiar=False)
+    enviado = False
+    if pdf and ed:
+        time.sleep(0.6)
+        enviado = wati_send_file(phone, pdf, ed.get("archivo") or "Pulso_Inmobiliario_acierta_pro.pdf",
+                                 ed.get("titulo") or "Pulso Inmobiliario acierta.pro")
+    if not enviado and ed and ed.get("url"):
+        wati_send_text(phone, f"📄 Descárgalo aquí: {ed['url']}", copiar=False)
+    return ed
+
+
+def _pulso_entrante(phone, text, nombre_whatsapp=""):
+    """Procesa 'PULSO', 'PULSO 1234' y 'BAJA PULSO'. True = ya se atendió."""
+    t = (text or "").strip()
+    if len(t) > 160:
+        return False
+    if _RE_PULSO_BAJA.match(t):
+        threading.Thread(target=_pulso_guardar, args=(phone, {"ESTADO": "baja", "FECHA_BAJA": hora_gdl()}), daemon=True).start()
+        threading.Thread(target=_pulso_wati_atributos, args=(phone, {"pulso": "no"}), daemon=True).start()
+        wati_send_text(phone, "Listo, ya no te enviaremos el Pulso Inmobiliario. Si algún día quieres retomarlo, "
+                              "escribe PULSO. ¡Gracias por leernos! 🙌", copiar=False)
+        print(f"[MAX-PULSO] Baja de {phone}", flush=True)
+        return True
+    m = _RE_PULSO.match(t)
+    if not m:
+        return False
+    ahora = time.time()
+    if ahora - _PULSO_RECIENTES.get(phone, 0) < 90:
+        return True                              # reintento del webhook: ya se atendió
+    _PULSO_RECIENTES[phone] = ahora
+    tel = "521" + _ultimos10(phone)
+    codigo = m.group(1)
+    with _CAMINO_LOCK:
+        pend = _PULSO_PEND.get(tel)
+        usar = bool(pend and pend["expira"] > ahora and (not codigo or pend["codigo"] == codigo))
+        if usar:
+            _PULSO_PEND.pop(tel, None)
+    datos = pend if usar else {}
+    nombre = datos.get("nombre") or (nombre_whatsapp or "").strip()
+    ed = _pulso_bienvenida(phone, nombre)
+    intereses = ", ".join(datos.get("intereses") or [])
+    threading.Thread(target=_pulso_guardar, args=(phone, {
+        "NOMBRE": nombre, "CORREO": datos.get("correo", ""), "INTERESES": intereses,
+        "ORIGEN": "web" if usar else "whatsapp", "ESTADO": "activo", "FECHA_CONFIRMACION": hora_gdl(),
+        "ULTIMA_EDICION": (ed or {}).get("numero", ""), "AVISO_VERSION": datos.get("aviso", "")}), daemon=True).start()
+    atributos = {"pulso": "si", "pulso_alta": hora_gdl()[:10]}
+    if intereses:
+        atributos["pulso_intereses"] = intereses
+    threading.Thread(target=_pulso_wati_atributos, args=(phone, atributos, nombre), daemon=True).start()
+    print(f"[MAX-PULSO] Suscripción activa: {phone} ({'web' if usar else 'whatsapp'})", flush=True)
+    return True
 
 
 # ------------------------------------------------------------------
