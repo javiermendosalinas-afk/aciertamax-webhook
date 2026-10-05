@@ -148,7 +148,23 @@ def _fecha_hoy():
     return f"{hoy.day} de {MESES[hoy.month - 1]} de {hoy.year}"
 
 
-def generar_pdf(datos):
+def _limpiar_descripcion(txt, maximo=1400):
+    """Descripción del anunciante, limpia: sin emojis ni caracteres invisibles,
+    sin líneas en blanco de más y acotada en longitud."""
+    import re
+    import unicodedata
+    s = str(txt or "").replace("\r", "")
+    s = "".join(ch for ch in s if (ord(ch) < 0x2190 or 0x2500 <= ord(ch) < 0x2600)
+                and unicodedata.category(ch) not in ("Cf", "Co", "Cs"))
+    s = re.sub(r"[ \t\u00a0]+", " ", s)
+    s = "\n".join(l.strip() for l in s.split("\n"))
+    s = re.sub(r"\n{2,}", "\n", s).strip()
+    if len(s) > maximo:
+        s = s[:maximo].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+    return s
+
+
+def generar_pdf(datos, detalle_fn=None):
     cliente = datos.get("cliente") or {}
     coach = datos.get("coach") or {}
     props = (datos.get("propiedades") or [])[:12]
@@ -157,13 +173,28 @@ def generar_pdf(datos):
 
     # Fotos en paralelo (cada una con su límite de tiempo)
     # Fotos y mapa en paralelo, con límite de tiempo (Render corta a los 30 s)
-    with cf.ThreadPoolExecutor(max_workers=7) as ex:
+    anexo = bool(datos.get("anexo", True)) and detalle_fn is not None
+    with cf.ThreadPoolExecutor(max_workers=8) as ex:
         fut_mapa = ex.submit(crear_mapa, props)
+        futs_det = [ex.submit(detalle_fn, p) for p in props] if anexo else []
         fotos = list(ex.map(lambda p: _descargar(_foto_grande(p.get("foto")), timeout=8), props))
         try:
             mapa = fut_mapa.result(timeout=18)
         except Exception:
             mapa = None
+        detalles = []
+        for f in futs_det:
+            try:
+                detalles.append(f.result(timeout=20) or {})
+            except Exception:
+                detalles.append({})
+        # galería del anexo: hasta 3 fotos adicionales por propiedad
+        galerias = []
+        if anexo:
+            urls = [[u for u in (d.get("fotos") or []) if u][:4] for d in detalles]
+            planas = [u for lista in urls for u in lista]
+            bajadas = dict(zip(planas, ex.map(lambda u: _descargar(u, timeout=8), planas)))
+            galerias = [[_imagen_jpeg(bajadas[u], 1200) for u in lista if bajadas.get(u)] for lista in urls]
     fotos = [_imagen_jpeg(f) if f else None for f in fotos]
 
     pdf = _PDF(format="A4")
@@ -385,7 +416,136 @@ def generar_pdf(datos):
     pdf.set_text_color(*NAVY)
     pdf.cell(W, 4, "Contratos de adhesión registrados ante PROFECO · Conforme a la NOM-247-SE-2021", align="C")
 
+    if anexo:
+        _anexo_fichas(pdf, props, detalles, galerias, fotos)
     return bytes(pdf.output())
+
+
+def _anexo_fichas(pdf, props, detalles, galerias, fotos_principales):
+    W = 174
+    for i, p in enumerate(props):
+        d = detalles[i] if i < len(detalles) else {}
+        gal = galerias[i] if i < len(galerias) else []
+        pdf.add_page()
+        # encabezado del anexo
+        pdf.set_font("Poppins", "B", 8)
+        pdf.set_text_color(*RED)
+        pdf.cell(W, 5, f"ANEXO {i + 1} · FICHA COMPLETA", new_x="LMARGIN", new_y="NEXT")
+        titulo = (d.get("titulo") or p.get("titulo") or "").strip()
+        if titulo.isupper():
+            titulo = titulo.capitalize()
+        pdf.set_font("Poppins", "B", 13)
+        pdf.set_text_color(*NAVY)
+        pdf.multi_cell(W, 6.5, titulo or "Propiedad", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("PoppinsM", "", 9.5)
+        pdf.set_text_color(*GRAY)
+        ubic = d.get("ubicacion") or ", ".join(x for x in (p.get("colonia"), p.get("municipio")) if x)
+        pdf.cell(W - 40, 5.5, ubic)
+        pdf.set_font("Poppins", "B", 9.5)
+        pdf.set_text_color(*NAVY)
+        pdf.cell(40, 5.5, p.get("eb") or "", align="R", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Poppins", "B", 15)
+        pdf.set_text_color(*RED)
+        pdf.cell(W, 8, _precio(p) + ("  ·  " + ("Renta" if (p.get("operacion") or "").upper() == "RENTA" else "Venta")),
+                 new_x="LMARGIN", new_y="NEXT")
+        y = pdf.get_y() + 1.5
+        # galería: foto grande + hasta 3 chicas
+        principal = gal[0] if gal else (fotos_principales[i] if i < len(fotos_principales) else None)
+        resto = gal[1:4] if gal else []
+        if principal:
+            if resto:
+                pdf.image(principal, x=18, y=y, w=114, h=76, keep_aspect_ratio=True)
+                for k, im in enumerate(resto):
+                    pdf.image(im, x=135, y=y + k * 25.6, w=57, h=24.6, keep_aspect_ratio=True)
+            else:
+                pdf.image(principal, x=18, y=y, w=W, h=80, keep_aspect_ratio=True)
+            pdf.set_y(y + (77 if resto else 81) + 3)
+        # tabla de datos
+        filas = []
+        def agrega(etq, val, suf=""):
+            if val not in (None, "", 0, "0"):
+                v = _num(val)
+                filas.append((etq, (f"{v:,}" if isinstance(v, (int, float)) else str(val)) + suf))
+        agrega("Tipo", (p.get("tipo") or "").capitalize())
+        agrega("Recámaras", d.get("recamaras") or p.get("recamaras"))
+        agrega("Baños", d.get("banos") or p.get("banos"))
+        agrega("Medios baños", d.get("medio_banos"))
+        agrega("Estacionamientos", d.get("estacionamientos"))
+        agrega("Construcción", d.get("construccion_m2") or p.get("m2"), " m²")
+        agrega("Terreno", d.get("terreno_m2"), " m²")
+        agrega("Niveles", d.get("niveles"))
+        ant = _num(d.get("antiguedad"))
+        if ant and ant >= 1900:
+            filas.append(("Año de construcción", str(int(ant))))
+        elif ant:
+            filas.append(("Antigüedad", f"{int(ant)} año" + ("s" if ant != 1 else "")))
+        agrega("Mantenimiento", d.get("mantenimiento"))
+        if filas:
+            pdf.set_font("Poppins", "B", 10)
+            pdf.set_text_color(*NAVY)
+            pdf.cell(W, 6, "Datos de la propiedad", new_x="LMARGIN", new_y="NEXT")
+            colw = W / 2
+            for k in range(0, len(filas), 2):
+                for etq, val in filas[k:k + 2]:
+                    pdf.set_fill_color(*CREAM)
+                    pdf.set_font("Poppins", "", 8.6)
+                    pdf.set_text_color(*GRAY)
+                    pdf.cell(colw * 0.45, 6, " " + etq, fill=True)
+                    pdf.set_font("PoppinsM", "", 8.8)
+                    pdf.set_text_color(*INK)
+                    pdf.cell(colw * 0.55 - 1, 6, val, fill=True)
+                    pdf.cell(1, 6, "")
+                pdf.ln(6.6)
+            pdf.ln(1.5)
+        # amenidades
+        amen = [a for a in (d.get("amenidades") or []) if a][:24]
+        if amen:
+            pdf.set_font("Poppins", "B", 10)
+            pdf.set_text_color(*NAVY)
+            pdf.cell(W, 6, "Amenidades y características", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Poppins", "", 8.6)
+            pdf.set_text_color(*INK)
+            colw = W / 3
+            for k in range(0, len(amen), 3):
+                for a_ in amen[k:k + 3]:
+                    txt = a_ if pdf.get_string_width(a_) < colw - 6 else a_[:34] + "…"
+                    pdf.set_text_color(*RED)
+                    pdf.cell(4, 5, "•")
+                    pdf.set_text_color(*INK)
+                    pdf.cell(colw - 4, 5, txt)
+                pdf.ln(5)
+            pdf.ln(2)
+        # descripción
+        desc = _limpiar_descripcion(d.get("descripcion"))
+        max_lineas = int((279 - 24 - pdf.get_y() - 6) / 4.4)   # lo que cabe antes de ligas y aviso
+        if desc and max_lineas >= 3:
+            pdf.set_font("Poppins", "", 8.6)
+            lineas = pdf.multi_cell(W, 4.4, desc, dry_run=True, output="LINES")
+            if len(lineas) > max_lineas:
+                desc = "\n".join(lineas[:max_lineas - 1]).rstrip(" ,.;:") + "…"
+        else:
+            desc = ""
+        if desc:
+            pdf.set_font("Poppins", "B", 10)
+            pdf.set_text_color(*NAVY)
+            pdf.cell(W, 6, "Descripción", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_font("Poppins", "", 8.6)
+            pdf.set_text_color(*INK)
+            pdf.multi_cell(W, 4.4, desc, new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+        # ligas y aviso
+        pdf.set_font("PoppinsM", "", 8.5)
+        pdf.set_text_color(*NAVY)
+        op = "R" if (p.get("operacion") or "").upper() == "RENTA" else "V"
+        pdf.cell(45, 5, "Ver ficha en línea ›", link=f"https://acierta.pro/ficha.html?eb={p.get('eb', '')}&op={op}")
+        if p.get("lat") and p.get("lon"):
+            pdf.cell(45, 5, "Ver ubicación en el mapa ›", link=f"https://www.google.com/maps?q={p['lat']},{p['lon']}")
+        pdf.ln(7)
+        pdf.set_font("Poppins", "I", 7.2)
+        pdf.set_text_color(*GRAY)
+        pdf.multi_cell(W, 3.6, "Información proporcionada por el anunciante a través de EasyBroker. Precio, disponibilidad y "
+                               "características sujetos a confirmación al momento de la visita.", new_x="LMARGIN", new_y="NEXT")
+
 
 
 def nombre_archivo(cliente_nombre):

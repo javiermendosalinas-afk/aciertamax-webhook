@@ -6360,6 +6360,73 @@ def _prop_de_inventario(eb, operacion=""):
             "liga": p.get("Liga", "")}
 
 
+def _eb_json_a_detalle(j):
+    loc = j.get("location")
+    mant = j.get("expenses") or j.get("maintenance_fee")
+    if isinstance(mant, (int, float)) and mant:
+        mant = f"${mant:,.0f} al mes"
+    return {
+        "titulo": j.get("title"), "descripcion": j.get("description"),
+        "ubicacion": loc.get("name") if isinstance(loc, dict) else loc,
+        "recamaras": j.get("bedrooms"), "banos": j.get("bathrooms"), "medio_banos": j.get("half_bathrooms"),
+        "estacionamientos": j.get("parking_spaces"), "construccion_m2": j.get("construction_size"),
+        "terreno_m2": j.get("lot_size"), "niveles": j.get("floors"), "antiguedad": j.get("age"),
+        "mantenimiento": mant,
+        "amenidades": [f.get("name") if isinstance(f, dict) else str(f) for f in (j.get("features") or [])],
+        "fotos": [im.get("url") if isinstance(im, dict) else str(im) for im in (j.get("property_images") or [])],
+        "fuente": "api",
+    }
+
+
+def _eb_detalle_completo(p):
+    """Ficha completa para el anexo del PDF. 1) API de EasyBroker (propias de
+    Acierta Max); 2) API de la bolsa MLS (compartidas); 3) página pública en
+    aciertamax.com (descripción y fotos). Lo que no se encuentre, no se pone."""
+    eb = (p.get("eb") or "").upper()
+    if EASYBROKER_API_KEY and eb:
+        for ruta in (f"/properties/{eb}", f"/mls_properties/{eb}"):
+            try:
+                r = requests.get(EB_API + ruta, headers=eb_headers(), timeout=10)
+                if r.status_code == 200:
+                    return _eb_json_a_detalle(r.json())
+            except Exception:
+                pass
+    liga = p.get("liga")
+    if not liga:
+        return {}
+    try:
+        r = requests.get(liga, timeout=12, headers={"User-Agent": "Mozilla/5.0 (AciertaMax propuestas)"})
+        if r.status_code != 200:
+            return {}
+        html = r.text
+        import html as _html
+        desc = ""
+        for bloque in re.findall(r'<script[^>]+application/ld\+json[^>]*>(.*?)</script>', html, re.S):
+            try:
+                dj = json.loads(bloque)
+                for o in (dj if isinstance(dj, list) else [dj]):
+                    if isinstance(o, dict) and len(str(o.get("description", ""))) > len(desc):
+                        desc = str(o["description"])
+            except Exception:
+                pass
+        if len(desc) < 80:
+            m = re.search(r'<meta[^>]+(?:property|name)="(?:og:)?description"[^>]+content="([^"]*)"', html) or \
+                re.search(r'<meta[^>]+content="([^"]*)"[^>]+(?:property|name)="(?:og:)?description"', html)
+            if m and len(m.group(1)) > len(desc):
+                desc = m.group(1)
+        fotos, vistos = [], set()
+        for u in re.findall(r'https://assets\.easybroker\.com/property_images/[^"\'\s)<>]+', html):
+            u = _html.unescape(u)
+            clave = u.split("?")[0]
+            if clave not in vistos and re.search(r"\.(jpe?g|png|webp)$", clave, re.I):
+                vistos.add(clave)
+                fotos.append(u)
+        return {"descripcion": _html.unescape(desc), "fotos": fotos[:6], "fuente": "html"}
+    except Exception as e:
+        print(f"[MAX-ASESOR] No se pudo leer la ficha de {eb}: {e}", flush=True)
+        return {}
+
+
 _PROPUESTAS_PDF = {}   # id -> (bytes, nombre_archivo, ts) respaldo si Drive no está disponible
 
 
@@ -6441,7 +6508,8 @@ def api_asesor_propuesta():
              "criterios": _camino_limpiar(d.get("criterios"), 300), "nota": _camino_limpiar(d.get("nota"), 900),
              "propiedades": props}
     try:
-        pdf = _prop.generar_pdf(datos)
+        datos["anexo"] = d.get("anexo", True) is not False
+        pdf = _prop.generar_pdf(datos, detalle_fn=_eb_detalle_completo)
     except Exception as e:
         print(f"[MAX-ASESOR] Error generando PDF: {e}", flush=True)
         return _camino_resp({"ok": False, "error": "No se pudo generar el PDF. Intenta de nuevo."}, 500)
