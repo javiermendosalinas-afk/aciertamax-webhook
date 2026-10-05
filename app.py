@@ -6233,7 +6233,15 @@ def api_camino_completar():
 # ------------------------------------------------------------------
 PULSO_HOJA = "Suscriptores Pulso"
 PULSO_COLUMNAS = ["FECHA_ALTA", "WHATSAPP", "NOMBRE", "CORREO", "INTERESES", "ORIGEN", "ESTADO",
-                  "FECHA_CONFIRMACION", "FECHA_BAJA", "ULTIMA_EDICION", "AVISO_VERSION"]
+                  "FECHA_CONFIRMACION", "FECHA_BAJA", "ULTIMA_EDICION", "AVISO_VERSION",
+                  "ULTIMA_EDICION_CORREO"]
+PULSO_METRICAS_HOJA = "Pulso Métricas"
+PULSO_METRICAS_COLUMNAS = ["MES", "MENSAJES_WHATSAPP", "CORREOS", "ALTAS", "BAJAS", "COSTO_ESTIMADO_USD", "ALERTA_ENVIADA"]
+PULSO_TARIFA_USD = float(os.environ.get("PULSO_TARIFA_USD", "0.0085"))     # mensaje de servicio en México (oct-2026)
+PULSO_ALERTA_USD = float(os.environ.get("PULSO_ALERTA_USD", "40"))
+PULSO_CORREOS_DIA = int(os.environ.get("PULSO_CORREOS_DIA", "400"))       # Gmail limita los envíos diarios
+MAX_URL_PUBLICA = os.environ.get("MAX_URL_PUBLICA", "https://aciertamax-webhook.onrender.com")
+_PULSO_LOCK_HOJA = threading.Lock()
 PULSO_EDICIONES_URL = "https://raw.githubusercontent.com/javiermendosalinas-afk/acierta-pro-web/main/pulso/ediciones.json"
 PULSO_INTERESES = ("comprar", "vender", "rentar", "invertir", "verifica")
 _PULSO_PEND = {}            # tel -> {codigo, nombre, correo, intereses, aviso, expira}
@@ -6268,32 +6276,227 @@ def _pulso_edicion():
 
 def _pulso_hoja():
     libro, _ = _sheets_client()
-    return _get_o_crear_hoja(libro, PULSO_HOJA, PULSO_COLUMNAS) if libro else None
+    if not libro:
+        return None
+    sh = _get_o_crear_hoja(libro, PULSO_HOJA, PULSO_COLUMNAS)
+    try:   # si la hoja se creó con menos columnas, se completa el encabezado
+        enc = sh.row_values(1)
+        if enc != PULSO_COLUMNAS[:len(enc)] or len(enc) < len(PULSO_COLUMNAS):
+            if sh.col_count < len(PULSO_COLUMNAS):
+                sh.add_cols(len(PULSO_COLUMNAS) - sh.col_count)
+            sh.update("A1", [PULSO_COLUMNAS])
+    except Exception as e:
+        print(f"[MAX-PULSO] No se pudo revisar el encabezado: {e}", flush=True)
+    return sh
+
+
+def _pulso_fila(tel):
+    """Registro del suscriptor (dict) o None."""
+    try:
+        sh = _pulso_hoja()
+        if not sh:
+            return None
+        valores = sh.get_all_values()
+        t10 = _ultimos10(tel)
+        for fila in valores[1:]:
+            d = dict(zip(PULSO_COLUMNAS, fila + [""] * (len(PULSO_COLUMNAS) - len(fila))))
+            if _ultimos10(d.get("WHATSAPP")) == t10:
+                return d
+    except Exception as e:
+        print(f"[MAX-PULSO] No se pudo leer el suscriptor {tel}: {e}", flush=True)
+    return None
+
+
+def _pulso_metrica(campo, n=1):
+    """Suma al contador del mes y avisa a Javier UNA vez cuando el costo
+    estimado de WhatsApp del Pulso llega a PULSO_ALERTA_USD. Es conservador:
+    no descuenta los 1,000 mensajes de servicio gratis al mes (los comparte
+    todo MAX), así que el costo real será igual o menor."""
+    def _hacer():
+        try:
+            libro, _ = _sheets_client()
+            if not libro:
+                return
+            with _PULSO_LOCK_HOJA:
+                sh = _get_o_crear_hoja(libro, PULSO_METRICAS_HOJA, PULSO_METRICAS_COLUMNAS)
+                mes = hora_gdl()[:7]
+                valores = sh.get_all_values()
+                idx = next((i for i in range(1, len(valores)) if valores[i] and valores[i][0] == mes), None)
+                fila = (valores[idx] + [""] * 7)[:7] if idx else [mes, "0", "0", "0", "0", "0", ""]
+                col = PULSO_METRICAS_COLUMNAS.index(campo)
+                fila[col] = str(int(float(fila[col] or 0)) + n)
+                costo = int(float(fila[1] or 0)) * PULSO_TARIFA_USD
+                fila[5] = f"{costo:.2f}"
+                avisar = costo >= PULSO_ALERTA_USD and not fila[6]
+                if avisar:
+                    fila[6] = hora_gdl()
+                if idx:
+                    sh.update(f"A{idx + 1}", [fila])
+                else:
+                    sh.append_row(fila)
+            if avisar:
+                activos = "?"
+                try:
+                    hp = _pulso_hoja()
+                    activos = sum(1 for f in hp.get_all_values()[1:] if len(f) > 6 and f[6] == "activo")
+                except Exception:
+                    pass
+                texto = (f"📊 PULSO INMOBILIARIO — el costo estimado de WhatsApp del mes ({mes}) llegó a "
+                         f"USD {costo:.2f} ({fila[1]} mensajes). Suscriptores activos: {activos}. "
+                         f"Altas del mes: {fila[3]} · Bajas: {fila[4]} · Correos enviados: {fila[2]}. "
+                         "Es momento de evaluar la rentabilidad. Detalle en la hoja 'Pulso Métricas'.")
+                notificar_interno(JAVIER_PHONE, texto, texto[:300])
+        except Exception as e:
+            print(f"[MAX-PULSO] No se pudo actualizar métricas: {e}", flush=True)
+    threading.Thread(target=_hacer, daemon=True).start()
+
+
+def _pulso_token_baja(tel):
+    t10 = _ultimos10(tel)
+    return f"{t10}.{hmac.new(_asesor_llave(), ('baja:' + t10).encode(), hashlib.sha256).hexdigest()[:20]}"
+
+
+def _pulso_correo(destino, nombre, ed, pdf, tel, bienvenida=False):
+    """Correo con la edición (PDF adjunto) y enlace de baja. True si salió."""
+    if not (GMAIL_USER and GMAIL_PASS and destino and ed):
+        return False
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.application import MIMEApplication
+    from email.utils import formataddr
+    import html as _h
+    primer = _h.escape((nombre or "").split()[0]) if nombre else ""
+    baja = f"{MAX_URL_PUBLICA}/api/pulso/baja?t={_pulso_token_baja(tel)}"
+    portada = "https://acierta.pro" + ed["portada"] if str(ed.get("portada", "")).startswith("/") else ed.get("portada", "")
+    intro = ("Gracias por suscribirte al <b>Pulso Inmobiliario acierta.pro</b>. Aquí tienes tu regalo: la edición más reciente."
+             if bienvenida else "Ya está aquí la nueva edición del <b>Pulso Inmobiliario acierta.pro</b>.")
+    cuerpo = f"""<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a">
+  <div style="background:#0b1f3a;padding:18px 22px;border-radius:12px 12px 0 0">
+    <span style="color:#fff;font-weight:bold;font-size:18px">ACIERTA</span><span style="color:#d62828;font-weight:bold;font-size:18px">MAX</span>
+    <div style="color:#23b5c9;font-size:11px;letter-spacing:1px">PULSO INMOBILIARIO ACIERTA.PRO</div>
+  </div>
+  <div style="background:#fff;border:1px solid #e5e7eb;border-top:0;padding:22px;border-radius:0 0 12px 12px">
+    <p style="font-size:16px">Hola{(' ' + primer) if primer else ''},</p>
+    <p style="font-size:15px;line-height:1.5">{intro}</p>
+    <p style="font-size:17px;font-weight:bold;color:#0b1f3a;margin:16px 0 6px">{_h.escape(ed.get('tema') or ed.get('titulo') or '')}</p>
+    {f'<a href="{_h.escape(ed.get("url", ""))}"><img src="{_h.escape(portada)}" alt="Portada" width="220" style="border-radius:10px;margin:10px 0;max-width:100%"></a>' if portada else ''}
+    <p style="font-size:14px;color:#555">Va adjunta en PDF, diseñada para leerse en el teléfono.</p>
+    <p><a href="{_h.escape(ed.get('url', 'https://acierta.pro'))}" style="background:#d62828;color:#fff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:bold;display:inline-block">Leer la edición</a></p>
+    <p style="font-size:14px;line-height:1.5;margin-top:20px">Busca propiedades en la Zona Metropolitana de Guadalajara y conoce <b>ACIERTA VERIFICA</b>, nuestra revisión física y documental antes de firmar, en <a href="https://acierta.pro" style="color:#0b1f3a">acierta.pro</a>.</p>
+    <hr style="border:0;border-top:1px solid #eee;margin:20px 0">
+    <p style="font-size:12px;color:#888;line-height:1.5">Recibes este correo porque te suscribiste al Pulso Inmobiliario en acierta.pro.
+    <a href="{baja}" style="color:#888">Darme de baja</a> · <a href="https://acierta.pro/aviso-privacidad.html" style="color:#888">Aviso de privacidad</a><br>
+    Acierta Max · Profesionales Inmobiliarios · WhatsApp 33 3377 7337</p>
+  </div></div>"""
+    msg = MIMEMultipart()
+    msg["From"] = formataddr(("Pulso acierta.pro", GMAIL_USER))
+    msg["To"] = destino
+    msg["Subject"] = ("Tu Pulso Inmobiliario: " if bienvenida else "Nuevo Pulso Inmobiliario: ") + (ed.get("tema") or "acierta.pro")[:90]
+    msg["List-Unsubscribe"] = f"<{baja}>"
+    msg.attach(MIMEText(cuerpo, "html", "utf-8"))
+    if pdf:
+        adj = MIMEApplication(pdf, _subtype="pdf")
+        adj.add_header("Content-Disposition", "attachment", filename=ed.get("archivo") or "Pulso_acierta_pro.pdf")
+        msg.attach(adj)
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
+            s.login(GMAIL_USER, GMAIL_PASS)
+            s.send_message(msg)
+        _pulso_metrica("CORREOS")
+        return True
+    except Exception as e:
+        print(f"[MAX-PULSO] No se pudo enviar el correo a {destino}: {e}", flush=True)
+        return False
+
+
+@app.route("/api/pulso/baja", methods=["GET", "POST"])
+def api_pulso_baja():
+    tok = request.args.get("t", "")
+    t10 = tok.split(".")[0]
+    pagina = ('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+              '<title>Pulso acierta.pro</title><div style="font-family:Arial,sans-serif;max-width:480px;margin:60px auto;'
+              'padding:0 20px;text-align:center"><h2 style="color:#0b1f3a">{t}</h2><p style="color:#555">{m}</p>'
+              '<p><a href="https://acierta.pro" style="color:#d62828">Ir a acierta.pro</a></p></div>')
+    if len(t10) != 10 or not hmac.compare_digest(tok, _pulso_token_baja(t10)):
+        return pagina.format(t="Enlace no válido", m="Escribe BAJA PULSO a nuestro WhatsApp 33 3377 7337 y te damos de baja."), 400
+    threading.Thread(target=_pulso_guardar, args=("521" + t10, {"ESTADO": "baja", "FECHA_BAJA": hora_gdl()}), daemon=True).start()
+    threading.Thread(target=_pulso_wati_atributos, args=("521" + t10, {"pulso": "no"}), daemon=True).start()
+    _pulso_metrica("BAJAS")
+    print(f"[MAX-PULSO] Baja por correo de {t10}", flush=True)
+    return pagina.format(t="Listo, te dimos de baja", m="Ya no recibirás el Pulso Inmobiliario. Si quieres retomarlo, escribe PULSO a nuestro WhatsApp.")
+
+
+def _pulso_envio_correos():
+    """Manda por correo la edición vigente que tenga "enviar_correo": true a los
+    suscriptores activos con correo que aún no la recibieron. Respeta el
+    límite diario de Gmail y sigue al día siguiente con los que falten."""
+    ed, pdf = _pulso_edicion()
+    if not (ed and ed.get("enviar_correo") and GMAIL_USER and GMAIL_PASS):
+        return 0
+    sh = _pulso_hoja()
+    if not sh:
+        return 0
+    valores = sh.get_all_values()
+    col = {h: i for i, h in enumerate(PULSO_COLUMNAS)}
+    hoy = hora_gdl()[:10]
+    if _PULSO_CACHE.get("dia") != hoy:
+        _PULSO_CACHE.update(dia=hoy, enviados_hoy=0)
+    enviados = 0
+    for i in range(1, len(valores)):
+        if _PULSO_CACHE["enviados_hoy"] >= PULSO_CORREOS_DIA:
+            break
+        f = valores[i] + [""] * (len(PULSO_COLUMNAS) - len(valores[i]))
+        if f[col["ESTADO"]] != "activo" or not f[col["CORREO"]] or f[col["ULTIMA_EDICION_CORREO"]] == str(ed.get("numero")):
+            continue
+        if _pulso_correo(f[col["CORREO"]], f[col["NOMBRE"]], ed, pdf, f[col["WHATSAPP"]]):
+            sh.update_cell(i + 1, col["ULTIMA_EDICION_CORREO"] + 1, str(ed.get("numero")))
+            _PULSO_CACHE["enviados_hoy"] += 1
+            enviados += 1
+            time.sleep(2)
+    if enviados:
+        print(f"[MAX-PULSO] Edición {ed.get('numero')} enviada por correo a {enviados} suscriptores", flush=True)
+    return enviados
+
+
+def _loop_pulso_correos():
+    time.sleep(120)
+    while True:
+        try:
+            _pulso_envio_correos()
+        except Exception as e:
+            print(f"[MAX-PULSO] Error en el envío de correos: {e}", flush=True)
+        time.sleep(3600)
+
+
+if os.environ.get("PULSO_CORREOS", "1") != "0":
+    threading.Thread(target=_loop_pulso_correos, daemon=True).start()
 
 
 def _pulso_guardar(tel, cambios):
     """Alta o actualización por número (últimos 10 dígitos). Nunca duplica."""
     try:
-        sh = _pulso_hoja()
-        if not sh:
-            return
-        valores = sh.get_all_values()
-        col = {h: i for i, h in enumerate(PULSO_COLUMNAS)}
-        t10 = _ultimos10(tel)
-        for idx in range(1, len(valores)):
-            if _ultimos10(valores[idx][col["WHATSAPP"]] if len(valores[idx]) > col["WHATSAPP"] else "") == t10:
-                fila = valores[idx] + [""] * (len(PULSO_COLUMNAS) - len(valores[idx]))
-                for k, v in cambios.items():
-                    if v not in (None, ""):
-                        fila[col[k]] = v
-                sh.update(f"A{idx + 1}", [fila[:len(PULSO_COLUMNAS)]])
-                return
-        fila = [""] * len(PULSO_COLUMNAS)
-        fila[col["FECHA_ALTA"]] = hora_gdl()
-        fila[col["WHATSAPP"]] = t10
-        for k, v in cambios.items():
-            fila[col[k]] = v or fila[col[k]]
-        sh.append_row(fila)
+      with _PULSO_LOCK_HOJA:
+          sh = _pulso_hoja()
+          if not sh:
+              return
+          valores = sh.get_all_values()
+          col = {h: i for i, h in enumerate(PULSO_COLUMNAS)}
+          t10 = _ultimos10(tel)
+          for idx in range(1, len(valores)):
+              if _ultimos10(valores[idx][col["WHATSAPP"]] if len(valores[idx]) > col["WHATSAPP"] else "") == t10:
+                  fila = valores[idx] + [""] * (len(PULSO_COLUMNAS) - len(valores[idx]))
+                  for k, v in cambios.items():
+                      if v not in (None, ""):
+                          fila[col[k]] = v
+                  sh.update(f"A{idx + 1}", [fila[:len(PULSO_COLUMNAS)]])
+                  return
+          fila = [""] * len(PULSO_COLUMNAS)
+          fila[col["FECHA_ALTA"]] = hora_gdl()
+          fila[col["WHATSAPP"]] = t10
+          for k, v in cambios.items():
+              fila[col[k]] = v or fila[col[k]]
+          sh.append_row(fila)
     except Exception as e:
         print(f"[MAX-PULSO] No se pudo guardar en Sheets ({tel}): {e}", flush=True)
 
@@ -6355,22 +6558,28 @@ def _pulso_bienvenida(phone, nombre, reenvio=False):
     primer = (nombre or "").split()[0] if nombre else ""
     saludo = f"¡Hola{(' ' + primer) if primer else ''}! 👋"
     if reenvio:
-        texto = f"{saludo} Aquí tienes de nuevo la edición vigente del *Pulso Inmobiliario acierta.pro*."
+        texto = (f"{saludo} Aquí tienes la edición vigente del *Pulso Inmobiliario acierta.pro* 👇\n\n"
+                 "¿Buscas propiedad o quieres revisar una antes de firmar? Visita https://acierta.pro o escribe VERIFICA.")
     else:
         texto = (f"{saludo} Ya estás suscrito al *Pulso Inmobiliario acierta.pro* ✅\n\n"
                  "Te mandaremos un resumen breve y visual con los datos inmobiliarios que importan para "
                  "comprar, vender, rentar o invertir en Guadalajara, con fuentes visibles. Sin saturarte.\n\n"
                  "Aquí va tu regalo: la edición más reciente 👇\n\n"
+                 "📬 Cada nueva edición te llegará por correo (si nos lo diste) y cuando quieras la más "
+                 "reciente por aquí, solo escribe *PULSO*.\n\n"
                  "🔎 Busca propiedades y conoce *ACIERTA VERIFICA* en https://acierta.pro\n"
                  "Para dejar de recibirlo, escribe *BAJA PULSO* cuando quieras.")
-    wati_send_text(phone, texto, copiar=False)
+    mensajes = 1 if wati_send_text(phone, texto, copiar=False) else 0
     enviado = False
     if pdf and ed:
         time.sleep(0.6)
         enviado = wati_send_file(phone, pdf, ed.get("archivo") or "Pulso_Inmobiliario_acierta_pro.pdf",
                                  ed.get("titulo") or "Pulso Inmobiliario acierta.pro")
+        mensajes += 1 if enviado else 0
     if not enviado and ed and ed.get("url"):
-        wati_send_text(phone, f"📄 Descárgalo aquí: {ed['url']}", copiar=False)
+        mensajes += 1 if wati_send_text(phone, f"📄 Descárgalo aquí: {ed['url']}", copiar=False) else 0
+    if mensajes:
+        _pulso_metrica("MENSAJES_WHATSAPP", mensajes)
     return ed
 
 
@@ -6384,6 +6593,8 @@ def _pulso_entrante(phone, text, nombre_whatsapp=""):
         threading.Thread(target=_pulso_wati_atributos, args=(phone, {"pulso": "no"}), daemon=True).start()
         wati_send_text(phone, "Listo, ya no te enviaremos el Pulso Inmobiliario. Si algún día quieres retomarlo, "
                               "escribe PULSO. ¡Gracias por leernos! 🙌", copiar=False)
+        _pulso_metrica("BAJAS")
+        _pulso_metrica("MENSAJES_WHATSAPP")
         print(f"[MAX-PULSO] Baja de {phone}", flush=True)
         return True
     m = _RE_PULSO.match(t)
@@ -6401,8 +6612,23 @@ def _pulso_entrante(phone, text, nombre_whatsapp=""):
         if usar:
             _PULSO_PEND.pop(tel, None)
     datos = pend if usar else {}
-    nombre = datos.get("nombre") or (nombre_whatsapp or "").strip()
+    previo = None if usar else _pulso_fila(phone)
+    if previo and previo.get("ESTADO") == "activo":
+        # ya suscrito: le mandamos directo la edición vigente, sin repetir la bienvenida
+        ed = _pulso_bienvenida(phone, previo.get("NOMBRE") or nombre_whatsapp, reenvio=True)
+        threading.Thread(target=_pulso_guardar, args=(phone, {"ULTIMA_EDICION": (ed or {}).get("numero", "")}), daemon=True).start()
+        print(f"[MAX-PULSO] Reenvío de la edición vigente a {phone}", flush=True)
+        return True
+    nombre = datos.get("nombre") or (previo or {}).get("NOMBRE") or (nombre_whatsapp or "").strip()
     ed = _pulso_bienvenida(phone, nombre)
+    _pulso_metrica("ALTAS")
+    correo = datos.get("correo") or (previo or {}).get("CORREO", "")
+    if correo and ed:
+        def _correo_bienvenida():
+            _, pdf = _pulso_edicion()
+            if _pulso_correo(correo, nombre, ed, pdf, phone, bienvenida=True):
+                _pulso_guardar(phone, {"ULTIMA_EDICION_CORREO": str(ed.get("numero", ""))})
+        threading.Thread(target=_correo_bienvenida, daemon=True).start()
     intereses = ", ".join(datos.get("intereses") or [])
     threading.Thread(target=_pulso_guardar, args=(phone, {
         "NOMBRE": nombre, "CORREO": datos.get("correo", ""), "INTERESES": intereses,
