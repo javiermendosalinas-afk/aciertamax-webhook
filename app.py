@@ -5903,8 +5903,14 @@ def api_camino_verificar_enviar():
     # eso cae de respaldo a una plantilla aprobada por Meta, igual que ya
     # corregimos hoy para el seguimiento a clientes y la copia a Javier.
     enviado = wati_send_text(tel, f"Tu código para confirmar tu WhatsApp en acierta.pro es: {codigo}")
-    if not enviado:
-        enviado = wati_send_template_message(tel, "codigo_verificacion", [codigo])
+    # Plantillas a probar en orden. "codigo_verificacion" la rechazo Meta como
+    # Utility (4-oct-2026); "codigo_acceso" es la nueva en categoria Autenticacion.
+    # Se pueden cambiar sin tocar codigo con la variable WATI_PLANTILLAS_CODIGO.
+    for _plantilla in [x.strip() for x in os.environ.get(
+            "WATI_PLANTILLAS_CODIGO", "codigo_acceso,codigo_verificacion").split(",") if x.strip()]:
+        if enviado:
+            break
+        enviado = wati_send_template_message(tel, _plantilla, [codigo])
     if not enviado:
         return _camino_resp({"ok": False, "error": "No pudimos enviar el código. Intenta de nuevo."}, 502)
     return _camino_resp({"ok": True})
