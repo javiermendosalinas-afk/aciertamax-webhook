@@ -4944,7 +4944,7 @@ def _buscar_eb_en_payload(obj, _profundidad=0):
     if _profundidad > 6:
         return None
     if isinstance(obj, str):
-        m = re.search(r'\bEB-[A-Z0-9]{4,8}\b', obj.upper())
+        m = re.search(r'\b(?:EB|NJ)-[A-Z0-9]{4,8}\b', obj.upper())
         return m.group(0) if m else None
     if isinstance(obj, dict):
         for v in obj.values():
@@ -5498,7 +5498,7 @@ def webhook():
                     # Caso de uso: prospecto llega de Instagram/TikTok, ve la clave EB
                     # en la ficha y la escribe al WhatsApp.
                     import re as _re
-                    _eb_match = _re.search(r'\bEB-[A-Z0-9]{4,8}\b', texto.upper())
+                    _eb_match = _re.search(r'\b(?:EB|NJ)-[A-Z0-9]{4,8}\b', texto.upper())
                     _eb_code = _eb_match.group(0) if _eb_match else None
                     if not _eb_code:
                         # Respaldo: el cliente escribió algo propio ("sí, quiero info")
@@ -6762,7 +6762,7 @@ def api_asesor_cliente():
         fila = None
     if not fila:
         return _camino_resp({"ok": True, "encontrado": False})
-    ebs = list(dict.fromkeys(re.findall(r"EB-[A-Z0-9]{5,7}", fila.get("PROPIEDADES", "") or "")))
+    ebs = list(dict.fromkeys(re.findall(r"(?:EB|NJ)-[A-Z0-9]{4,8}", fila.get("PROPIEDADES", "") or "")))
     return _camino_resp({"ok": True, "encontrado": True,
                          "nombre": fila.get("NOMBRE_CLIENTE", ""), "folio": fila.get("FOLIO", ""),
                          "vendedor": fila.get("VENDEDOR", ""), "operacion": fila.get("OPERACION", ""),
