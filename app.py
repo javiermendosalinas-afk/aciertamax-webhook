@@ -6771,6 +6771,57 @@ def api_asesor_cliente():
                          "contexto": (fila.get("CHAT_COMPLETO", "") or "")[-1500:]})
 
 
+_EB_CACHE_PROPS = {}
+
+
+def _prop_de_easybroker(eb, operacion=""):
+    """Propiedad que no está en el inventario del sitio (por ejemplo, publicada en
+    el panel de EasyBroker pero no en aciertamax.com): se toma de la API de
+    EasyBroker, primero propias y luego la bolsa MLS. None si no se encuentra."""
+    eb = (eb or "").upper().strip()
+    if not (EASYBROKER_API_KEY and re.match(r"^EB-[A-Z0-9]{5,8}$", eb)):
+        return None
+    clave = (eb, operacion.upper())
+    if clave in _EB_CACHE_PROPS and time.time() - _EB_CACHE_PROPS[clave][0] < 1800:
+        return _EB_CACHE_PROPS[clave][1]
+    j = None
+    for ruta in (f"/properties/{eb}", f"/mls_properties/{eb}"):
+        try:
+            r = requests.get(EB_API + ruta, headers=eb_headers(), timeout=12)
+            if r.status_code == 200:
+                j = r.json()
+                break
+        except Exception as e:
+            print(f"[MAX-ASESOR] Error consultando {eb} en EasyBroker: {e}", flush=True)
+    if not j:
+        print(f"[MAX-ASESOR] {eb} no está en el inventario ni en la API de EasyBroker", flush=True)
+        return None
+    ops = j.get("operations") or []
+    tipo_op = {"sale": "VENTA", "rental": "RENTA", "temporary_rental": "RENTA"}
+    op_elegida = None
+    for o in ops:
+        if not operacion or tipo_op.get(o.get("type")) == operacion.upper():
+            op_elegida = o
+            break
+    op_elegida = op_elegida or (ops[0] if ops else {})
+    loc = j.get("location") or {}
+    nombre_loc = loc.get("name", "") if isinstance(loc, dict) else str(loc)
+    partes = [x.strip() for x in nombre_loc.split(",") if x.strip()]
+    imgs = j.get("property_images") or []
+    foto = j.get("title_image_full") or (imgs[0].get("url") if imgs and isinstance(imgs[0], dict) else "")
+    prop = {"eb": eb, "operacion": tipo_op.get(op_elegida.get("type"), operacion.upper() or "VENTA"),
+            "titulo": j.get("title", ""), "tipo": (j.get("property_type") or "").lower(),
+            "precio": op_elegida.get("amount"), "moneda": op_elegida.get("currency", "MXN"),
+            "municipio": partes[1] if len(partes) > 1 else "", "colonia": partes[0] if partes else "",
+            "recamaras": j.get("bedrooms"), "banos": j.get("bathrooms"),
+            "m2": j.get("construction_size") or j.get("lot_size"), "foto": foto,
+            "lat": loc.get("latitude") if isinstance(loc, dict) else None,
+            "lon": loc.get("longitude") if isinstance(loc, dict) else None,
+            "liga": j.get("public_url", ""), "fuera_de_inventario": True}
+    _EB_CACHE_PROPS[clave] = (time.time(), prop)
+    return prop
+
+
 def _prop_de_inventario(eb, operacion=""):
     eb = (eb or "").upper().strip()
     candidatos = [p for p in INVENTARIO_ZMG if (p.get("codigo_eb") or "").upper() == eb]
@@ -6778,7 +6829,7 @@ def _prop_de_inventario(eb, operacion=""):
         mismos = [p for p in candidatos if (p.get("Operación") or "").upper() == operacion.upper()]
         candidatos = mismos or candidatos
     if not candidatos:
-        return None
+        return _prop_de_easybroker(eb, operacion)
     p = candidatos[0]
     return {"eb": eb, "operacion": p.get("Operación", ""), "titulo": p.get("Título/Colonia", ""),
             "tipo": p.get("Tipo", ""), "precio": p.get("Precio"), "municipio": p.get("Municipio", ""),
@@ -6852,6 +6903,20 @@ def _eb_detalle_completo(p):
     except Exception as e:
         print(f"[MAX-ASESOR] No se pudo leer la ficha de {eb}: {e}", flush=True)
         return {}
+
+
+@app.route("/api/asesor/propiedad", methods=["POST", "OPTIONS"])
+def api_asesor_propiedad():
+    """El portal la usa para agregar una clave EB que no está en el inventario del sitio."""
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(4096) or {}
+    if not _asesor_de_token(d.get("token")):
+        return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
+    p = _prop_de_inventario(d.get("eb"), d.get("operacion", ""))
+    if not p:
+        return _camino_resp({"ok": False, "error": "No encontré esa clave ni en el inventario ni en EasyBroker."}, 404)
+    return _camino_resp({"ok": True, "propiedad": p})
 
 
 _PROPUESTAS_PDF = {}   # id -> (bytes, nombre_archivo, ts) respaldo si Drive no está disponible
@@ -6931,7 +6996,11 @@ def api_asesor_propuesta():
         return _camino_resp({"ok": False, "error": "Agrega al menos una propiedad del inventario."}, 400)
     import propuesta as _prop
     datos = {"cliente": {"nombre": nombre, "folio": _camino_limpiar(cli.get("folio"), 40)},
-             "coach": {"nombre": a["nombre"], "telefono": _formato_tel_humano(a["telefono"])},
+             "coach": {"nombre": a["nombre"], "telefono": _formato_tel_humano(a["telefono"]),
+                       "cargo": "Director General" if a["usuario"] == "javier" else "Coach inmobiliario"},
+             "trato": "usted" if d.get("trato") == "usted" else "tu",
+             "genero": d.get("genero") if d.get("genero") in ("f", "m") else "",
+             "vio_en_sitio": bool(d.get("vio_en_sitio")),
              "criterios": _camino_limpiar(d.get("criterios"), 300), "nota": _camino_limpiar(d.get("nota"), 900),
              "propiedades": props}
     try:

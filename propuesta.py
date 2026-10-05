@@ -242,17 +242,29 @@ def generar_pdf(datos, detalle_fn=None):
         pdf.multi_cell(W, alto, texto, new_x="LMARGIN", new_y="NEXT")
         pdf.ln(2.2)
 
-    parrafo(f"Estimado(a) {primer or nombre}:" if primer else "Estimado(a) cliente:", estilo="M")
-    parrafo("Es un gusto acompañarte en la búsqueda de tu próxima propiedad. En Acierta Max creemos que "
-            "encontrar el lugar correcto es un proyecto que se construye en equipo, y queremos lograrlo juntos.")
+    us = datos.get("trato") == "usted"
+    gen = datos.get("genero")
+    est = "Estimada" if gen == "f" else ("Estimado" if gen == "m" else "Estimado(a)")
+    parrafo(f"{est} {primer or nombre}:" if primer else f"{est} cliente:", estilo="M")
+    parrafo(("Es un gusto acompañarle en la búsqueda de su próxima propiedad. " if us else
+             "Es un gusto acompañarte en la búsqueda de tu próxima propiedad. ") +
+            "En Acierta Max creemos que encontrar el lugar correcto es un proyecto que se construye en equipo, "
+            "y queremos lograrlo juntos.")
     criterios = (datos.get("criterios") or "").strip().rstrip(".")
-    nota = (datos.get("nota") or "").strip()
-    base = "Estudié las propiedades que revisaste en acierta.pro"
-    base += f", los criterios que me indicaste ({criterios})" if criterios else ", los criterios que me indicaste"
-    base += " y lo que platicamos"
-    base += f": {nota.rstrip('.')}." if nota else "."
-    base += (" Con base en ello seleccioné las siguientes opciones de la Zona Metropolitana de Guadalajara, "
-             "que a mi juicio responden mejor a lo que buscas.")
+    nota = (datos.get("nota") or "").strip().rstrip(".")
+    vio = bool(datos.get("vio_en_sitio"))
+    if us:
+        base = "Estudié las propiedades que revisó en acierta.pro y " if vio else "En función de "
+        base += f"su requerimiento ({criterios})" if criterios else "su requerimiento"
+        base += f" y de lo que hemos platicado: {nota}." if nota else "."
+        base += (" Con base en ello, someto a su consideración las siguientes opciones de la Zona Metropolitana "
+                 "de Guadalajara, que a mi juicio responden mejor a lo que busca.")
+    else:
+        base = "Estudié las propiedades que revisaste en acierta.pro, " if vio else "Estudié "
+        base += f"los criterios que me indicaste ({criterios})" if criterios else "los criterios que me indicaste"
+        base += f" y lo que platicamos: {nota}." if nota else " y lo que platicamos."
+        base += (" Con base en ello seleccioné las siguientes opciones de la Zona Metropolitana de Guadalajara, "
+                 "que a mi juicio responden mejor a lo que buscas.")
     parrafo(base)
 
     # Mapa
@@ -348,7 +360,8 @@ def generar_pdf(datos, detalle_fn=None):
         pdf.set_font("PoppinsM", "", 8.3)
         pdf.set_text_color(*NAVY)
         op = "R" if (p.get("operacion") or "").upper() == "RENTA" else "V"
-        ficha = f"https://acierta.pro/ficha.html?eb={p.get('eb', '')}&op={op}"
+        ficha = (p.get("liga") if p.get("fuera_de_inventario") and p.get("liga")
+                 else f"https://acierta.pro/ficha.html?eb={p.get('eb', '')}&op={op}")
         pdf.cell(32, 5, "Ver ficha completa ›", link=ficha)
         if p.get("lat") and p.get("lon"):
             pdf.cell(32, 5, "Ver en el mapa ›", link=f"https://www.google.com/maps?q={p['lat']},{p['lon']}")
@@ -358,7 +371,10 @@ def generar_pdf(datos, detalle_fn=None):
     if pdf.get_y() + 120 > 279:
         pdf.add_page()
     pdf.ln(2)
-    parrafo("Te invito a revisarlas con calma. Tu retroalimentación es muy valiosa: respóndeme por WhatsApp "
+    parrafo("Le invito a revisarlas con calma. Su retroalimentación es muy valiosa: respóndame por WhatsApp "
+            "con las claves EB que le interesen y programamos una visita en el día y horario que mejor le acomode."
+            if us else
+            "Te invito a revisarlas con calma. Tu retroalimentación es muy valiosa: respóndeme por WhatsApp "
             "con las claves EB que te interesen y programamos una visita en el día y horario que mejor te acomode.")
     # Recuadro Verifica
     y = pdf.get_y() + 1
@@ -373,9 +389,12 @@ def generar_pdf(datos, detalle_fn=None):
     pdf.set_font("Poppins", "", 8.8)
     pdf.set_text_color(*INK)
     pdf.multi_cell(W - 10, 4.6,
-                   "Te recomiendo Acierta Verifica, nuestra revisión física y documental preventiva del inmueble, "
-                   "desde $45 por m² (mínimo $3,500 MXN en la ZMG). Si compras o rentas esa propiedad con "
-                   "Acierta Max, te bonificamos su costo.", new_x="LMARGIN", new_y="NEXT")
+                   ("Le recomiendo Acierta Verifica, nuestra revisión física y documental preventiva del inmueble, "
+                    "desde $45 por m² (mínimo $3,500 MXN en la ZMG). Si compra o renta esa propiedad con "
+                    "Acierta Max, le bonificamos su costo.") if us else
+                   ("Te recomiendo Acierta Verifica, nuestra revisión física y documental preventiva del inmueble, "
+                    "desde $45 por m² (mínimo $3,500 MXN en la ZMG). Si compras o rentas esa propiedad con "
+                    "Acierta Max, te bonificamos su costo."), new_x="LMARGIN", new_y="NEXT")
     pdf.set_y(y + 29)
     parrafo("En Acierta Max somos profesionales inmobiliarios. Operamos conforme a la NOM-247-SE-2021, con "
             "contratos de adhesión registrados ante PROFECO, y somos miembros de la Asociación Mexicana de "
@@ -389,7 +408,7 @@ def generar_pdf(datos, detalle_fn=None):
     pdf.cell(W, 6, coach.get("nombre") or "Acierta Max", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Poppins", "", 9)
     pdf.set_text_color(*GRAY)
-    pdf.cell(W, 5, "Coach inmobiliario · Acierta Max", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(W, 5, f"{coach.get('cargo') or 'Coach inmobiliario'} · Acierta Max", new_x="LMARGIN", new_y="NEXT")
     contacto = " · ".join(x for x in (f"WhatsApp {coach['telefono']}" if coach.get("telefono") else "", "acierta.pro") if x)
     pdf.cell(W, 5, contacto, new_x="LMARGIN", new_y="NEXT")
 
@@ -537,7 +556,8 @@ def _anexo_fichas(pdf, props, detalles, galerias, fotos_principales):
         pdf.set_font("PoppinsM", "", 8.5)
         pdf.set_text_color(*NAVY)
         op = "R" if (p.get("operacion") or "").upper() == "RENTA" else "V"
-        pdf.cell(45, 5, "Ver ficha en línea ›", link=f"https://acierta.pro/ficha.html?eb={p.get('eb', '')}&op={op}")
+        pdf.cell(45, 5, "Ver ficha en línea ›", link=(p.get("liga") if p.get("fuera_de_inventario") and p.get("liga")
+                                                    else f"https://acierta.pro/ficha.html?eb={p.get('eb', '')}&op={op}"))
         if p.get("lat") and p.get("lon"):
             pdf.cell(45, 5, "Ver ubicación en el mapa ›", link=f"https://www.google.com/maps?q={p['lat']},{p['lon']}")
         pdf.ln(7)
