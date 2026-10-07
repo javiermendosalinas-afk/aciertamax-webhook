@@ -6234,7 +6234,7 @@ def api_camino_completar():
 
 
 # ------------------------------------------------------------------
-# PULSO INMOBILIARIO ACIERTA.PRO (oct-2026): suscripción al resumen
+# PULSO ACIERTA MAX (oct-2026; antes «Pulso Inmobiliario», nombre registrado por un tercero): suscripción al resumen
 # ejecutivo. Dos entradas:
 #  1) Formulario en acierta.pro/pulso -> /api/pulso/suscribir guarda los
 #     datos (pendiente) y regresa una liga wa.me con "PULSO 1234".
@@ -6357,7 +6357,7 @@ def _pulso_metrica(campo, n=1):
                     activos = sum(1 for f in hp.get_all_values()[1:] if len(f) > 6 and f[6] == "activo")
                 except Exception:
                     pass
-                texto = (f"📊 PULSO INMOBILIARIO — el costo estimado de WhatsApp del mes ({mes}) llegó a "
+                texto = (f"📊 PULSO ACIERTA MAX — el costo estimado de WhatsApp del mes ({mes}) llegó a "
                          f"USD {costo:.2f} ({fila[1]} mensajes). Suscriptores activos: {activos}. "
                          f"Altas del mes: {fila[3]} · Bajas: {fila[4]} · Correos enviados: {fila[2]}. "
                          "Es momento de evaluar la rentabilidad. Detalle en la hoja 'Pulso Métricas'.")
@@ -6385,12 +6385,11 @@ def _pulso_correo(destino, nombre, ed, pdf, tel, bienvenida=False):
     primer = _h.escape((nombre or "").split()[0]) if nombre else ""
     baja = f"{MAX_URL_PUBLICA}/api/pulso/baja?t={_pulso_token_baja(tel)}"
     portada = "https://acierta.pro" + ed["portada"] if str(ed.get("portada", "")).startswith("/") else ed.get("portada", "")
-    intro = ("Gracias por suscribirte al <b>Pulso Inmobiliario acierta.pro</b>. Aquí tienes tu regalo: la edición más reciente."
-             if bienvenida else "Ya está aquí la nueva edición del <b>Pulso Inmobiliario acierta.pro</b>.")
+    intro = ("Gracias por suscribirte al <b>PULSO de Acierta Max</b>. Aquí tienes tu regalo: la edición más reciente."
+             if bienvenida else "Ya está aquí la nueva edición del <b>PULSO de Acierta Max</b>.")
     cuerpo = f"""<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;color:#1a1a1a">
-  <div style="background:#0b1f3a;padding:18px 22px;border-radius:12px 12px 0 0">
-    <span style="color:#fff;font-weight:bold;font-size:18px">ACIERTA</span><span style="color:#d62828;font-weight:bold;font-size:18px">MAX</span>
-    <div style="color:#23b5c9;font-size:11px;letter-spacing:1px">PULSO INMOBILIARIO ACIERTA.PRO</div>
+  <div style="background:#0A1F3F;padding:18px 22px;border-radius:12px 12px 0 0">
+    <img src="https://acierta.pro/assets/pulso/pulso-acierta-max-blanco.png" alt="PULSO Acierta Max · Profesionales Inmobiliarios" width="260" style="display:block;width:260px;max-width:100%;height:auto">
   </div>
   <div style="background:#fff;border:1px solid #e5e7eb;border-top:0;padding:22px;border-radius:0 0 12px 12px">
     <p style="font-size:16px">Hola{(' ' + primer) if primer else ''},</p>
@@ -6401,14 +6400,14 @@ def _pulso_correo(destino, nombre, ed, pdf, tel, bienvenida=False):
     <p><a href="{_h.escape(ed.get('url', 'https://acierta.pro'))}" style="background:#d62828;color:#fff;text-decoration:none;padding:12px 20px;border-radius:8px;font-weight:bold;display:inline-block">Leer la edición</a></p>
     <p style="font-size:14px;line-height:1.5;margin-top:20px">Busca propiedades en la Zona Metropolitana de Guadalajara y conoce <b>ACIERTA VERIFICA</b>, nuestra revisión física y documental antes de firmar, en <a href="https://acierta.pro" style="color:#0b1f3a">acierta.pro</a>.</p>
     <hr style="border:0;border-top:1px solid #eee;margin:20px 0">
-    <p style="font-size:12px;color:#888;line-height:1.5">Recibes este correo porque te suscribiste al Pulso Inmobiliario en acierta.pro.
+    <p style="font-size:12px;color:#888;line-height:1.5">Recibes este correo porque te suscribiste al PULSO de Acierta Max en acierta.pro.
     <a href="{baja}" style="color:#888">Darme de baja</a> · <a href="https://acierta.pro/aviso-privacidad.html" style="color:#888">Aviso de privacidad</a><br>
     Acierta Max · Profesionales Inmobiliarios · WhatsApp 33 3377 7337</p>
   </div></div>"""
     msg = MIMEMultipart()
     msg["From"] = formataddr(("Pulso acierta.pro", GMAIL_USER))
     msg["To"] = destino
-    msg["Subject"] = ("Tu Pulso Inmobiliario: " if bienvenida else "Nuevo Pulso Inmobiliario: ") + (ed.get("tema") or "acierta.pro")[:90]
+    msg["Subject"] = ("Tu PULSO de Acierta Max: " if bienvenida else "Nuevo PULSO de Acierta Max: ") + (ed.get("tema") or "acierta.pro")[:90]
     msg["List-Unsubscribe"] = f"<{baja}>"
     msg.attach(MIMEText(cuerpo, "html", "utf-8"))
     if pdf:
@@ -6440,7 +6439,7 @@ def api_pulso_baja():
     threading.Thread(target=_pulso_wati_atributos, args=("521" + t10, {"pulso": "no"}), daemon=True).start()
     _pulso_metrica("BAJAS")
     print(f"[MAX-PULSO] Baja por correo de {t10}", flush=True)
-    return pagina.format(t="Listo, te dimos de baja", m="Ya no recibirás el Pulso Inmobiliario. Si quieres retomarlo, escribe PULSO a nuestro WhatsApp.")
+    return pagina.format(t="Listo, te dimos de baja", m="Ya no recibirás el PULSO de Acierta Max. Si quieres retomarlo, escribe PULSO a nuestro WhatsApp.")
 
 
 def _pulso_envio_correos():
@@ -6564,7 +6563,7 @@ def api_pulso_suscribir():
     threading.Thread(target=_pulso_guardar, args=(tel, {
         "NOMBRE": nombre, "CORREO": correo, "INTERESES": ", ".join(intereses), "ORIGEN": "web",
         "ESTADO": "pendiente", "AVISO_VERSION": _camino_limpiar(d.get("aviso_version"), 40)}), daemon=True).start()
-    mensaje = f"PULSO {codigo} — Hola, soy {nombre.split()[0]} y quiero recibir el Pulso Inmobiliario de acierta.pro"
+    mensaje = f"PULSO {codigo} — Hola, soy {nombre.split()[0]} y quiero recibir el PULSO de Acierta Max"
     return _camino_resp({"ok": True, "codigo": codigo,
                          "liga": f"https://wa.me/{WHATSAPP_ACIERTA}?text={quote(mensaje)}"})
 
@@ -6574,10 +6573,10 @@ def _pulso_bienvenida(phone, nombre, reenvio=False):
     primer = (nombre or "").split()[0] if nombre else ""
     saludo = f"¡Hola{(' ' + primer) if primer else ''}! 👋"
     if reenvio:
-        texto = (f"{saludo} Aquí tienes la edición vigente del *Pulso Inmobiliario acierta.pro* 👇\n\n"
+        texto = (f"{saludo} Aquí tienes la edición vigente del *PULSO de Acierta Max* 👇\n\n"
                  "¿Buscas propiedad o quieres revisar una antes de firmar? Visita https://acierta.pro o escribe VERIFICA.")
     else:
-        texto = (f"{saludo} Ya estás suscrito al *Pulso Inmobiliario acierta.pro* ✅\n\n"
+        texto = (f"{saludo} Ya estás suscrito al *PULSO de Acierta Max* ✅\n\n"
                  "Te mandaremos un resumen breve y visual con los datos inmobiliarios que importan para "
                  "comprar, vender, rentar o invertir en Guadalajara, con fuentes visibles. Sin saturarte.\n\n"
                  "Aquí va tu regalo: la edición más reciente 👇\n\n"
@@ -6590,7 +6589,7 @@ def _pulso_bienvenida(phone, nombre, reenvio=False):
     if pdf and ed:
         time.sleep(0.6)
         enviado = wati_send_file(phone, pdf, ed.get("archivo") or "Pulso_Inmobiliario_acierta_pro.pdf",
-                                 ed.get("titulo") or "Pulso Inmobiliario acierta.pro")
+                                 ed.get("titulo") or "PULSO de Acierta Max")
         mensajes += 1 if enviado else 0
     if not enviado and ed and ed.get("url"):
         mensajes += 1 if wati_send_text(phone, f"📄 Descárgalo aquí: {ed['url']}", copiar=False) else 0
@@ -6607,7 +6606,7 @@ def _pulso_entrante(phone, text, nombre_whatsapp=""):
     if _RE_PULSO_BAJA.match(t):
         threading.Thread(target=_pulso_guardar, args=(phone, {"ESTADO": "baja", "FECHA_BAJA": hora_gdl()}), daemon=True).start()
         threading.Thread(target=_pulso_wati_atributos, args=(phone, {"pulso": "no"}), daemon=True).start()
-        wati_send_text(phone, "Listo, ya no te enviaremos el Pulso Inmobiliario. Si algún día quieres retomarlo, "
+        wati_send_text(phone, "Listo, ya no te enviaremos el PULSO de Acierta Max. Si algún día quieres retomarlo, "
                               "escribe PULSO. ¡Gracias por leernos! 🙌", copiar=False)
         _pulso_metrica("BAJAS")
         _pulso_metrica("MENSAJES_WHATSAPP")
