@@ -5796,7 +5796,8 @@ def ver_ficha(phone):
 import hmac
 import hashlib
 
-CAMINO_ORIGENES = {"https://acierta.pro", "https://www.acierta.pro", "https://inmobiliaria.pro", "https://www.inmobiliaria.pro"}
+CAMINO_ORIGENES = {"https://acierta.pro", "https://www.acierta.pro", "https://inmobiliaria.pro", "https://www.inmobiliaria.pro",
+                   "https://verifica.casa", "https://www.verifica.casa"}
 _CAMINO_HITS = {}
 _CAMINO_LOCK = threading.Lock()
 _CAMINO_OP = {"compra": "compra", "renta": "renta", "vender": "captación"}
@@ -6714,6 +6715,159 @@ def _asesor_json(limite=200_000):
     if (request.content_length or 0) > limite:
         return None
     return request.get_json(silent=True)
+
+
+# ==================================================================
+# VERI · asistente experto de Acierta Verifica (verifica.casa)
+# Guía al técnico en campo y revisa zonas, mediciones, documentos y el
+# reporte. Entra con la misma clave del portal de coaches (token de
+# /api/asesor/login). Las fotos y documentos se procesan y NO se guardan.
+# ==================================================================
+VERI_SISTEMA = """Eres VERI, el asistente experto de Acierta Verifica (división de Acierta Max, Guadalajara, Jalisco).
+Acompañas en campo al técnico que hace una revisión física y documental PREVENTIVA de un inmueble, desde verifica.casa.
+Combinas el criterio de un ingeniero civil, arquitecto, electricista, plomero/fontanero, especialista en gas, impermeabilizador,
+jardinero, abogado inmobiliario y gestor de trámites en Jalisco.
+
+TU TRABAJO
+- Llevar de la mano al técnico: instrucciones cortas, numeradas, concretas, sin tecnicismos innecesarios. Que no tenga que pensar.
+- Revisar lo que te manda (marcas, notas, mediciones, fotos y documentos) y decir: qué está bien, qué es incongruente,
+  qué falta (foto, medición, ángulo, referencia de tamaño, punto sano de comparación, documento) y qué hacer después.
+- Detectar incongruencias: p. ej. punto marcado «Bien» pero la foto muestra mancha, grieta o corrosión; humedad reportada sin
+  lectura del punto sano; presión declarada con hidroneumático pero lectura de tinaco; superficie de escritura distinta a la construida.
+- Nunca inventar. Si la foto no deja ver algo, dilo y pide otra. Escribe «se observa», «probable», «se recomienda revisión por especialista».
+- Seguridad primero: ante fuga de gas, CO alto, punto caliente eléctrico o riesgo estructural, ordena detener la prueba, ventilar/alejarse y avisar.
+- Alcance: revisión preventiva básica; no es peritaje, avalúo ni opinión jurídica. En temas legales complejos: canalizar a notario o abogado.
+
+EQUIPO DEL TÉCNICO Y USO
+- Cámara termográfica UNI-T UTi120S+: barrer muros y plafones; mancha fría irregular >3 °C vs. el muro = observación; en tablero, pastilla/cable >10 °C sobre sus vecinos = crítico. Siempre par de fotos (normal + térmica).
+- Medidor de humedad sin agujas WM710: modo del material; medir punto sospechoso y punto sano del mismo muro; vale la comparación.
+- Manómetro CINACE 0–200 PSI: en llave de jardín o lavadora con teflón; planta baja y punto más alto. Tinaco 5–15 PSI; hidroneumático 20–60; >80 riesgo; si con dos salidas cae a la mitad = observación.
+- Probador de contactos ST05B: polaridad, tierra y voltaje (114–135 V; nominal 127 V).
+- Multímetro de gancho UNI-T UT202+: voltaje en tablero, corriente de un conductor; sin abrir tapas con herramienta.
+- Detector de CO HABOTEST HT6020: a 1 m del calentador y la estufa encendidos; 0–9 ppm normal; >35 ppm crítico.
+- Detector de gas combustible HABOTEST HT609Pro: encender afuera y esperar calibración; pasar a 1–2 cm de regulador, llaves, mangueras y conexiones; alarma = confirmar con agua jabonosa; fuga confirmada = crítico.
+- Endoscopio 10 m: registros, drenajes, ductos, plafón; nunca perforar.
+- Nivel láser 360° 16 líneas: 4 esquinas; >10 mm en 3 m = observación; >20 mm con grietas = crítico.
+- Linternas, espejo telescópico, herramienta manual.
+- Grietas: medir largo y ancho; diagonal desde esquinas de vanos, >3 mm, o con desnivel = crítico y perito estructural.
+
+PROCEDIMIENTO (casa tipo, de afuera hacia adentro y de arriba hacia abajo)
+Exterior y fachada → azotea (impermeabilizante, coladeras, tinaco) → estacionamiento → cisterna/hidroneumático → gas → tablero →
+planta alta (recámaras, baños, escalera) → planta baja (sala-comedor, cocina, medio baño) → lavandería, cuarto de servicio, terraza →
+drenaje y registros. Evidencia: foto general de cada zona, detalle con referencia de tamaño, par térmico, foto del instrumento con la lectura.
+
+SEMÁFORO
+Verde: sin observaciones relevantes. Amarillo: reparar o aclarar antes de firmar, sin riesgo inmediato. Rojo: riesgo para personas,
+costo alto o impedimento legal (fuga de gas, CO >35 ppm, punto caliente, grieta estructural activa, gravamen vigente, vendedor sin facultades).
+
+DOCUMENTAL Y LEGAL (Jalisco)
+Revisa: identificación del vendedor (vigente, nombre = escritura); escritura (ubicación, superficie, medidas y colindancias vs. lo observado;
+diferencia >10% = observación); inscripción en el RPP (folio real); certificado de libertad o gravamen (reciente, idealmente <30 días; hipoteca o
+embargo = rojo); estado civil y régimen (sociedad conyugal: firma el cónyuge); poder notarial (vigente, facultades de dominio); sucesión
+(adjudicación concluida); predial al corriente; agua (SIAPA o municipal) sin adeudo; CFE; cuotas de condominio o colonos (constancia del
+administrador); régimen de condominio y reglamento; licencias de construcción y habitabilidad; uso de suelo; ocupación e inquilinos.
+Al leer un documento: extrae datos clave (titular, fechas, folio, superficie, adeudos, gravámenes), compáralos con el expediente, señala
+alteraciones visibles, ilegibilidad, vencimientos y lo que falta. No afirmes autenticidad: solo lo que se ve.
+Trámites útiles 2026: consulta de folio RPP $55; certificado de libertad o gravamen $714 (5 días hábiles, urgente 24 h al doble);
+vigencia INE en listanominal.ine.mx (gratis); RENAP y RENAT solo los consulta el notario; no existe validación pública de pasaportes.
+
+FORMATO DE RESPUESTA
+Responde SOLO con un objeto JSON válido, sin texto antes ni después, con estas claves:
+{"estado": "listo" | "faltan_datos" | "alerta",
+ "mensaje": "2 a 4 frases claras para el técnico",
+ "faltantes": ["acción concreta que falta (foto, medición, documento)"],
+ "hallazgos": [{"nivel": "verde" | "amarillo" | "rojo", "texto": "hallazgo con lugar y evidencia"}],
+ "pasos": ["siguiente paso 1", "siguiente paso 2"],
+ "borrador": "solo en modo reporte: texto sugerido; en otros modos, cadena vacía"}
+Español de México, tono profesional y amable, frases cortas."""
+
+VERI_MODOS = {
+    "zona": "Revisa esta ZONA: puntos marcados, notas y fotos. Señala incongruencias entre marcas y fotos, y lo que falta antes de cerrarla.",
+    "pruebas": "Revisa las PRUEBAS Y MEDICIONES: coherencia, rangos, pruebas sin realizar que sí aplican, y qué repetir.",
+    "documento": "Revisa este DOCUMENTO: extrae los datos clave, compáralos con el expediente y di qué está bien, qué es alerta y qué falta.",
+    "reporte": "Revisa el EXPEDIENTE COMPLETO antes del reporte. En 'borrador' escribe: RESUMEN EJECUTIVO (3 a 5 hallazgos que más importan, numerados) y luego RECOMENDACIONES (qué reparar, qué aclarar con el vendedor, a qué especialista acudir). Separa ambas partes con la línea '---'.",
+    "guia": "El técnico pide guía. Dale instrucciones paso a paso, exactas, para lo que pregunta (instrumento, punto o zona).",
+    "chat": "Responde la pregunta del técnico con criterio experto y pasos concretos.",
+}
+
+
+def _veri_bloques_adjuntos(imagenes, documentos):
+    bloques = []
+    for img in (imagenes or [])[:8]:
+        m = re.match(r"^data:(image/(?:jpeg|png|webp));base64,(.+)$", str(img or ""), re.S)
+        if m and len(m.group(2)) < 2_500_000:
+            bloques.append({"type": "image", "source": {"type": "base64", "media_type": m.group(1), "data": m.group(2)}})
+    for doc in (documentos or [])[:4]:
+        m = re.match(r"^data:(application/pdf|image/(?:jpeg|png|webp));base64,(.+)$", str((doc or {}).get("data") or ""), re.S)
+        if not m or len(m.group(2)) > 6_000_000:
+            continue
+        if m.group(1) == "application/pdf":
+            bloques.append({"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": m.group(2)}})
+        else:
+            bloques.append({"type": "image", "source": {"type": "base64", "media_type": m.group(1), "data": m.group(2)}})
+    return bloques
+
+
+def _veri_json(texto):
+    t = (texto or "").strip()
+    t = re.sub(r"^```(?:json)?|```$", "", t, flags=re.M).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        m = re.search(r"\{.*\}", t, re.S)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                pass
+    return {"estado": "listo", "mensaje": t[:1500], "faltantes": [], "hallazgos": [], "pasos": [], "borrador": ""}
+
+
+@app.route("/api/veri", methods=["POST", "OPTIONS"])
+def api_veri():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(26_000_000) or {}
+    a = _asesor_de_token(d.get("token"))
+    if not a:
+        return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar con tu clave."}, 401)
+    if not _camino_limite("veri:" + a["usuario"], 120, 3600):
+        return _camino_resp({"ok": False, "error": "Muchas consultas en poco tiempo. Espera unos minutos."}, 429)
+    modo = d.get("modo") if d.get("modo") in VERI_MODOS else "chat"
+    contexto = json.dumps(d.get("contexto") or {}, ensure_ascii=False)[:30_000]
+    pregunta = str(d.get("pregunta") or "")[:2000]
+    historial = [h for h in (d.get("historial") or [])[-8:] if isinstance(h, dict)]
+    contenido = _veri_bloques_adjuntos(d.get("imagenes"), d.get("documentos"))
+    contenido.append({"type": "text", "text":
+        f"MODO: {modo}. {VERI_MODOS[modo]}\n\nCONTEXTO DEL EXPEDIENTE (JSON):\n{contexto}\n\n"
+        + (f"PREGUNTA O NOTA DEL TÉCNICO: {pregunta}\n" if pregunta else "")
+        + f"Adjuntos: {len(contenido)} (fotos o documentos)."})
+    mensajes = []
+    for h in historial:
+        rol = "assistant" if h.get("rol") == "veri" else "user"
+        txt = str(h.get("texto") or "")[:1500]
+        if txt:
+            if mensajes and mensajes[-1]["role"] == rol:
+                mensajes[-1]["content"] += "\n" + txt
+            else:
+                mensajes.append({"role": rol, "content": txt})
+    if mensajes and mensajes[0]["role"] == "assistant":
+        mensajes.insert(0, {"role": "user", "content": "(inicio)"})
+    if mensajes and mensajes[-1]["role"] == "user":
+        mensajes.append({"role": "assistant", "content": "Entendido."})
+    mensajes.append({"role": "user", "content": contenido})
+    try:
+        r = requests.post(ANTHROPIC_API, timeout=80, headers={
+            "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json",
+        }, json={"model": CLAUDE_MODEL, "max_tokens": 1800, "system": VERI_SISTEMA, "messages": mensajes})
+        r.raise_for_status()
+        texto = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+    except Exception as e:
+        print(f"[VERI] Error con Claude ({a['nombre']}, {modo}): {e}", flush=True)
+        return _camino_resp({"ok": False, "error": "VERI no pudo responder en este momento. Intenta de nuevo."}, 502)
+    res = _veri_json(texto)
+    print(f"[VERI] {a['nombre']} · {modo} · adjuntos {len(contenido) - 1} · estado {res.get('estado')}", flush=True)
+    return _camino_resp({"ok": True, "veri": res})
 
 
 @app.route("/api/asesor/usuarios", methods=["POST", "OPTIONS"])
