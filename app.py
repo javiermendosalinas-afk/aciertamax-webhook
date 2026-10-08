@@ -6772,7 +6772,7 @@ Trámites útiles 2026: consulta de folio RPP $55; certificado de libertad o gra
 vigencia INE en listanominal.ine.mx (gratis); RENAP y RENAT solo los consulta el notario; no existe validación pública de pasaportes.
 
 FORMATO DE RESPUESTA
-Responde SOLO con un objeto JSON válido, sin texto antes ni después, con estas claves:
+Responde SOLO con un objeto JSON válido, sin texto antes ni después, con estas claves (más las adicionales que pida el modo):
 {"estado": "listo" | "faltan_datos" | "alerta",
  "mensaje": "2 a 4 frases claras para el técnico",
  "faltantes": ["acción concreta que falta (foto, medición, documento)"],
@@ -6787,6 +6787,17 @@ VERI_MODOS = {
     "documento": "Revisa este DOCUMENTO: extrae los datos clave, compáralos con el expediente y di qué está bien, qué es alerta y qué falta.",
     "reporte": "Revisa el EXPEDIENTE COMPLETO antes del reporte. En 'borrador' escribe: RESUMEN EJECUTIVO (3 a 5 hallazgos que más importan, numerados) y luego RECOMENDACIONES (qué reparar, qué aclarar con el vendedor, a qué especialista acudir). Separa ambas partes con la línea '---'.",
     "foto": "Revisa esta FOTO recién tomada del punto indicado. Di si se ve con claridad lo necesario para diagnosticar, si confirma o contradice el estado marcado, y qué falta: otra toma, acercamiento, más luz, referencia de tamaño (flexómetro o mano), foto térmica, o la medición con el instrumento adecuado. Sé breve: máximo 3 faltantes.",
+    "materiales": ("Identifica, SOLO por lo que se ve en las fotos, los MATERIALES Y ACABADOS de la construcción y su calidad, como en la "
+                   "clasificación de construcción de un avalúo. Además de las claves normales, agrega: "
+                   "\"materiales\": [{\"elemento\": \"Fachada|Muros|Pisos|Cocina|Baños|Ventanería|Puertas|Losa o techo|Escalera|Instalaciones\", "
+                   "\"material\": \"lo que se identifica (p. ej. block aplanado con pintura vinílica; porcelanato 60x60; granito; aluminio natural)\", "
+                   "\"calidad\": \"económica|media|media-alta|residencial|residencial plus\", \"estado\": \"bueno|regular|malo\", "
+                   "\"comentario\": \"breve\"}], "
+                   "\"clasificacion\": {\"calidad_general\": \"económica|media|media-alta|residencial|residencial plus\", "
+                   "\"estado_general\": \"muy bueno|bueno|regular|malo\", \"vida_util_total_anios\": número, \"vida_util_remanente_anios\": número, "
+                   "\"comentario\": \"2 a 3 frases: qué eleva o reduce el valor\"}. "
+                   "Usa la edad declarada del inmueble para la vida útil (referencia: vivienda de concreto y block, 60 a 70 años de vida total). "
+                   "Si un elemento no se ve, no lo inventes: pídelo en faltantes. Aclara que es una observación visual, no un avalúo."),
     "guia": "El técnico pide guía. Dale instrucciones paso a paso, exactas, para lo que pregunta (instrumento, punto o zona).",
     "chat": "Responde la pregunta del técnico con criterio experto y pasos concretos.",
 }
