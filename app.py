@@ -6786,6 +6786,7 @@ VERI_MODOS = {
     "pruebas": "Revisa las PRUEBAS Y MEDICIONES: coherencia, rangos, pruebas sin realizar que sí aplican, y qué repetir.",
     "documento": "Revisa este DOCUMENTO: extrae los datos clave, compáralos con el expediente y di qué está bien, qué es alerta y qué falta.",
     "reporte": "Revisa el EXPEDIENTE COMPLETO antes del reporte. En 'borrador' escribe: RESUMEN EJECUTIVO (3 a 5 hallazgos que más importan, numerados) y luego RECOMENDACIONES (qué reparar, qué aclarar con el vendedor, a qué especialista acudir). Separa ambas partes con la línea '---'.",
+    "foto": "Revisa esta FOTO recién tomada del punto indicado. Di si se ve con claridad lo necesario para diagnosticar, si confirma o contradice el estado marcado, y qué falta: otra toma, acercamiento, más luz, referencia de tamaño (flexómetro o mano), foto térmica, o la medición con el instrumento adecuado. Sé breve: máximo 3 faltantes.",
     "guia": "El técnico pide guía. Dale instrucciones paso a paso, exactas, para lo que pregunta (instrumento, punto o zona).",
     "chat": "Responde la pregunta del técnico con criterio experto y pasos concretos.",
 }
