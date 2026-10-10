@@ -6265,6 +6265,10 @@ _PULSO_PEND = {}            # tel -> {codigo, nombre, correo, intereses, aviso, 
 _PULSO_CACHE = {"ed": None, "ts": 0, "pdf": None, "pdf_url": None}
 _PULSO_RECIENTES = {}       # tel -> ts del último PULSO procesado (evita reintentos duplicados del webhook)
 _RE_PULSO = re.compile(r"^\s*(?:hola[,.!\s]*)?pulso\b[^\d]*(\d{4})?", re.I)
+_RE_PULSO_ED = re.compile(r"^\s*(?:hola[,.!\s]*)?pulso\s*(?:#|no\.?|n[uú]m(?:ero)?\.?|edici[oó]n)?\s*0?(\d{1,2})\s*$", re.I)
+_RE_OPCION = re.compile(r"^\s*(?:la\s+)?(?:opci[oó]n|edici[oó]n|n[uú]mero|#)?\s*0?(\d{1,2})\s*[.!]?\s*$", re.I)
+_PULSO_MENU = {}            # tel -> expira (menú de ediciones abierto)
+_PULSO_PDFS = {}            # numero -> (pdf_raw, bytes)
 _RE_PULSO_BAJA = re.compile(r"^\s*(baja|cancelar|stop|alto)\s+pulso\b", re.I)
 
 
@@ -6289,6 +6293,79 @@ def _pulso_edicion():
         except Exception as e:
             print(f"[MAX-PULSO] No se pudo descargar el PDF: {e}", flush=True)
     return ed, _PULSO_CACHE["pdf"]
+
+
+def _pulso_ediciones():
+    """Todas las ediciones (más reciente primero) desde ediciones.json; usa la misma caché de 1 h."""
+    _pulso_edicion()
+    eds = _PULSO_CACHE.get("todas")
+    if not eds:
+        try:
+            r = requests.get(PULSO_EDICIONES_URL, timeout=10)
+            eds = (r.json().get("ediciones") or []) if r.status_code == 200 else []
+            _PULSO_CACHE["todas"] = eds
+        except Exception as e:
+            print(f"[MAX-PULSO] No se pudo leer ediciones.json: {e}", flush=True)
+            eds = []
+    return sorted(eds, key=lambda e: str(e.get("numero", "")))
+
+
+def _pulso_pdf_de(ed):
+    num = str(ed.get("numero", ""))
+    url = ed.get("pdf_raw")
+    if not url:
+        return None
+    c = _PULSO_PDFS.get(num)
+    if c and c[0] == url:
+        return c[1]
+    try:
+        r = requests.get(url, timeout=25)
+        if r.status_code == 200 and r.content[:4] == b"%PDF":
+            _PULSO_PDFS[num] = (url, r.content)
+            return r.content
+    except Exception as e:
+        print(f"[MAX-PULSO] No se pudo descargar la edición {num}: {e}", flush=True)
+    return None
+
+
+def _pulso_menu_texto(eds):
+    return ("¿Cuál edición del *PULSO de Acierta Max* quieres recibir? 📚\n\n"
+            + "\n".join(f"*{int(e['numero'])}* · {e.get('tema') or e.get('titulo')}" + (" _(la más reciente)_" if e.get("vigente") else "") for e in eds)
+            + "\n\nResponde solo con el número.")
+
+
+def _pulso_enviar_edicion(phone, ed):
+    pdf = _pulso_pdf_de(ed)
+    enviado = False
+    if pdf:
+        enviado = wati_send_file(phone, pdf, ed.get("archivo") or f"PULSO_Acierta_Max_{ed.get('numero')}.pdf",
+                                 ed.get("titulo") or "PULSO de Acierta Max")
+    if not enviado and ed.get("url"):
+        enviado = wati_send_text(phone, f"📄 Aquí está la edición {int(ed['numero'])}: {ed['url']}", copiar=False)
+    _pulso_metrica("MENSAJES_WHATSAPP")
+    threading.Thread(target=_pulso_guardar, args=(phone, {"ULTIMA_EDICION": str(ed.get("numero", ""))}), daemon=True).start()
+    print(f"[MAX-PULSO] Edición {ed.get('numero')} enviada a {phone}", flush=True)
+    return enviado
+
+
+def _norm(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9 ]+", " ", s)
+
+
+def _pulso_elegir(eds, texto):
+    """Edición elegida por número u opción ('2', 'opción 2') o por palabra del título ('promesa')."""
+    m = _RE_OPCION.match(texto or "")
+    if m:
+        n = int(m.group(1))
+        return next((e for e in eds if int(e.get("numero") or 0) == n), None)
+    t = _norm(texto or "")
+    for e in eds:
+        claves = [w for w in _norm(e.get("tema") or "").split() if len(w) >= 6]
+        if any(k in t.split() for k in claves):
+            return e
+    return None
 
 
 def _pulso_hoja():
@@ -6594,6 +6671,11 @@ def _pulso_bienvenida(phone, nombre, reenvio=False):
         mensajes += 1 if enviado else 0
     if not enviado and ed and ed.get("url"):
         mensajes += 1 if wati_send_text(phone, f"📄 Descárgalo aquí: {ed['url']}", copiar=False) else 0
+    anteriores = [e for e in _pulso_ediciones() if not e.get("vigente")]
+    if anteriores and not reenvio:
+        time.sleep(0.6)
+        mensajes += 1 if wati_send_text(phone, "¿Quieres las ediciones anteriores? Escribe " + " o ".join(f"*PULSO {int(e['numero'])}*" for e in anteriores) +
+                                        ".\n" + "\n".join(f"{int(e['numero'])} · {e.get('tema')}" for e in anteriores), copiar=False) else 0
     if mensajes:
         _pulso_metrica("MENSAJES_WHATSAPP", mensajes)
     return ed
@@ -6613,10 +6695,37 @@ def _pulso_entrante(phone, text, nombre_whatsapp=""):
         _pulso_metrica("MENSAJES_WHATSAPP")
         print(f"[MAX-PULSO] Baja de {phone}", flush=True)
         return True
+    ahora = time.time()
+    tel_m = "521" + _ultimos10(phone)
+    # respuesta al menú de ediciones
+    if _PULSO_MENU.get(tel_m, 0) > ahora and not _RE_PULSO.match(t):
+        ed = _pulso_elegir(_pulso_ediciones(), t)
+        if ed:
+            _PULSO_MENU.pop(tel_m, None)
+            _pulso_enviar_edicion(phone, ed)
+            return True
+        return False
+    # "PULSO 2": una edición en particular
+    me = _RE_PULSO_ED.match(t)
+    if me:
+        eds = _pulso_ediciones()
+        ed = next((e for e in eds if int(e.get("numero") or 0) == int(me.group(1))), None)
+        if ed:
+            if ahora - _PULSO_RECIENTES.get(phone, 0) < 20:
+                return True
+            _PULSO_RECIENTES[phone] = ahora
+            previo = _pulso_fila(phone)
+            if not (previo and previo.get("ESTADO") == "activo"):
+                threading.Thread(target=_pulso_guardar, args=(phone, {"NOMBRE": (nombre_whatsapp or "").strip(), "ORIGEN": "whatsapp", "ESTADO": "activo",
+                                                                       "FECHA_CONFIRMACION": hora_gdl()}), daemon=True).start()
+                threading.Thread(target=_pulso_wati_atributos, args=(phone, {"pulso": "si", "pulso_alta": hora_gdl()[:10]}, nombre_whatsapp), daemon=True).start()
+                _pulso_metrica("ALTAS")
+            wati_send_text(phone, f"¡Claro! Aquí tienes la edición {int(ed['numero'])} del *PULSO de Acierta Max*: _{ed.get('tema') or ''}_ 👇", copiar=False)
+            _pulso_enviar_edicion(phone, ed)
+            return True
     m = _RE_PULSO.match(t)
     if not m:
         return False
-    ahora = time.time()
     if ahora - _PULSO_RECIENTES.get(phone, 0) < 90:
         return True                              # reintento del webhook: ya se atendió
     _PULSO_RECIENTES[phone] = ahora
@@ -6630,6 +6739,13 @@ def _pulso_entrante(phone, text, nombre_whatsapp=""):
     datos = pend if usar else {}
     previo = None if usar else _pulso_fila(phone)
     if previo and previo.get("ESTADO") == "activo":
+        eds = _pulso_ediciones()
+        if len(eds) > 1:
+            _PULSO_MENU[tel] = ahora + 1800
+            wati_send_text(phone, _pulso_menu_texto(eds), copiar=False)
+            _pulso_metrica("MENSAJES_WHATSAPP")
+            print(f"[MAX-PULSO] Menú de ediciones a {phone}", flush=True)
+            return True
         # ya suscrito: le mandamos directo la edición vigente, sin repetir la bienvenida
         ed = _pulso_bienvenida(phone, previo.get("NOMBRE") or nombre_whatsapp, reenvio=True)
         threading.Thread(target=_pulso_guardar, args=(phone, {"ULTIMA_EDICION": (ed or {}).get("numero", "")}), daemon=True).start()
