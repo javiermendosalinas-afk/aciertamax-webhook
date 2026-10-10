@@ -6192,6 +6192,7 @@ def api_camino_completar():
     pre = d.get("precalif") if isinstance(d.get("precalif"), dict) else {}
     cap_mensual, credito_est, alcance = (_camino_num(pre.get(k)) for k in ("mensualidad", "credito", "alcance"))
     veredicto = _camino_limpiar(pre.get("veredicto"), 120)
+    escenario = _camino_limpiar(pre.get("escenario"), 120)
     cita = d.get("cita") if isinstance(d.get("cita"), dict) else {}
     cita_txt = " ".join(x for x in (_camino_limpiar(cita.get("dia"), 30), _camino_limpiar(cita.get("franja"), 30),
                                      ("por " + _camino_limpiar(cita.get("modo"), 30)) if cita.get("modo") else "") if x)
@@ -6225,7 +6226,7 @@ def api_camino_completar():
         partes.append(f"Precalificación Infonavit que dice tener: ${precalif_infonavit:,.0f}")
     if credito_est or alcance:
         partes.append(f"PRECALIFICACIÓN ESTIMADA: mensualidad máx. ${cap_mensual:,.0f} · crédito aprox. ${credito_est:,.0f} · le alcanza hasta ${alcance:,.0f}"
-                      + (f" ({veredicto})" if veredicto else ""))
+                      + (f" ({veredicto})" if veredicto else "") + (f" · ESCENARIO SIMULADO: {escenario}" if escenario else ""))
     if para_quien:
         partes.append(f"Para: {para_quien}")
     if decide:
