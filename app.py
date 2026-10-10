@@ -6196,6 +6196,16 @@ def api_camino_completar():
     cita_txt = " ".join(x for x in (_camino_limpiar(cita.get("dia"), 30), _camino_limpiar(cita.get("franja"), 30),
                                      ("por " + _camino_limpiar(cita.get("modo"), 30)) if cita.get("modo") else "") if x)
     sitio_web = "inmobiliaria.pro" if "inmobiliaria.pro" in origen else "acierta.pro"
+    motivo = _camino_limpiar(d.get("motivo"), 80)
+    zona_diaria = _camino_limpiar(d.get("zona_diaria"), 60)
+    prioridades = [_camino_limpiar(x, 30) for x in (d.get("prioridades") or [])[:3] if isinstance(x, str)]
+    comparativo = []
+    for c in (d.get("comparativo") or [])[:3]:
+        if isinstance(c, dict):
+            clave_c = re.sub(r"[^A-Z0-9-]", "", str(c.get("clave", "")).upper())[:14]
+            if clave_c.startswith(("NJ-", "EB-")):
+                comparativo.append({"clave": clave_c, "titulo": _camino_limpiar(c.get("titulo"), 70), "precio": _camino_num(c.get("precio")),
+                                    "puntos": max(0, min(100, int(_camino_num(c.get("puntos"), 100)))), "razon": _camino_limpiar(c.get("razon"), 90)})
     es_renta = d.get("operacion") == "renta"
     pres_txt = (f"${presupuesto:,.0f}" + (" /mes" if es_renta else "")) if presupuesto else ""
     partes = []
@@ -6222,7 +6232,16 @@ def api_camino_completar():
         partes.append(f"Decisión: {decide}")
     if imprescindibles:
         partes.append("Imprescindibles: " + ", ".join(imprescindibles))
-    if favoritas:
+    if motivo:
+        partes.append(f"Motivo: {motivo}")
+    if prioridades:
+        partes.append("Prioridades (en orden): " + " > ".join(prioridades))
+    if zona_diaria:
+        partes.append(f"Va diario a: {zona_diaria}")
+    if comparativo:
+        partes.append("🏠 LAS 3 PARA VISITAR (en orden, calificadas con sus prioridades): " + " ; ".join(
+            f"{i + 1}) {c['titulo']} ${c['precio']:,.0f} · {c['puntos']}/100 · {c['razon']} · https://{sitio_web}/ficha.html?eb={c['clave']}" for i, c in enumerate(comparativo)))
+    elif favoritas:
         partes.append("Favoritas: " + ", ".join(f"https://{sitio_web}/ficha.html?eb={f}" for f in favoritas))
     if cita_txt:
         partes.append(f"📅 CITA SOLICITADA: {cita_txt}")
