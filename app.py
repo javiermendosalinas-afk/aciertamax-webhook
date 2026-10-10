@@ -6361,11 +6361,18 @@ LÍMITES
 - Si preguntan algo ajeno a bienes raíces, contesta breve y amable y regresa al tema.
 - Si preguntan si eres una IA: sí, son asesores virtuales con inteligencia artificial; para la cita los atiende un asesor humano de Acierta Max.
 - No hables mal de otras inmobiliarias ni portales.
-- Si el cliente pide hablar con una persona, ofrece WhatsApp.
+- Si el cliente pide hablar con una persona, ofrece WhatsApp. Fuera de eso NO lo mandes con un asesor para resolver dudas o buscar: resuélvelo tú.
+
+CUANDO EL CLIENTE BUSCA PROPIEDADES (por ejemplo "quiero rentar en 8 mil que acepten mascotas")
+- No lo mandes a otro lado: arma la búsqueda en la línea BUSCAR (ver formato) y dile en una o dos frases que abajo le muestras las opciones y que puede verlas en el mapa.
+- Toma lo que diga: comprar o rentar, tipo (casa, departamento, terreno), municipio, presupuesto máximo, recámaras mínimas e indispensables (mascotas, amueblado, alberca, jardín). Si falta algo clave (comprar o rentar, o presupuesto), supón lo más probable y dilo; no lo detengas con preguntas.
+- Si el presupuesto es muy justo, sugiere también subirlo un poco o abrir la zona.
 
 FORMATO DE SALIDA (obligatorio)
 Primera línea exactamente: QUIEN: Sofía   o   QUIEN: Diego
 Luego la respuesta.
+Penúltima línea exactamente: BUSCAR: no   o, si el cliente busca propiedades, BUSCAR: o=R; g=d; m=Zapopan; tope=8000; rec=1; k=M
+  (o: V comprar o R rentar; g: c casa, d departamento, t terreno; m: Zapopan, Guadalajara, Tlaquepaque, Tonalá, Tlajomulco de Zúñiga o vacío; tope: número en pesos; rec: número o 0; k: letras de indispensables M mascotas, F amueblado, A alberca, J jardín, o vacío)
 Última línea exactamente: ACCIONES: seguida de 0 a 3 opciones separadas por comas, elegidas de [recorrido, presupuesto, verifica, bellavittoria, eleve, villadhara, ideas, whatsapp]. Usa "ideas" cuando hables de decoración, interiorismo o remodelación."""
 _SOFIA_ACCIONES = {"recorrido", "presupuesto", "verifica", "bellavittoria", "eleve", "villadhara", "ideas", "whatsapp"}
 
@@ -6405,13 +6412,27 @@ def api_sofia():
         return _camino_resp({"ok": False, "error": "No pude contestar ahorita. Inténtalo de nuevo o escríbenos por WhatsApp."}, 502)
     quien = "Diego" if re.search(r"^\s*QUIEN:\s*Diego", texto, re.I) else "Sofía"
     texto = re.sub(r"^\s*QUIEN:.*\n?", "", texto, flags=re.I)
+    busqueda = None
+    mb = re.search(r"\n?\s*BUSCAR:\s*(.*)", texto, re.I)
+    if mb:
+        crudo = mb.group(1).strip()
+        texto = (texto[:mb.start()] + texto[mb.end():]).strip()
+        if crudo.lower() != "no":
+            kv = dict((a.split("=", 1)[0].strip().lower(), a.split("=", 1)[1].strip()) for a in crudo.split(";") if "=" in a)
+            munis = {"zapopan": "Zapopan", "guadalajara": "Guadalajara", "tlaquepaque": "Tlaquepaque", "tonala": "Tonalá", "tonalá": "Tonalá", "tlajomulco": "Tlajomulco de Zúñiga", "tlajomulco de zúñiga": "Tlajomulco de Zúñiga"}
+            o = "R" if kv.get("o", "").upper().startswith("R") else "V"
+            g = kv.get("g", "c").lower()[:1] if kv.get("g", "c").lower()[:1] in "cdt" else "c"
+            busqueda = {"o": o, "g": g, "m": munis.get(kv.get("m", "").strip().lower(), ""), "tope": int(_camino_num(kv.get("tope")) or 0),
+                        "rec": int(_camino_num(kv.get("rec")) or 0), "k": "".join(c for c in kv.get("k", "").upper() if c in "MFAJ")}
     acciones = []
     m = re.search(r"\n?\s*ACCIONES:\s*(.*)\s*$", texto, re.I)
     if m:
         acciones = [a.strip().lower() for a in m.group(1).split(",") if a.strip().lower() in _SOFIA_ACCIONES][:3]
         texto = texto[:m.start()].rstrip()
     print(f"[SOFIA] {quien} contestó ({len(texto)} car.) acciones={acciones}", flush=True)
-    return _camino_resp({"ok": True, "quien": quien, "texto": texto.strip(), "acciones": acciones})
+    if busqueda and "whatsapp" in acciones:
+        acciones.remove("whatsapp")
+    return _camino_resp({"ok": True, "quien": quien, "texto": texto.strip(), "acciones": acciones, "busqueda": busqueda})
 
 
 # ------------------------------------------------------------------
