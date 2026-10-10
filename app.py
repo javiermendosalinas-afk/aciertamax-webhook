@@ -5809,7 +5809,7 @@ _CAMINO_CUANDO = {"ya": "lo antes posible (menos de 30 días)", "1a3": "en 1 a 3
                   "mas3": "en más de 3 meses / explorando"}
 _CAMINO_MUNI = {"Guadalajara", "Zapopan", "Tlajomulco de Zúñiga", "Tlaquepaque", "Tonalá", "cualquiera"}
 _CAMINO_CREDITO = {"banco": "crédito bancario", "infonavit": "Infonavit",
-                   "cofinavit": "Cofinavit (Infonavit + banco)", "contado": "de contado", "nose": "aún no lo sabe"}
+                   "cofinavit": "Cofinavit (Infonavit + banco)", "fovissste": "Fovissste", "contado": "de contado", "nose": "aún no lo sabe"}
 
 
 def _camino_resp(payload, status=200):
@@ -5974,7 +5974,8 @@ def api_camino_verificar_iniciar():
             codigo = entrada["codigo"]          # mismo código si lo vuelve a pedir
         else:
             codigo = f"{random.randint(0, 9999):04d}"
-        _CAMINO_VERIF[tel] = {"codigo": codigo, "expira": time.time() + 900}
+        _CAMINO_VERIF[tel] = {"codigo": codigo, "expira": time.time() + 900,
+                              "sitio": "inmobiliaria.pro" if "inmobiliaria.pro" in (request.headers.get("Origin") or "") else "acierta.pro"}
         if len(_CAMINO_VERIF) > 5000:
             _CAMINO_VERIF.clear()
     mensaje = f"Hola, quiero confirmar mi WhatsApp. Mi código Acierta es {codigo}"
@@ -6009,12 +6010,13 @@ def _camino_verificacion_entrante(phone, text):
     with _CAMINO_LOCK:
         entrada = _CAMINO_VERIF.get(tel) if tel else None
         ok = bool(entrada and entrada["expira"] > time.time() and entrada["codigo"] == codigo)
+        sitio = (entrada or {}).get("sitio", "acierta.pro")
         if ok:
             _CAMINO_VERIF.pop(tel, None)
             _CAMINO_VERIFICADOS[tel] = time.time()
     if ok:
         print(f"[MAX-CAMINO] WhatsApp verificado por mensaje entrante: {tel}", flush=True)
-        wati_send_text(phone, "¡Listo! ✅ Tu WhatsApp quedó confirmado. Regresa a acierta.pro para "
+        wati_send_text(phone, f"¡Listo! ✅ Tu WhatsApp quedó confirmado. Regresa a {sitio} para "
                               "continuar con tu proceso; la página avanza sola.", copiar=False)
     else:
         print(f"[MAX-CAMINO] Código de verificación no válido o vencido de {phone}", flush=True)
@@ -6094,7 +6096,8 @@ def api_camino():
     perfil = {"email": email, "resumen": resumen, "zona": zona,
               "cuando": _CAMINO_CUANDO.get(cuando, "")}
     aviso = _camino_limpiar(d.get("aviso_version"), 40)
-    notas = (f"[WEB camino] Correo: {email or 'no dio'} | Para cuándo: {perfil['cuando'] or 'n/d'} | "
+    sitio_origen = "inmobiliaria.pro (Sofía y Diego)" if "inmobiliaria.pro" in origen else "acierta.pro"
+    notas = (f"[WEB camino · {sitio_origen}] Correo: {email or 'no dio'} | Para cuándo: {perfil['cuando'] or 'n/d'} | "
              f"Consentimiento aviso de privacidad {aviso or 'n/d'}: {hora_gdl()} | "
              f"Urgencia: {'ya, pronto' if cuando == 'ya' else 'normal'}")
     try:
@@ -6137,7 +6140,7 @@ def api_camino():
                       "⚠️ NO se pudo asignar vendedor automáticamente — asígnalo tú.")
             notificar_interno(
                 JAVIER_PERSONAL,
-                f"🌐 NUEVO LEAD WEB — {folio}\n\nCliente: {nombre} ({tel})\nQuiere: {resumen}\nZona: {zona}\n"
+                f"🌐 NUEVO LEAD WEB ({sitio_origen}) — {folio}\n\nCliente: {nombre} ({tel})\nQuiere: {resumen}\nZona: {zona}\n"
                 f"Para cuándo: {perfil['cuando'] or 'n/d'}\n{estado}",
                 resumen_para_plantilla=f"Web: {nombre} | WA: {tel} | {resumen[:100]} | {estado[:60]} | Folio: {folio}")
         return _camino_resp({"ok": True, "folio": folio, "vendedor": vendedor,
@@ -6174,6 +6177,25 @@ def api_camino_completar():
     ingresos = _camino_num(d.get("ingresos"), 10_000_000)
     rec = d.get("recamaras") if str(d.get("recamaras", "")) in ("1", "2", "3", "4", "5") else ""
     nota_libre = _camino_limpiar(d.get("notas"), 200)
+    # Perfil ampliado (recorrido de Sofía y Diego en inmobiliaria.pro)
+    EMPLEO = {"nomina": "asalariado con nómina", "independiente": "independiente / honorarios", "negocio": "negocio propio", "pensionado": "pensionado"}
+    DECIDE = {"solo": "decide solo(a)", "pareja": "decide con su pareja", "familia": "decide con su familia", "socio": "decide con socio(s)"}
+    PARA = {"solo": "vive solo(a)", "pareja": "pareja", "familia": "familia con hijos", "roomies": "con roomies", "inversion": "es para invertir"}
+    enganche = _camino_num(d.get("enganche"))
+    empleo = EMPLEO.get(d.get("empleo"), "")
+    decide = DECIDE.get(d.get("decide"), "")
+    para_quien = PARA.get(d.get("para_quien"), "")
+    precalif_infonavit = _camino_num(d.get("precalif_infonavit"))
+    imprescindibles = [_camino_limpiar(x, 40) for x in (d.get("imprescindibles") or [])[:8] if isinstance(x, str)]
+    favoritas = [re.sub(r"[^A-Z0-9-]", "", str(x).upper())[:14] for x in (d.get("favoritas") or [])[:6]]
+    favoritas = [f for f in favoritas if f.startswith(("NJ-", "EB-"))]
+    pre = d.get("precalif") if isinstance(d.get("precalif"), dict) else {}
+    cap_mensual, credito_est, alcance = (_camino_num(pre.get(k)) for k in ("mensualidad", "credito", "alcance"))
+    veredicto = _camino_limpiar(pre.get("veredicto"), 120)
+    cita = d.get("cita") if isinstance(d.get("cita"), dict) else {}
+    cita_txt = " ".join(x for x in (_camino_limpiar(cita.get("dia"), 30), _camino_limpiar(cita.get("franja"), 30),
+                                     ("por " + _camino_limpiar(cita.get("modo"), 30)) if cita.get("modo") else "") if x)
+    sitio_web = "inmobiliaria.pro" if "inmobiliaria.pro" in origen else "acierta.pro"
     es_renta = d.get("operacion") == "renta"
     pres_txt = (f"${presupuesto:,.0f}" + (" /mes" if es_renta else "")) if presupuesto else ""
     partes = []
@@ -6185,6 +6207,25 @@ def api_camino_completar():
         partes.append(f"Ingresos aprox. del hogar: ${ingresos:,.0f}/mes")
     if rec:
         partes.append(f"Recámaras: {rec}+")
+    if empleo:
+        partes.append(f"Ingreso: {empleo}")
+    if enganche:
+        partes.append(f"Enganche disponible: ${enganche:,.0f}")
+    if precalif_infonavit:
+        partes.append(f"Precalificación Infonavit que dice tener: ${precalif_infonavit:,.0f}")
+    if credito_est or alcance:
+        partes.append(f"PRECALIFICACIÓN ESTIMADA: mensualidad máx. ${cap_mensual:,.0f} · crédito aprox. ${credito_est:,.0f} · le alcanza hasta ${alcance:,.0f}"
+                      + (f" ({veredicto})" if veredicto else ""))
+    if para_quien:
+        partes.append(f"Para: {para_quien}")
+    if decide:
+        partes.append(f"Decisión: {decide}")
+    if imprescindibles:
+        partes.append("Imprescindibles: " + ", ".join(imprescindibles))
+    if favoritas:
+        partes.append("Favoritas: " + ", ".join(f"https://{sitio_web}/ficha.html?eb={f}" for f in favoritas))
+    if cita_txt:
+        partes.append(f"📅 CITA SOLICITADA: {cita_txt}")
     partes.append("Quiere Acierta Verifica: " + ("SÍ" if verifica else "no por ahora"))
     if nota_libre:
         partes.append(f"Comentario: {nota_libre}")
@@ -6226,8 +6267,19 @@ def api_camino_completar():
         if reg and reg.get("VENDEDOR_PHONE"):
             notificar_interno(
                 reg["VENDEDOR_PHONE"],
-                f"➕ {nombre} completó su perfil en acierta.pro — {reg.get('FOLIO', folio)}\n\n{detalle.replace(' | ', chr(10))}",
+                f"➕ {nombre} completó su perfil en {sitio_web} — {reg.get('FOLIO', folio)}\n\n{detalle.replace(' | ', chr(10))}"
+                + (f"\n\n👉 Escríbele hoy para confirmar la cita." if cita_txt else ""),
                 resumen_para_plantilla=f"Cliente: {nombre} | WA: {tel} | {detalle[:150]} | Folio: {reg.get('FOLIO', folio)}")
+        if cita_txt and JAVIER_PERSONAL and not (reg and reg.get("VENDEDOR_PHONE", "").endswith(JAVIER_PERSONAL[-10:])):
+            notificar_interno(JAVIER_PERSONAL, f"📅 Cita solicitada desde {sitio_web} — {folio}\nCliente: {nombre} ({tel})\n{cita_txt}\n"
+                              f"Asesor: {(reg or {}).get('VENDEDOR', 'sin asignar')}",
+                              resumen_para_plantilla=f"Cita: {nombre} | WA: {tel} | {cita_txt[:80]} | Folio: {folio}")
+        if cita_txt:
+            v = ((reg or {}).get("VENDEDOR") or "").split()
+            quien = f"{v[0]}, asesor de Acierta Max" if v else "un asesor de Acierta Max"
+            wati_send_text(tel, f"¡Listo, {(nombre or '').split()[0] or 'hola'}! 🙌 Sofía y Diego ya le pasaron tu perfil a {quien}. "
+                                f"Te escribirá por aquí para confirmar tu cita ({cita_txt}). "
+                                "Si necesitas cambiarla, responde a este mensaje.", copiar=False)
         return _camino_resp({"ok": True})
     except Exception as e:
         print(f"[MAX-CAMINO] Error al completar {folio}: {e}", flush=True)
