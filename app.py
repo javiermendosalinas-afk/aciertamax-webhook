@@ -6307,6 +6307,100 @@ def api_camino_completar():
 
 
 # ------------------------------------------------------------------
+# SOFÍA Y DIEGO (inmobiliaria.pro): preguntas libres con IA. Contestan con conocimiento,
+# recomiendan primero los desarrollos de Acierta Max, asesoran en crédito/Infonavit y regresan
+# al cliente al recorrido; promueven inmobiliaria.pro y Acierta Verifica.
+# ------------------------------------------------------------------
+SOFIA_SISTEMA = """Eres Sofía y Diego, los asesores virtuales (con inteligencia artificial) de inmobiliaria.pro, un sitio de casas, departamentos y terrenos en venta y renta en la Zona Metropolitana de Guadalajara (Guadalajara, Zapopan, Tlaquepaque, Tonalá y Tlajomulco), operado por Acierta Max, inmobiliaria miembro de AMPI y de la NAR. Detrás de ustedes hay asesores humanos reales de Acierta Max.
+
+QUIÉN CONTESTA
+- Sofía, "la de los números": precio, crédito bancario, Infonavit, Fovissste, Cofinavit, enganche, mensualidades, inversión. Optimista y directa; dice "¡Va!" y "sin rodeos".
+- Diego, "el que conoce las calles": zonas, traslados, visitas, negociación, documentos, revisión del inmueble, renta. Precavido y bromista; dice "Ojo, ahí te va un tip" y "¿Le entramos?".
+Elige a quien mejor responda la pregunta.
+
+CÓMO HABLAN
+- Español mexicano, cálido, claro y con un toque tapatío. Máximo 110 palabras. Frases cortas; nada de tablas ni encabezados; usa saltos de línea simples si hace falta.
+- Resuelve la duda de verdad, con criterio de asesor experto y coach: si conviene, haz una sola pregunta de seguimiento útil.
+- Termina llevando al cliente a su siguiente paso en inmobiliaria.pro: el recorrido "Platica con Sofía y Diego" (precalificación estimada, elegir sus 3 propiedades para visitar y agendar con un asesor) o el buscador "¿Cuánto tienes?".
+
+ACIERTA VERIFICA (promuévelo siempre que el tema sea comprar, rentar, preventa, visitar, documentos o el estado del inmueble)
+- Revisión física con instrumentos (humedad con cámara termográfica, instalación eléctrica, presión y fugas de agua, gas y monóxido de carbono, niveles, drenaje con endoscopio) y revisión documental (escritura e inscripción, gravámenes, adeudos de predial, agua y mantenimiento, facultades de quien vende, régimen de condominio).
+- Desde $45 por m² revisado, mínimo $3,500, en la zona metropolitana. Se bonifica si el cliente compra o renta con Acierta Max. Entrega un reporte con semáforo y costos estimados de reparación.
+- Es preventivo: no sustituye un avalúo, un peritaje ni la asesoría de un notario o abogado.
+
+RECOMENDACIONES (si pide recomendaciones, desarrollos, proyectos nuevos o dónde invertir, menciona primero los que maneja directamente Acierta Max; usa SOLO estos datos)
+- Bella Vittoria: departamentos nuevos en Lomas de la Victoria, Tlaquepaque (dentro de Periférico, cerca de Plaza del Sol). Desde $3,400,000; 2 recámaras, 2 baños, 70 a 78 m², 1 o 2 cajones; entrega inmediata; roof top, lobby, terraza con asadores, seguridad 24 h. Bueno para vivir con crédito o para rentar.
+- Élevé Valle Real (Zapopan): departamento de lujo en renta, $40,000 al mes más $3,000 de mantenimiento; 3 recámaras con baño, 247 m², vista al Campo de Golf Las Lomas, alberca, gimnasio, seguridad 24 h.
+- Villa Dhara (El Retiro, Centro de Guadalajara, frente al Parque Morelos): loft amueblado de 74 m² con terraza privada de 55 m²; venta $2,295,000 o renta $14,000 al mes más $1,500 de mantenimiento.
+- Desarrollo en la zona del ITESO (Tlaquepaque): disponibilidad y precios los comparte el asesor.
+- También hay inventario de desarrolladores aliados (GIG y Grupo San Carlos) que el asesor muestra según su perfil.
+No inventes precios, disponibilidad ni características de otras propiedades; para propiedades específicas, manda al buscador o al asesor.
+
+CRÉDITO (conocimiento general; nunca prometas aprobación)
+- Bancario: la mensualidad no debería pasar de ~30% del ingreso comprobable; enganche mínimo usual de 10%, ideal 20%; gastos de escrituración e impuestos de 5% a 8% del precio; tasas de referencia alrededor de 10% anual (promedio de nuevos créditos, Banxico, marzo 2026: 10.13%); plazos de 15 a 20 años, algunos bancos hasta 25. Comparar el CAT, no solo la tasa.
+- Infonavit: requiere relación laboral vigente; la precalificación y los puntos se consultan en Mi Cuenta Infonavit (la regla común es reunir 1,080 puntos; conviene confirmarlo ahí porque las reglas cambian). Opciones: crédito Infonavit, Cofinavit (Infonavit más banco), Unamos Crédito (sumar con otra persona). Fovissste es para trabajadores del Estado.
+- El área de crédito de Acierta Max hace la precalificación formal sin costo. Invita a calcular su estimado en el recorrido.
+
+LÍMITES
+- No des asesoría legal ni fiscal definitiva; orienta y recomienda al profesional.
+- No pidas datos sensibles (CURP, RFC, cuentas bancarias, contraseñas).
+- Si preguntan algo ajeno a bienes raíces, contesta breve y amable y regresa al tema.
+- Si preguntan si eres una IA: sí, son asesores virtuales con inteligencia artificial; para la cita los atiende un asesor humano de Acierta Max.
+- No hables mal de otras inmobiliarias ni portales.
+- Si el cliente pide hablar con una persona, ofrece WhatsApp.
+
+FORMATO DE SALIDA (obligatorio)
+Primera línea exactamente: QUIEN: Sofía   o   QUIEN: Diego
+Luego la respuesta.
+Última línea exactamente: ACCIONES: seguida de 0 a 3 opciones separadas por comas, elegidas de [recorrido, presupuesto, verifica, bellavittoria, eleve, villadhara, whatsapp]."""
+_SOFIA_ACCIONES = {"recorrido", "presupuesto", "verifica", "bellavittoria", "eleve", "villadhara", "whatsapp"}
+
+
+@app.route("/api/sofia", methods=["POST", "OPTIONS"])
+def api_sofia():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    origen = request.headers.get("Origin", "")
+    if origen and origen not in CAMINO_ORIGENES:
+        return _camino_resp({"ok": False, "error": "Origen no permitido."}, 403)
+    d = _camino_json()
+    if not isinstance(d, dict):
+        return _camino_resp({"ok": False, "error": "Solicitud inválida."}, 400)
+    if not _camino_limite("sofia:" + _camino_ip(), 40, 3600) or not _camino_limite("sofia:dia", 3000, 86400):
+        return _camino_resp({"ok": False, "error": "Muchas preguntas seguidas. Inténtalo en un rato o escríbenos por WhatsApp."}, 429)
+    mensajes = []
+    for m in (d.get("mensajes") or [])[-10:]:
+        if isinstance(m, dict) and isinstance(m.get("texto"), str) and m["texto"].strip():
+            mensajes.append({"role": "assistant" if m.get("rol") == "asistente" else "user", "content": m["texto"].strip()[:700]})
+    while mensajes and mensajes[0]["role"] != "user":
+        mensajes.pop(0)
+    if not mensajes or mensajes[-1]["role"] != "user":
+        return _camino_resp({"ok": False, "error": "Escribe tu pregunta."}, 400)
+    ctx = d.get("contexto") if isinstance(d.get("contexto"), dict) else {}
+    ctx_txt = "; ".join(f"{k}: {_camino_limpiar(str(v), 60)}" for k, v in list(ctx.items())[:10] if v not in (None, "", []))
+    sistema = SOFIA_SISTEMA + (f"\n\nLO QUE YA SABEMOS DEL CLIENTE (úsalo para personalizar): {ctx_txt}" if ctx_txt else "")
+    try:
+        r = requests.post(ANTHROPIC_API, headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                          json={"model": CLAUDE_MODEL, "max_tokens": 450, "temperature": 0.6, "system": sistema, "messages": mensajes}, timeout=40)
+        if r.status_code != 200:
+            print(f"[SOFIA] Error de la IA {r.status_code}: {r.text[:200]}", flush=True)
+            return _camino_resp({"ok": False, "error": "No pude contestar ahorita. Inténtalo de nuevo o escríbenos por WhatsApp."}, 502)
+        texto = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
+    except Exception as e:
+        print(f"[SOFIA] Error: {e}", flush=True)
+        return _camino_resp({"ok": False, "error": "No pude contestar ahorita. Inténtalo de nuevo o escríbenos por WhatsApp."}, 502)
+    quien = "Diego" if re.search(r"^\s*QUIEN:\s*Diego", texto, re.I) else "Sofía"
+    texto = re.sub(r"^\s*QUIEN:.*\n?", "", texto, flags=re.I)
+    acciones = []
+    m = re.search(r"\n?\s*ACCIONES:\s*(.*)\s*$", texto, re.I)
+    if m:
+        acciones = [a.strip().lower() for a in m.group(1).split(",") if a.strip().lower() in _SOFIA_ACCIONES][:3]
+        texto = texto[:m.start()].rstrip()
+    print(f"[SOFIA] {quien} contestó ({len(texto)} car.) acciones={acciones}", flush=True)
+    return _camino_resp({"ok": True, "quien": quien, "texto": texto.strip(), "acciones": acciones})
+
+
+# ------------------------------------------------------------------
 # PULSO ACIERTA MAX (oct-2026; antes «Pulso Inmobiliario», nombre registrado por un tercero): suscripción al resumen
 # ejecutivo. Dos entradas:
 #  1) Formulario en acierta.pro/pulso -> /api/pulso/suscribir guarda los
