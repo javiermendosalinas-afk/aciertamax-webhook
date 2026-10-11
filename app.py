@@ -2049,7 +2049,7 @@ def memoria_guardar(phone, **kwargs):
 def memoria_resumen_para_max(phone):
     """Genera un texto corto que MAX puede usar al inicio de una nueva sesion."""
     m = memoria_leer(phone)
-    if not m or not m.get("ULTIMA_BUSQUEDA"):
+    if not m or not any(m.get(k) for k in ("ULTIMA_BUSQUEDA", "NOTAS_COACHING", "PRESUPUESTO", "OPERACION", "NOMBRE")):
         return ""
     partes = []
     if m.get("NOMBRE"):
@@ -2065,7 +2065,7 @@ def memoria_resumen_para_max(phone):
     if m.get("PROPIEDADES_VISTAS"):
         partes.append(f"Ya vio: {m['PROPIEDADES_VISTAS'][:100]}")
     if m.get("NOTAS_COACHING"):
-        partes.append(f"Notas: {m['NOTAS_COACHING'][:100]}")
+        partes.append(f"Notas: {m['NOTAS_COACHING'][:900]}")
     return " | ".join(partes) if partes else ""
 
 def _enriquecer_perfil_vendedor(phone, m):
@@ -2639,7 +2639,7 @@ TOOLS = [
          "notas": {"type": "string"}},
       "required": ["nombre", "operacion"]}},
     {"name": "avisar_humano",
-     "description": "Notifica al equipo humano de Acierta. Úsala cuando: el cliente haga una pregunta legal/fiscal que no debes responder, o sea uno de los CASOS ESPECIALES (reclamo de propietario, agente que quiere colaborar, interés en trabajar aquí). Para cuando el cliente quiera AGENDAR VISITA a una o varias propiedades ya vistas, usa iniciar_recorrido_crm en su lugar -- ese sí arranca el seguimiento completo con el vendedor asignado.",
+     "description": "Notifica al equipo humano de Acierta. Úsala de inmediato si el cliente está molesto, dice que ya dio su información o se quiere ir. Úsala también cuando: el cliente haga una pregunta legal/fiscal que no debes responder, o sea uno de los CASOS ESPECIALES (reclamo de propietario, agente que quiere colaborar, interés en trabajar aquí). Para cuando el cliente quiera AGENDAR VISITA a una o varias propiedades ya vistas, usa iniciar_recorrido_crm en su lugar -- ese sí arranca el seguimiento completo con el vendedor asignado.",
      "input_schema": {"type": "object", "properties": {
          "resumen": {"type": "string", "description": "Resumen del cliente y su necesidad"},
          "categoria": {"type": "string", "enum": ["RECLAMO-PROPIETARIO", "COLABORACION-AGENTE", "BOLSA-TRABAJO"],
@@ -2660,7 +2660,13 @@ TOOLS = [
       "required": ["nombre", "necesidad"]}},
 ]
 
-SYSTEM_PROMPT = """Eres MAX, el asesor digital de Acierta Max, inmobiliaria con 20 años de experiencia en la Zona Metropolitana de Guadalajara, dirigida por Javier Mendoza. Conversas por WhatsApp en español mexicano, cálido, profesional y BREVE (máximo 3-4 líneas por mensaje; WhatsApp no es para párrafos largos).
+SYSTEM_PROMPT = """REGLAS DE ORO DEL TRATO (por encima de todo lo demás):
+- Nunca digas "no tengo acceso al historial", "cada sesión empieza de cero", "falla del sistema" ni culpes a la tecnología. Nunca mandes al cliente a otro sitio o canal (ni a aciertamax.com ni a otro número): este WhatsApp ES el canal de Acierta Max.
+- Si el cliente viene de inmobiliaria.pro o acierta.pro, su mensaje puede traer lo que ya eligió (lo que busca, presupuesto, sus favoritas con clave NJ-/EB-, folio): úsalo tal cual y continúa desde ahí, sin repetir preguntas.
+- Si el cliente dice que ya te dio su información y no la ves: discúlpate en una sola línea, pídele solo UNA cosa concreta (sus favoritas o su nombre) y usa la herramienta avisar_humano para que un asesor le escriba en minutos con lo que ya sabes.
+- Si el cliente se molesta o se quiere ir: no lo despidas; discúlpate, avísale que un asesor le escribe en este momento y usa avisar_humano de inmediato.
+
+Eres MAX, el asesor digital de Acierta Max, inmobiliaria con 20 años de experiencia en la Zona Metropolitana de Guadalajara, dirigida por Javier Mendoza. Conversas por WhatsApp en español mexicano, cálido, profesional y BREVE (máximo 3-4 líneas por mensaje; WhatsApp no es para párrafos largos).
 
 LA BREVEDAD NO ES OPCIONAL: WhatsApp corta y oculta detrás de "Read more" cualquier mensaje largo -- si te pasas, la parte final (a veces la pregunta o el dato más importante) queda escondida y el cliente ni la ve. Cuando tengas mucho que decir (una tabla + análisis + una pregunta, por ejemplo), NUNCA lo metas todo en un solo mensaje largo -- parte la idea en 2 o 3 mensajes cortos y naturales, como lo harías escribiendo tú mismo por WhatsApp. Prioriza que la pregunta o el dato accionable quede en un mensaje corto y visible, no enterrado al final de un párrafo largo.
 
@@ -2984,7 +2990,7 @@ si es probable que sea una propiedad con anos de uso.
 - Si no hay resultados, dilo con honestidad y ofrece registrar su búsqueda para avisarle cuando llegue algo (registrar_lead con notas).
 """
 
-def call_claude(messages):
+def call_claude(messages, contexto_cliente=""):
     # SANITIZACIÓN: la API exige (1) primer turno = user, (2) sin
     # contenidos vacíos, (3) turnos alternados. Se limpia todo aquí.
     limpio = []
@@ -3009,7 +3015,8 @@ def call_claude(messages):
             "content-type": "application/json",
         }, json={
             "model": CLAUDE_MODEL, "max_tokens": 1024,
-            "system": SYSTEM_PROMPT, "tools": TOOLS, "messages": limpio,
+            "system": SYSTEM_PROMPT + (f"\n\nLO QUE YA SABEMOS DE ESTE CLIENTE (úsalo; no le vuelvas a preguntar lo que ya está aquí): {contexto_cliente}" if contexto_cliente else ""),
+            "tools": TOOLS, "messages": limpio,
         })
         if r.status_code == 200:
             return r.json()
@@ -3226,8 +3233,12 @@ def agent_reply(phone, user_text, sender_name=None):
     fichas_enviadas_ok = 0   # fichas realmente confirmadas (enviada=True) este turno
     fichas_intentadas = 0    # llamadas a herramientas de ficha, con o sin exito
     ultima_liga = None       # ultima liga vista, para recuperar el envio si hace falta
+    try:
+        contexto_cliente = memoria_resumen_para_max(phone)
+    except Exception:
+        contexto_cliente = ""
     for _ in range(6):  # máx 6 vueltas de herramientas
-        resp = call_claude(messages)
+        resp = call_claude(messages, contexto_cliente)
         content = resp.get("content", [])
         tool_uses = [b for b in content if b.get("type") == "tool_use"]
         texts = [b.get("text", "") for b in content if b.get("type") == "text"]
