@@ -3035,7 +3035,10 @@ def call_claude(messages, contexto_cliente=""):
             "content-type": "application/json",
         }, json={
             "model": CLAUDE_MODEL, "max_tokens": 1024,
-            "system": SYSTEM_PROMPT + (f"\n\nLO QUE YA SABEMOS DE ESTE CLIENTE (úsalo; no le vuelvas a preguntar lo que ya está aquí): {contexto_cliente}" if contexto_cliente else ""),
+            "system": SYSTEM_PROMPT + f"\n\nHORA ACTUAL EN GUADALAJARA: {hora_gdl()[:16]}. Los asesores humanos atienden todos los días de 9:00 a 19:00; tú (MAX) atiendes las 24 horas. "
+                      + ("Ahora hay asesores disponibles: si avisas a uno, dile al cliente que lo contacta en breve." if asesores_disponibles() else
+                         f"Ahora NO hay asesores: atiende tú todo lo posible, y si avisas a un asesor dile al cliente que lo contacta {cuando_asesor()}; nunca prometas contacto inmediato.")
+                      + (f"\n\nLO QUE YA SABEMOS DE ESTE CLIENTE (úsalo; no le vuelvas a preguntar lo que ya está aquí): {contexto_cliente}" if contexto_cliente else ""),
             "tools": TOOLS, "messages": limpio,
         })
         if r.status_code == 200:
@@ -5047,6 +5050,26 @@ def _origen_detectar(phone, text):
     return origen
 
 
+# Horario de asesores: todos los días de 9:00 a 19:00 (Guadalajara). MAX atiende 24 h.
+def asesores_disponibles():
+    try:
+        h = int(hora_gdl()[11:13])
+    except Exception:
+        return True
+    return 9 <= h < 19
+
+
+def cuando_asesor():
+    """Frase para el cliente sobre cuándo lo contacta un asesor."""
+    if asesores_disponibles():
+        return "en breve"
+    try:
+        h = int(hora_gdl()[11:13])
+    except Exception:
+        h = 20
+    return "mañana a partir de las 9:00" if h >= 19 else "hoy a partir de las 9:00"
+
+
 # Contenido que vio el cliente (blog, PULSO o publicación de redes con código), desde contenido.json del sitio
 CONTENIDO_URL = "https://raw.githubusercontent.com/javiermendosalinas-afk/acierta-pro-web/main/contenido.json"
 _CONTENIDO_CACHE = {"ts": 0, "items": {}}
@@ -5073,6 +5096,10 @@ def _contenido_detectar(phone, text):
     m = _RE_CONTENIDO.search(text or "")
     if m:
         codigo = m.group(1).upper().replace(" ", "")
+    elif re.search(r"open\s*house|d[ií]a de muertos", text or "", re.I):
+        codigo = "IG-OPENHOUSE"
+    elif re.match(r"^\s*corredor", text or "", re.I):
+        codigo = "IG-CORREDOR"
     elif re.match(r"^\s*valor\b", text or "", re.I) or re.search(r"cu[aá]nto vale (mi|tu) (casa|depa|departamento|terreno|propiedad)", text or "", re.I):
         codigo = "IG-VALOR"
     else:
@@ -5313,7 +5340,7 @@ def _posventa_entrante(phone, text, data):
         asesor = reg.get("ASESOR_PHONE") or JAVIER_PHONE
         notificar_interno("521" + _ultimos10(asesor), f"🔧 Posventa: {reg.get('NOMBRE')} ({_ultimos10(phone)}) pide: {t[:200]}\nInmueble: {reg.get('INMUEBLE')}\n"
                           "Canalízalo con un proveedor de la red de confianza.", resumen_para_plantilla=f"Posventa: {reg.get('NOMBRE')} | WA: {_ultimos10(phone)} | {t[:80]}")
-        wati_send_text(phone, f"¡Listo! Ya le avisé a {(reg.get('ASESOR') or 'tu asesor').split()[0]}; hoy te contacta con un proveedor de confianza de Acierta Max. 🙌", copiar=False)
+        wati_send_text(phone, f"¡Listo! Ya le avisé a {(reg.get('ASESOR') or 'tu asesor').split()[0]}; te contacta {cuando_asesor()} con un proveedor de confianza de Acierta Max. 🙌", copiar=False)
         return True
     if estado in ("menu", "recibo"):
         if tn in ("1", "uno"):
@@ -5334,7 +5361,7 @@ def _posventa_entrante(phone, text, data):
             asesor = reg.get("ASESOR_PHONE") or JAVIER_PHONE
             notificar_interno("521" + _ultimos10(asesor), f"📞 Posventa: {reg.get('NOMBRE')} ({_ultimos10(phone)}) quiere hablar contigo.",
                               resumen_para_plantilla=f"Posventa: {reg.get('NOMBRE')} | WA: {_ultimos10(phone)} | quiere hablar")
-            wati_send_text(phone, "Le avisé a tu asesor; te escribe en un momento. 🙌", copiar=False)
+            wati_send_text(phone, f"Le avisé a tu asesor; te escribe {cuando_asesor()}. 🙌 (Nuestros asesores atienden todos los días de 9:00 a 19:00.)", copiar=False)
             return True
     if tn.startswith("si") and reg:
         try:
@@ -5348,7 +5375,7 @@ def _posventa_entrante(phone, text, data):
                               resumen_para_plantilla=f"Posventa: {reg.get('NOMBRE')} | WA: {_ultimos10(phone)} | {ult}")
             avisos.pop("_ultimo_mant", None)
             posv_guardar(phone, AVISOS=json.dumps(avisos, ensure_ascii=False))
-            wati_send_text(phone, "¡Perfecto! Tu asesor te contacta hoy con un proveedor de confianza para agendarlo. 🙌", copiar=False)
+            wati_send_text(phone, f"¡Perfecto! Tu asesor te contacta {cuando_asesor()} con un proveedor de confianza para agendarlo. 🙌", copiar=False)
             return True
     return False
 
@@ -6772,7 +6799,7 @@ def api_camino_completar():
             v = ((reg or {}).get("VENDEDOR") or "").split()
             quien = f"{v[0]}, asesor de Acierta Max" if v else "un asesor de Acierta Max"
             wati_send_text(tel, f"¡Listo, {(nombre or '').split()[0] or 'hola'}! 🙌 Sofía y Diego ya le pasaron tu perfil a {quien}. "
-                                f"Te escribirá por aquí para confirmar tu cita ({cita_txt}). "
+                                f"Te escribirá por aquí {cuando_asesor() if cuando_asesor() != 'en breve' else 'en breve'} para confirmar tu cita ({cita_txt}). "
                                 "Si necesitas cambiarla, responde a este mensaje.", copiar=False)
         return _camino_resp({"ok": True})
     except Exception as e:
