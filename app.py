@@ -420,7 +420,7 @@ def _msg_vendedor_web(folio_crm, nombre, phone, perfil, carpeta_url=""):
     return "\n".join(lineas)
 
 
-def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="", perfil_web=None, vendedor_preferido=None):
+def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="", perfil_web=None, vendedor_preferido=None, busca=""):
     """Arranca el expediente CRM AIDA de un cliente que ya calificó
     propiedades y quiere avanzar a visita. Reutiliza el MISMO vendedor
     que se le asignó desde el primer contacto (registrar_lead) -- nunca
@@ -544,13 +544,19 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
         ])
 
         msg = (
-            f"🆕 NUEVO CLIENTE ASIGNADO — {folio_crm}\n\n"
-            f"Cliente: {nombre_cliente} ({phone_cliente})\n"
-            f"Le interesan estas propiedades:\n{lista_texto}\n\n"
-            f"📋 Por favor:\n"
-            f"1. Busca estas claves en tu EasyBroker para identificar al originador: {codigos}\n"
-            f"2. Contacta al cliente para agendar visita.\n"
-            f"3. Contacta al originador de cada propiedad para confirmar disponibilidad.\n\n"
+            (f"🟢 LEAD INICIAL — {folio_crm}\n\n" if busca else f"🆕 NUEVO CLIENTE ASIGNADO — {folio_crm}\n\n")
+            + f"Cliente: {nombre_cliente} ({phone_cliente})\n"
+            + (f"🎯 Busca: {busca}\n\n" if busca else "")
+            + (f"Le interesan estas propiedades:\n{lista_texto}\n\n" if propiedades else "")
+            + ((("🤖 MAX le está pidiendo los datos de su propiedad (colonia, m², recámaras, estado y cuándo quiere vender o rentar) para su OPINIÓN DE VALOR gratis en 48 h. Es una posible EXCLUSIVA.\n"
+                if "PROPIETARIO" in busca else
+                "🤖 MAX ya le respondió y lo sigue calificando (presupuesto, zona, crédito, tiempos). Te aviso en cuanto quiera visitar.\n")
+                + "👉 Salúdalo hoy por WhatsApp o llamada" + ("" if asesores_disponibles() else " (a partir de las 9:00)")
+                + ": el primer contacto humano rápido es el que cierra.\n\n") if busca else "")
+            + "📋 Por favor:\n"
+            + (f"1. Busca estas claves en tu EasyBroker para identificar al originador: {codigos}\n" if codigos else "1. Revisa el chat completo que te mando abajo.\n")
+            + ("2. Llama al propietario para agendar la visita de valuación.\n" if "PROPIETARIO" in busca else "2. Contacta al cliente para agendar visita.\n")
+            + ("3. Contacta al originador de cada propiedad para confirmar disponibilidad.\n\n" if codigos else "\n")
             + (f"📁 Expediente del cliente (identificación y documentos): {carpeta_url}\n\n" if carpeta_url else "")
             + f"En 3 horas te voy a preguntar cómo vas. Cualquier duda, contesta aquí mismo.\n\n"
             + f"👇 Te mando el chat completo actualizado en el siguiente mensaje."
@@ -3805,6 +3811,8 @@ def _campana_avisar_asesor(phone, texto, campana):
     """Al pedir un desarrollo (BELLAVITTORIA, ELEVE, VILLADHARA, ITESO…), crea o actualiza el expediente
     en el CRM y avisa de inmediato al asesor. Si el cliente ya tiene asesor, va a ese mismo; si no, al
     asesor fijo del desarrollo (variable ASESOR_<DESARROLLO>, p. ej. ASESOR_BELLAVITTORIA=Ubaldo Mendez) o por turno."""
+    if time.time() - AVISO_INICIAL.get(phone, 0) < 900:
+        return  # el aviso LEAD INICIAL de este primer contacto ya lleva la misma propiedad al asesor
     try:
         nombre_c = next((n for n, c in CAMPANAS.items() if c is campana), "")
         clave = next((k.upper() for k in campana.get("claves", []) if k.lower().startswith("eb-")), "")
@@ -5849,6 +5857,78 @@ def _loop_oh():
 threading.Thread(target=_loop_oh, daemon=True).start()
 
 
+# ------------------------------------------------------------------
+# LEAD INICIAL: en el PRIMER mensaje de un contacto nuevo se crea su expediente
+# con el asesor que corresponde y se le avisa de inmediato qué busca el cliente.
+# MAX sigue calificando; el asesor ya lo tiene desde el minuto uno.
+# ------------------------------------------------------------------
+AVISO_INICIAL = {}  # phone -> ts del aviso
+_RE_PROPIETARIO = re.compile(r"^\s*valor\b|cu[aá]nto vale (mi|tu)|(quiero|queremos|deseo|necesito|me interesa|busco|ayuda(rme)? a|pienso|quisiera) (poner en )?(vender|rentar|arrendar|publicar)( la| el)? (mi|nuestra|una|la|el)? ?(casa|depa|departamento|terreno|propiedad|local|inmueble)|(vendo|rento) (mi|una) (casa|depa|departamento|terreno|propiedad|local)", re.I)
+
+
+def _interes_inicial(texto):
+    """(qué busca, propiedades, operación, nombre de campaña) a partir del primer mensaje."""
+    t = texto or ""
+    if _RE_PROPIETARIO.search(t):
+        op = "renta" if re.search(r"rent|arrend", t, re.I) else "venta"
+        return (f"PROPIETARIO · quiere {'rentar' if op == 'renta' else 'vender'} su propiedad (captación de exclusiva)", [], f"captación ({op})", "")
+    try:
+        nombre_c, camp = detectar_campana(t)
+    except Exception:
+        nombre_c, camp = "", None
+    if camp:
+        clave = next((k.upper() for k in camp.get("claves", []) if k.lower().startswith("eb-")), "")
+        m = re.search(r"https://www\.aciertamax\.com/property/\S+", camp.get("cuerpo", ""))
+        cap = camp.get("caption", "")
+        titulo = cap.split("\n")[0].strip()
+        op = "renta" if "RENTA" in cap and "VENTA" not in cap else "venta"
+        return (f"{titulo} ({clave})" if clave else titulo, [{"titulo": titulo, "codigo_eb": clave, "liga": m.group(0).rstrip('.,)') if m else ""}], op, nombre_c)
+    m = re.search(r"\b(?:EB|NJ)-[A-Z0-9]{4,10}\b", t.upper())
+    if m:
+        code = m.group(0)
+        prop = next((p for p in INVENTARIO_ZMG if code.lower() in (p.get("codigo_eb") or "").lower() or code.lower() in (p.get("Liga") or "").lower()), None)
+        if prop:
+            try:
+                precio = f"${int(float(prop.get('Precio') or 0)):,}"
+            except Exception:
+                precio = str(prop.get("Precio", ""))
+            op = (prop.get("Operación") or "").lower()
+            tit = prop.get("Título/Colonia") or "Propiedad"
+            return (f"Ficha {code}: {tit} · {precio} · {prop.get('Municipio', '')}", [{"titulo": tit, "codigo_eb": code, "liga": prop.get("Liga", "")}], op, "")
+        return (f"Ficha {code} (vista en {'inmobiliaria.pro' if code.startswith('NJ-') else 'acierta.pro'})", [{"titulo": "Propiedad " + code, "codigo_eb": code, "liga": ""}], "", "")
+    if re.search(r"\brent", t, re.I):
+        return ("Información general · busca rentar", [], "renta", "")
+    if re.search(r"\bcompr|\bventa\b|cr[eé]dito|infonavit", t, re.I):
+        return ("Información general · busca comprar", [], "venta", "")
+    return ("Información general (aún sin propiedad específica)", [], "", "")
+
+
+def _aviso_inicial(phone, texto):
+    try:
+        t10 = _ultimos10(phone)
+        if t10 in {_ultimos10(v["phone"]) for v in VENDEDORES} or t10 == _ultimos10(JAVIER_PHONE or ""):
+            return
+        busca, props, op, camp = _interes_inicial(texto)
+        try:
+            m = memoria_leer(phone) or {}
+        except Exception:
+            m = {}
+        if m.get("ORIGEN"):
+            busca += f" · llegó desde {m['ORIGEN']}"
+        busca += f"\n💬 Primer mensaje: «{(texto or '').strip()[:220]}»"
+        preferido = os.environ.get(f"ASESOR_{camp.upper()}", "").strip() or None if camp else None
+        r = crm_crear_registro(phone, m.get("NOMBRE") or "Cliente nuevo de WhatsApp", props, operacion=op,
+                               vendedor_preferido=preferido, busca=busca)
+        print(f"[LEAD-INICIAL] {phone} → {r}", flush=True)
+    except Exception as e:
+        print(f"[LEAD-INICIAL] Error con {phone}: {e}", flush=True)
+        try:
+            notificar_interno(JAVIER_PHONE, f"🟢 LEAD INICIAL (sin expediente automático): {phone}\n«{(texto or '')[:200]}»",
+                              resumen_para_plantilla=f"Lead inicial: {phone} | {(texto or '')[:60]}")
+        except Exception:
+            pass
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
@@ -6287,6 +6367,8 @@ def webhook():
                                     detectado = f"Sin código en texto — vino de: {origen}"
                             registrar_contacto_bitacora(phone, texto, detectado)
                             BITACORA_REGISTRADOS.add(phone)
+                            AVISO_INICIAL[phone] = time.time()
+                            threading.Thread(target=_aviso_inicial, args=(phone, texto), daemon=True).start()
                         except Exception:
                             import traceback
                             print(f"[MAX-ERROR] Bitácora falló para {phone} (no interrumpe la respuesta):\n{traceback.format_exc()}", flush=True)
