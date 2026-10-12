@@ -1979,7 +1979,7 @@ COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
                 "IKONO_PREGUNTA_ACTUAL","IKONO_NOMBRE","IKONO_TELEFONO",
                 "IKONO_INDUSTRIA","IKONO_SITUACION","IKONO_CLIENTE",
                 "VERIFICA_VENDEDOR","VERIFICA_VENDEDOR_PHONE",
-                "VERIFICA_PREGUNTA_ACTUAL","VERIFICA_NOMBRE","VERIFICA_ZONA"]
+                "VERIFICA_PREGUNTA_ACTUAL","VERIFICA_NOMBRE","VERIFICA_ZONA","ORIGEN"]
 
 def _sheets_client():
     """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
@@ -2049,9 +2049,11 @@ def memoria_guardar(phone, **kwargs):
 def memoria_resumen_para_max(phone):
     """Genera un texto corto que MAX puede usar al inicio de una nueva sesion."""
     m = memoria_leer(phone)
-    if not m or not any(m.get(k) for k in ("ULTIMA_BUSQUEDA", "NOTAS_COACHING", "PRESUPUESTO", "OPERACION", "NOMBRE")):
+    if not m or not any(m.get(k) for k in ("ULTIMA_BUSQUEDA", "NOTAS_COACHING", "PRESUPUESTO", "OPERACION", "NOMBRE", "ORIGEN")):
         return ""
     partes = []
+    if m.get("ORIGEN"):
+        partes.append(f"Llegó desde: {m['ORIGEN']}")
     if m.get("NOMBRE"):
         partes.append(f"Nombre: {m['NOMBRE']}")
     if m.get("OPERACION"):
@@ -2665,6 +2667,12 @@ SYSTEM_PROMPT = """REGLAS DE ORO DEL TRATO (por encima de todo lo demás):
 - Si el cliente viene de inmobiliaria.pro o acierta.pro, su mensaje puede traer lo que ya eligió (lo que busca, presupuesto, sus favoritas con clave NJ-/EB-, folio): úsalo tal cual y continúa desde ahí, sin repetir preguntas.
 - Si el cliente dice que ya te dio su información y no la ves: discúlpate en una sola línea, pídele solo UNA cosa concreta (sus favoritas o su nombre) y usa la herramienta avisar_humano para que un asesor le escriba en minutos con lo que ya sabes.
 - Si el cliente se molesta o se quiere ir: no lo despidas; discúlpate, avísale que un asesor le escribe en este momento y usa avisar_humano de inmediato.
+
+SEGÚN DE DÓNDE LLEGA EL CLIENTE (viene en "Llegó desde"):
+- inmobiliaria.pro: continúa como el equipo de Sofía y Diego (anfitriones virtuales de inmobiliaria.pro), con su mismo tono cercano; menciona que lo atiende Acierta Max.
+- acierta.pro: atiéndelo como MAX de Acierta Max, con el método de acierta.pro y Acierta Verifica.
+- ikono.pro: no es un tema inmobiliario; es IKONO Alta Dirección (consultoría, coaching, mentoría y conferencias para directivos, de Javier Mendoza).
+- Clientes que ya compraron o rentaron: recuérdales que escribiendo MI CASA tienen el servicio de posventa (recordatorios de pagos, mantenimiento y proveedores de confianza).
 
 Eres MAX, el asesor digital de Acierta Max, inmobiliaria con 20 años de experiencia en la Zona Metropolitana de Guadalajara, dirigida por Javier Mendoza. Conversas por WhatsApp en español mexicano, cálido, profesional y BREVE (máximo 3-4 líneas por mensaje; WhatsApp no es para párrafos largos).
 
@@ -5006,6 +5014,390 @@ def _es_mensaje_duplicado(msg_id):
         return False
 
 
+# ------------------------------------------------------------------
+# ORIGEN DEL CLIENTE (acierta.pro, inmobiliaria.pro, ikono.pro) y POSVENTA "MI CASA"
+# Un solo número de WhatsApp para todo; MAX recuerda de qué sitio llegó cada cliente.
+# ------------------------------------------------------------------
+_RE_ORIGEN = re.compile(r"\b(acierta|inmobiliaria|ikono)\s*\.?\s*pro\b", re.I)
+
+
+def _origen_detectar(phone, text):
+    m = _RE_ORIGEN.search(text or "")
+    if not m:
+        return ""
+    origen = m.group(1).lower() + ".pro"
+    try:
+        if memoria_leer(phone).get("ORIGEN") != origen:
+            memoria_guardar(phone, ORIGEN=origen)
+            MEMORIA_CACHE.pop(phone, None)
+    except Exception:
+        pass
+    return origen
+
+
+HOJA_POSVENTA = "Posventa"
+COLS_POSVENTA = ["TELEFONO", "NOMBRE", "CLAVE", "INMUEBLE", "OPERACION", "ORIGEN", "ASESOR", "ASESOR_PHONE", "FECHA_ALTA",
+                 "AUTORIZA", "SERVICIOS", "AVISOS", "ESTADO", "FIN_CONTRATO"]
+_POSV_ESTADO = {}        # tel10 -> ("menu"|"recibo"|"proveedor"|"autoriza", expira)
+_POSV_CACHE = {}
+_POSV_NO = {}         # tel10 -> hasta cuándo sabemos que no es cliente de posventa
+
+
+def _posv_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, HOJA_POSVENTA, COLS_POSVENTA) if libro else None
+
+
+def posv_leer(phone):
+    t10 = _ultimos10(phone)
+    if t10 in _POSV_CACHE:
+        return _POSV_CACHE[t10]
+    if _POSV_NO.get(t10, 0) > time.time():
+        return None
+    try:
+        sh = _posv_hoja()
+        if not sh:
+            return None
+        for i, fila in enumerate(sh.get_all_values()[1:], start=2):
+            if fila and _ultimos10(fila[0]) == t10:
+                reg = dict(zip(COLS_POSVENTA, fila + [""] * (len(COLS_POSVENTA) - len(fila))))
+                reg["_fila"] = i
+                _POSV_CACHE[t10] = reg
+                return reg
+        _POSV_NO[t10] = time.time() + 600
+    except Exception as e:
+        print(f"[POSVENTA] Error leyendo: {e}", flush=True)
+    return None
+
+
+def posv_guardar(phone, **kw):
+    t10 = _ultimos10(phone)
+    try:
+        sh = _posv_hoja()
+        if not sh:
+            return None
+        reg = posv_leer(phone)
+        if reg:
+            reg.update(kw)
+            sh.update(f"A{reg['_fila']}", [[reg.get(c, "") for c in COLS_POSVENTA]])
+        else:
+            reg = {c: "" for c in COLS_POSVENTA}
+            reg.update(kw)
+            reg["TELEFONO"] = "521" + t10
+            _POSV_NO.pop(t10, None)
+            sh.append_row([reg.get(c, "") for c in COLS_POSVENTA])
+            reg["_fila"] = len(sh.get_all_values())
+        _POSV_CACHE[t10] = reg
+        return reg
+    except Exception as e:
+        print(f"[POSVENTA] Error guardando: {e}", flush=True)
+        return None
+
+
+def _posv_servicios(reg):
+    try:
+        return json.loads(reg.get("SERVICIOS") or "[]")
+    except Exception:
+        return []
+
+
+def _posv_estado(phone, valor=None, minutos=60):
+    t10 = _ultimos10(phone)
+    if valor is None:
+        e = _POSV_ESTADO.get(t10)
+        return e[0] if e and e[1] > time.time() else ""
+    if valor == "":
+        _POSV_ESTADO.pop(t10, None)
+    else:
+        _POSV_ESTADO[t10] = (valor, time.time() + minutos * 60)
+    return valor
+
+
+_POSV_MENU = ("🏡 *Mi casa con Acierta Max*\n\n1️⃣ Registrar un recibo (CFE, SIAPA, internet, predial, gas) con una foto\n"
+              "2️⃣ Ver mis próximos pagos\n3️⃣ Pedir mantenimiento o un proveedor de confianza\n4️⃣ Hablar con mi asesor\n\nResponde con el número.")
+
+
+def _posventa_comando_asesor(phone, text):
+    """POSVENTA 3312345678 Nombre Apellido | Inmueble | compra   (o renta | fin 2027-10-01)"""
+    if _ultimos10(phone) not in {_ultimos10(v["phone"]) for v in VENDEDORES}:
+        return False
+    m = re.match(r"^\s*posventa\s+(\+?[\d\s-]{10,16})\s*(.*)$", text or "", re.I | re.S)
+    if not m:
+        return False
+    tel = re.sub(r"\D", "", m.group(1))[-10:]
+    partes = [p.strip() for p in m.group(2).split("|")]
+    nombre = partes[0] if partes and partes[0] else "cliente"
+    inmueble = partes[1] if len(partes) > 1 else ""
+    operacion = "renta" if len(partes) > 2 and "rent" in partes[2].lower() else "compra"
+    fin = ""
+    for p in partes[2:]:
+        f = re.search(r"(\d{4}-\d{2}-\d{2})", p)
+        if f:
+            fin = f.group(1)
+    asesor = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == _ultimos10(phone)), "")
+    clave = "".join(random.choice("ABCDEFGHJKMNPQRSTUVWXYZ23456789") for _ in range(4))
+    origen = (memoria_leer("521" + tel) or {}).get("ORIGEN", "")
+    reg = posv_guardar(tel, NOMBRE=nombre, CLAVE=clave, INMUEBLE=inmueble, OPERACION=operacion, ORIGEN=origen, ASESOR=asesor,
+                       ASESOR_PHONE=_ultimos10(phone), FECHA_ALTA=hora_gdl()[:10], ESTADO="activo", FIN_CONTRATO=fin, SERVICIOS="[]", AVISOS="{}")
+    if not reg:
+        wati_send_text(phone, "No pude dar de alta la posventa ahorita (error con la hoja). Inténtalo en unos minutos.")
+        return True
+    primer = nombre.split()[0]
+    ok = wati_send_template_message("521" + tel, "posventa_bienvenida", [primer, clave])
+    if not ok:
+        ok = wati_send_text("521" + tel, f"¡Hola {primer}! Bienvenido a tu nueva casa 🏡. Soy MAX, de Acierta Max. Desde hoy te ayudo a recordar "
+                                        f"tus pagos y el mantenimiento. Tu clave es *{clave}*. Responde *MI CASA* para empezar.", copiar=False)
+    wati_send_text(phone, f"✅ Posventa dada de alta: {nombre} ({tel}) · clave {clave}" + (f" · {inmueble}" if inmueble else "")
+                   + ("" if ok else "\n⚠️ No pude mandarle la bienvenida (falta la plantilla posventa_bienvenida o no ha escrito en 24 h). Pídele que escriba MI CASA."))
+    return True
+
+
+def _posv_leer_recibo(contenido, mime):
+    import base64
+    try:
+        r = requests.post(ANTHROPIC_API, timeout=60, headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                          json={"model": CLAUDE_MODEL, "max_tokens": 300, "messages": [{"role": "user", "content": [
+                              {"type": "image", "source": {"type": "base64", "media_type": mime, "data": base64.b64encode(contenido).decode()}},
+                              {"type": "text", "text": "Es un recibo de un servicio de una casa en Jalisco, México. Responde SOLO un JSON con: "
+                                                       "tipo (CFE, SIAPA, INTERNET, PREDIAL, GAS u OTRO), proveedor (texto corto), cuenta (número de servicio o de cuenta), "
+                                                       "fecha_limite (AAAA-MM-DD, la fecha límite de pago), monto (número, total a pagar), periodicidad_meses "
+                                                       "(CFE 2, SIAPA 2, internet 1, predial 12, gas 1 si no se indica). Si no es un recibo, responde {\"tipo\":\"NINGUNO\"}."}]}]})
+        txt = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text")
+        m = re.search(r"\{.*\}", txt, re.S)
+        return json.loads(m.group(0)) if m else {}
+    except Exception as e:
+        print(f"[POSVENTA] Error leyendo recibo: {e}", flush=True)
+        return {}
+
+
+def _posventa_entrante(phone, text, data):
+    """Atiende a clientes de posventa. Devuelve True si el mensaje ya quedó atendido."""
+    import unicodedata
+    t = (text or "").strip()
+    tn = re.sub(r"[^a-z0-9 ]", "", unicodedata.normalize("NFKD", t.lower()).encode("ascii", "ignore").decode()).strip()
+    estado = _posv_estado(phone)
+    pide_menu = tn in ("mi casa", "micasa", "menu", "posventa")
+    tipo_msg = (data.get("type") or "").lower()
+    responde_si = tn.startswith("si") and len(tn) <= 30
+    if not (pide_menu or estado or responde_si):
+        return False
+    reg = posv_leer(phone)
+    if responde_si and not (pide_menu or estado):
+        try:
+            if not reg or not json.loads(reg.get("AVISOS") or "{}").get("_ultimo_mant"):
+                return False
+        except Exception:
+            return False
+    if not reg:
+        if pide_menu:
+            wati_send_text(phone, "Todavía no tengo tu casa registrada en el servicio *Mi casa*. Se activa cuando cierras tu compra o renta con Acierta Max; "
+                                  "tu asesor te da de alta ese día. Si ya cerraste, dime tu nombre y le aviso para activarlo hoy.", copiar=False)
+            return True
+        return False
+    primer = (reg.get("NOMBRE") or "").split()[0] if reg.get("NOMBRE") else ""
+    if not reg.get("AUTORIZA") and estado != "autoriza":
+        _posv_estado(phone, "autoriza")
+        wati_send_text(phone, f"¡Hola {primer}! 🏡 Para darte el servicio *Mi casa* necesito tu autorización para guardar tus recibos y documentos "
+                              "en tu expediente de Acierta Max, conforme a nuestro aviso de privacidad. ¿Me autorizas? Responde *SÍ* o *NO*.", copiar=False)
+        return True
+    if estado == "autoriza":
+        if tn.startswith("si"):
+            posv_guardar(phone, AUTORIZA=hora_gdl()[:10])
+            wati_send_text(phone, "¡Gracias! Listo ✅", copiar=False)
+        else:
+            posv_guardar(phone, AUTORIZA="NO")
+            wati_send_text(phone, "Entendido; no guardaré documentos, solo las fechas y montos de tus pagos para avisarte.", copiar=False)
+        _posv_estado(phone, "menu")
+        wati_send_text(phone, _POSV_MENU, copiar=False)
+        return True
+    if pide_menu:
+        _posv_estado(phone, "menu")
+        wati_send_text(phone, _POSV_MENU, copiar=False)
+        return True
+    if estado == "recibo" and tipo_msg in ("image", "photo", "document"):
+        archivo = data.get("fileName") or data.get("filename") or data.get("data")
+        mime = "application/pdf" if tipo_msg == "document" else "image/jpeg"
+        try:
+            contenido = _wati_descargar_media(archivo)
+        except Exception as e:
+            print(f"[POSVENTA] No pude descargar el recibo: {e}", flush=True)
+            wati_send_text(phone, "No pude abrir la foto; ¿me la mandas otra vez?", copiar=False)
+            return True
+        if reg.get("AUTORIZA") and reg.get("AUTORIZA") != "NO":
+            try:
+                guardar_documento_cliente(phone, archivo, f"recibo_{hora_gdl()[:10]}.{'pdf' if mime.endswith('pdf') else 'jpg'}", mimetype=mime)
+            except Exception:
+                pass
+        datos = _posv_leer_recibo(contenido, mime) if mime.startswith("image") else {}
+        if not datos or datos.get("tipo") in (None, "NINGUNO") or not datos.get("fecha_limite"):
+            wati_send_text(phone, "Recibí tu archivo, pero no alcancé a leer la fecha límite y el monto. Escríbemelos así: *CFE 15/11 850* "
+                                  "(servicio, fecha límite y monto) y lo registro.", copiar=False)
+            return True
+        servicios = [s for s in _posv_servicios(reg) if not (s.get("tipo") == datos["tipo"] and s.get("cuenta") == datos.get("cuenta"))]
+        servicios.append({"tipo": datos["tipo"], "proveedor": datos.get("proveedor", ""), "cuenta": str(datos.get("cuenta", ""))[:30],
+                          "vence": datos["fecha_limite"], "monto": datos.get("monto") or 0, "cada_meses": int(datos.get("periodicidad_meses") or 1)})
+        posv_guardar(phone, SERVICIOS=json.dumps(servicios, ensure_ascii=False))
+        f = datos["fecha_limite"]
+        wati_send_text(phone, f"✅ Registrado: *{datos['tipo']}* · vence el {f[8:10]}/{f[5:7]} · ${float(datos.get('monto') or 0):,.0f}. "
+                              "Te aviso 5 días antes. ¿Otro recibo? Mándame la foto, o escribe *MI CASA* para el menú.", copiar=False)
+        _posv_estado(phone, "recibo", 30)
+        return True
+    if estado == "recibo" and t:
+        m = re.match(r"^\s*([a-záéíóú]+)\s+(\d{1,2})[/-](\d{1,2})(?:[/-](\d{2,4}))?\s+\$?([\d,\.]+)", t, re.I)
+        if m:
+            anio = int(m.group(4)) if m.group(4) else int(hora_gdl()[:4])
+            anio = anio + 2000 if anio < 100 else anio
+            vence = f"{anio:04d}-{int(m.group(3)):02d}-{int(m.group(2)):02d}"
+            tipo = m.group(1).upper()
+            cada = {"CFE": 2, "SIAPA": 2, "PREDIAL": 12}.get(tipo, 1)
+            servicios = [s for s in _posv_servicios(reg) if s.get("tipo") != tipo]
+            servicios.append({"tipo": tipo, "vence": vence, "monto": float(m.group(5).replace(",", "")), "cada_meses": cada})
+            posv_guardar(phone, SERVICIOS=json.dumps(servicios, ensure_ascii=False))
+            wati_send_text(phone, f"✅ Registrado: *{tipo}* · vence el {vence[8:10]}/{vence[5:7]}. Te aviso 5 días antes.", copiar=False)
+            return True
+    if estado == "proveedor" and t:
+        _posv_estado(phone, "")
+        asesor = reg.get("ASESOR_PHONE") or JAVIER_PHONE
+        notificar_interno("521" + _ultimos10(asesor), f"🔧 Posventa: {reg.get('NOMBRE')} ({_ultimos10(phone)}) pide: {t[:200]}\nInmueble: {reg.get('INMUEBLE')}\n"
+                          "Canalízalo con un proveedor de la red de confianza.", resumen_para_plantilla=f"Posventa: {reg.get('NOMBRE')} | WA: {_ultimos10(phone)} | {t[:80]}")
+        wati_send_text(phone, f"¡Listo! Ya le avisé a {(reg.get('ASESOR') or 'tu asesor').split()[0]}; hoy te contacta con un proveedor de confianza de Acierta Max. 🙌", copiar=False)
+        return True
+    if estado in ("menu", "recibo"):
+        if tn in ("1", "uno"):
+            _posv_estado(phone, "recibo", 30)
+            wati_send_text(phone, "Mándame la *foto del recibo* (CFE, SIAPA, internet, predial o gas). Yo leo la fecha límite y el monto 📸", copiar=False)
+            return True
+        if tn in ("2", "dos"):
+            s = sorted(_posv_servicios(reg), key=lambda x: x.get("vence", ""))
+            wati_send_text(phone, ("📅 *Tus próximos pagos*\n" + "\n".join(f"• {x['tipo']}: {x['vence'][8:10]}/{x['vence'][5:7]} · ${float(x.get('monto') or 0):,.0f}" for x in s))
+                           if s else "Aún no tienes recibos registrados. Responde *1* y mándame la foto de uno.", copiar=False)
+            return True
+        if tn in ("3", "tres"):
+            _posv_estado(phone, "proveedor", 30)
+            wati_send_text(phone, "¿Qué necesitas? Por ejemplo: impermeabilizar, plomería, electricidad, pintura, limpieza, fumigación, minisplit, mudanza…", copiar=False)
+            return True
+        if tn in ("4", "cuatro"):
+            _posv_estado(phone, "")
+            asesor = reg.get("ASESOR_PHONE") or JAVIER_PHONE
+            notificar_interno("521" + _ultimos10(asesor), f"📞 Posventa: {reg.get('NOMBRE')} ({_ultimos10(phone)}) quiere hablar contigo.",
+                              resumen_para_plantilla=f"Posventa: {reg.get('NOMBRE')} | WA: {_ultimos10(phone)} | quiere hablar")
+            wati_send_text(phone, "Le avisé a tu asesor; te escribe en un momento. 🙌", copiar=False)
+            return True
+    if tn.startswith("si") and reg:
+        try:
+            avisos = json.loads(reg.get("AVISOS") or "{}")
+        except Exception:
+            avisos = {}
+        ult = avisos.get("_ultimo_mant")
+        if ult:
+            asesor = reg.get("ASESOR_PHONE") or JAVIER_PHONE
+            notificar_interno("521" + _ultimos10(asesor), f"🔧 Posventa: {reg.get('NOMBRE')} ({_ultimos10(phone)}) quiere el servicio de *{ult}*.\nInmueble: {reg.get('INMUEBLE')}",
+                              resumen_para_plantilla=f"Posventa: {reg.get('NOMBRE')} | WA: {_ultimos10(phone)} | {ult}")
+            avisos.pop("_ultimo_mant", None)
+            posv_guardar(phone, AVISOS=json.dumps(avisos, ensure_ascii=False))
+            wati_send_text(phone, "¡Perfecto! Tu asesor te contacta hoy con un proveedor de confianza para agendarlo. 🙌", copiar=False)
+            return True
+    return False
+
+
+_MANT_TEMPORADA = [(1, "pago anticipado del predial (con descuento)", "compra"), (3, "servicio a minisplits y fumigación", ""),
+                   (4, "impermeabilización antes de las lluvias", "compra"), (10, "limpieza de tinaco y cisterna", "")]
+
+
+def _posv_sumar_meses(fecha, meses):
+    a, m, d = int(fecha[:4]), int(fecha[5:7]), int(fecha[8:10])
+    m += meses
+    a += (m - 1) // 12
+    m = (m - 1) % 12 + 1
+    import calendar
+    return f"{a:04d}-{m:02d}-{min(d, calendar.monthrange(a, m)[1]):02d}"
+
+
+def posventa_revisar(hoy=None):
+    """Recordatorios del día: pagos 5 días antes, mantenimiento de temporada y renovación de renta."""
+    hoy = hoy or hora_gdl()[:10]
+    enviados = 0
+    try:
+        sh = _posv_hoja()
+        filas = sh.get_all_values()[1:] if sh else []
+    except Exception as e:
+        print(f"[POSVENTA] Error leyendo hoja: {e}", flush=True)
+        return 0
+    from datetime import date
+    dhoy = date.fromisoformat(hoy)
+    for i, fila in enumerate(filas, start=2):
+        reg = dict(zip(COLS_POSVENTA, fila + [""] * (len(COLS_POSVENTA) - len(fila))))
+        reg["_fila"] = i
+        if reg.get("ESTADO") != "activo" or not reg.get("TELEFONO"):
+            continue
+        tel, primer = reg["TELEFONO"], (reg.get("NOMBRE") or "").split()[0] if reg.get("NOMBRE") else ""
+        try:
+            avisos = json.loads(reg.get("AVISOS") or "{}")
+        except Exception:
+            avisos = {}
+        servicios, cambio = _posv_servicios(reg), False
+        for s in servicios:
+            try:
+                dv = date.fromisoformat(s["vence"])
+            except Exception:
+                continue
+            dias = (dv - dhoy).days
+            clave = f"pago:{s['tipo']}:{s['vence']}"
+            if dias == 5 and clave not in avisos:
+                monto = f"${float(s.get('monto') or 0):,.0f}" + (" aprox." if s.get("estimado") else "")
+                if wati_send_template_message(tel, "recordatorio_pago", [primer, s["tipo"], f"{s['vence'][8:10]}/{s['vence'][5:7]}", monto]):
+                    avisos[clave] = hoy
+                    enviados += 1
+                    cambio = True
+            if dias <= -3:
+                s["vence"] = _posv_sumar_meses(s["vence"], int(s.get("cada_meses") or 1))
+                s["estimado"] = True
+                cambio = True
+        for mes, tema, solo in _MANT_TEMPORADA:
+            clave = f"mant:{tema}:{dhoy.year}"
+            if dhoy.month == mes and dhoy.day == 5 and clave not in avisos and (not solo or reg.get("OPERACION") == solo):
+                if wati_send_template_message(tel, "recordatorio_mantenimiento", [primer, tema]):
+                    avisos[clave] = hoy
+                    avisos["_ultimo_mant"] = tema
+                    enviados += 1
+                    cambio = True
+        if reg.get("OPERACION") == "renta" and reg.get("FIN_CONTRATO"):
+            try:
+                if (date.fromisoformat(reg["FIN_CONTRATO"]) - dhoy).days == 60 and "renovacion" not in avisos:
+                    if wati_send_template_message(tel, "recordatorio_mantenimiento", [primer, "renovación de tu contrato de renta (vence en 60 días)"]):
+                        avisos["renovacion"] = hoy
+                        avisos["_ultimo_mant"] = "renovación de contrato de renta"
+                        enviados += 1
+                        cambio = True
+            except Exception:
+                pass
+        if cambio:
+            reg["SERVICIOS"], reg["AVISOS"] = json.dumps(servicios, ensure_ascii=False), json.dumps(avisos, ensure_ascii=False)
+            try:
+                sh.update(f"A{i}", [[reg.get(c, "") for c in COLS_POSVENTA]])
+                _POSV_CACHE.pop(_ultimos10(tel), None)
+            except Exception as e:
+                print(f"[POSVENTA] Error guardando avisos de {tel}: {e}", flush=True)
+    print(f"[POSVENTA] Revisión {hoy}: {enviados} recordatorios enviados", flush=True)
+    return enviados
+
+
+def _loop_posventa():
+    ultimo = ""
+    while True:
+        try:
+            ahora = hora_gdl()
+            if ahora[:10] != ultimo and ahora[11:13] >= "09":
+                ultimo = ahora[:10]
+                posventa_revisar(ahora[:10])
+        except Exception as e:
+            print(f"[POSVENTA] Error en el ciclo: {e}", flush=True)
+        time.sleep(600)
+
+
+threading.Thread(target=_loop_posventa, daemon=True).start()
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
@@ -5045,6 +5437,18 @@ def webhook():
         return jsonify(ok=True, verificacion=True)
     if text and _pulso_entrante(phone, text, data.get("senderName") or ""):
         return jsonify(ok=True, pulso=True)
+    if text:
+        _origen_detectar(phone, text)
+        try:
+            if _posventa_comando_asesor(phone, text):
+                return jsonify(ok=True, ruta="posventa_alta")
+        except Exception as e:
+            print(f"[POSVENTA] Error en alta: {e}", flush=True)
+    try:
+        if _posventa_entrante(phone, text, data):
+            return jsonify(ok=True, ruta="posventa")
+    except Exception as e:
+        print(f"[POSVENTA] Error: {e}", flush=True)
     if not text:
         tipo_msg = (data.get("type") or "").lower()
         print(f"[MAX-DIAGNOSTICO-MEDIA] Mensaje sin texto de {phone}, "
@@ -5196,7 +5600,7 @@ def webhook():
     # FAST-PATH IKONO ALTA DIRECCIÓN: mismo mecanismo que VERIFICA --
     # palabra clave sola (o casi sola) en el mensaje. Arranca un
     # cuestionario de 4 preguntas, una por turno, guardado en memoria.
-    if (len(_palabras_verifica) <= 3 and "ikono" in _texto_normalizado.split()):
+    if ((len(_palabras_verifica) <= 3 and "ikono" in _texto_normalizado.split()) or re.search(r"ikono\s*\.?\s*pro", text or "", re.I)):
         print(f"[MAX-IKONO] Palabra clave detectada de {phone}", flush=True)
         wati_send_text(phone,
             "¡Hola! 👋 Gracias por tu interés en *IKONO Alta Dirección* — coaching, "
