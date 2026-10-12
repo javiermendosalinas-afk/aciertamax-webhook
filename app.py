@@ -1979,7 +1979,7 @@ COLS_MEMORIA = ["WHATSAPP","NOMBRE","ULTIMA_BUSQUEDA","OPERACION",
                 "IKONO_PREGUNTA_ACTUAL","IKONO_NOMBRE","IKONO_TELEFONO",
                 "IKONO_INDUSTRIA","IKONO_SITUACION","IKONO_CLIENTE",
                 "VERIFICA_VENDEDOR","VERIFICA_VENDEDOR_PHONE",
-                "VERIFICA_PREGUNTA_ACTUAL","VERIFICA_NOMBRE","VERIFICA_ZONA","ORIGEN"]
+                "VERIFICA_PREGUNTA_ACTUAL","VERIFICA_NOMBRE","VERIFICA_ZONA","ORIGEN","ULTIMO_CONTENIDO"]
 
 def _sheets_client():
     """Retorna (libro, cliente) o (None, None) si Sheets no esta configurado."""
@@ -2049,11 +2049,18 @@ def memoria_guardar(phone, **kwargs):
 def memoria_resumen_para_max(phone):
     """Genera un texto corto que MAX puede usar al inicio de una nueva sesion."""
     m = memoria_leer(phone)
-    if not m or not any(m.get(k) for k in ("ULTIMA_BUSQUEDA", "NOTAS_COACHING", "PRESUPUESTO", "OPERACION", "NOMBRE", "ORIGEN")):
+    if not m or not any(m.get(k) for k in ("ULTIMA_BUSQUEDA", "NOTAS_COACHING", "PRESUPUESTO", "OPERACION", "NOMBRE", "ORIGEN", "ULTIMO_CONTENIDO")):
         return ""
     partes = []
     if m.get("ORIGEN"):
         partes.append(f"Llegó desde: {m['ORIGEN']}")
+    if m.get("ULTIMO_CONTENIDO"):
+        try:
+            it = contenido_por_codigo(m["ULTIMO_CONTENIDO"])
+            if it:
+                partes.append(f"Llegó por el contenido «{it.get('titulo','')}» ({it.get('tipo','')}, {m['ULTIMO_CONTENIDO']}). Texto del contenido: {it.get('texto','')[:2500]}")
+        except Exception:
+            pass
     if m.get("NOMBRE"):
         partes.append(f"Nombre: {m['NOMBRE']}")
     if m.get("OPERACION"):
@@ -2667,6 +2674,11 @@ SYSTEM_PROMPT = """REGLAS DE ORO DEL TRATO (por encima de todo lo demás):
 - Si el cliente viene de inmobiliaria.pro o acierta.pro, su mensaje puede traer lo que ya eligió (lo que busca, presupuesto, sus favoritas con clave NJ-/EB-, folio): úsalo tal cual y continúa desde ahí, sin repetir preguntas.
 - Si el cliente dice que ya te dio su información y no la ves: discúlpate en una sola línea, pídele solo UNA cosa concreta (sus favoritas o su nombre) y usa la herramienta avisar_humano para que un asesor le escriba en minutos con lo que ya sabes.
 - Si el cliente se molesta o se quiere ir: no lo despidas; discúlpate, avísale que un asesor le escribe en este momento y usa avisar_humano de inmediato.
+
+CUANDO EL CLIENTE LLEGA POR UN CONTENIDO (artículo del blog, PULSO o publicación de redes; viene en "Llegó por el contenido"):
+- Contesta como el mejor experto inmobiliario sobre ESE tema, usando el texto del contenido y tu conocimiento, siempre en el contexto de Acierta Max. No repitas el contenido: resuelve su duda.
+- Luego ofrece "más información" en una sola línea con opciones numeradas, eligiendo las que apliquen: 1) aplicarlo a su caso con sus números, 2) ver propiedades relacionadas (empieza por las que origina Acierta Max si encajan), 3) calcular su crédito con Betty, 4) revisar la propiedad con Acierta Verifica, 5) hablar con un asesor.
+- Si responde con un número, haz eso.
 
 SEGÚN DE DÓNDE LLEGA EL CLIENTE (viene en "Llegó desde"):
 - inmobiliaria.pro: continúa como el equipo de Sofía y Diego (anfitriones virtuales de inmobiliaria.pro), con su mismo tono cercano; menciona que lo atiende Acierta Max.
@@ -5035,6 +5047,44 @@ def _origen_detectar(phone, text):
     return origen
 
 
+# Contenido que vio el cliente (blog, PULSO o publicación de redes con código), desde contenido.json del sitio
+CONTENIDO_URL = "https://raw.githubusercontent.com/javiermendosalinas-afk/acierta-pro-web/main/contenido.json"
+_CONTENIDO_CACHE = {"ts": 0, "items": {}}
+_RE_CONTENIDO = re.compile(r"\b(BLOG\s*:\s*[a-z0-9-]+|PULSO-\d{2}|IG-[A-Z0-9-]{3,30})", re.I)
+
+
+def contenido_items():
+    if time.time() - _CONTENIDO_CACHE["ts"] > 3600 or not _CONTENIDO_CACHE["items"]:
+        try:
+            r = requests.get(CONTENIDO_URL, timeout=10)
+            if r.status_code == 200:
+                _CONTENIDO_CACHE["items"] = {i["codigo"].upper().replace(" ", ""): i for i in r.json().get("contenido", [])}
+                _CONTENIDO_CACHE["ts"] = time.time()
+        except Exception as e:
+            print(f"[CONTENIDO] No pude leer contenido.json: {e}", flush=True)
+    return _CONTENIDO_CACHE["items"]
+
+
+def contenido_por_codigo(codigo):
+    return contenido_items().get((codigo or "").upper().replace(" ", ""))
+
+
+def _contenido_detectar(phone, text):
+    m = _RE_CONTENIDO.search(text or "")
+    if not m:
+        return None
+    codigo = m.group(1).upper().replace(" ", "")
+    item = contenido_por_codigo(codigo)
+    if item:
+        try:
+            memoria_guardar(phone, ULTIMO_CONTENIDO=codigo)
+            MEMORIA_CACHE.pop(phone, None)
+        except Exception:
+            pass
+        print(f"[CONTENIDO] {phone} llegó por {codigo}", flush=True)
+    return item
+
+
 HOJA_POSVENTA = "Posventa"
 COLS_POSVENTA = ["TELEFONO", "NOMBRE", "CLAVE", "INMUEBLE", "OPERACION", "ORIGEN", "ASESOR", "ASESOR_PHONE", "FECHA_ALTA",
                  "AUTORIZA", "SERVICIOS", "AVISOS", "ESTADO", "FIN_CONTRATO"]
@@ -5439,6 +5489,7 @@ def webhook():
         return jsonify(ok=True, pulso=True)
     if text:
         _origen_detectar(phone, text)
+        _contenido_detectar(phone, text)
         try:
             if _posventa_comando_asesor(phone, text):
                 return jsonify(ok=True, ruta="posventa_alta")
@@ -6967,6 +7018,11 @@ def _pulso_enviar_edicion(phone, ed):
                                  ed.get("titulo") or "PULSO de Acierta Max")
     if not enviado and ed.get("url"):
         enviado = wati_send_text(phone, f"📄 Aquí está la edición {int(ed['numero'])}: {ed['url']}", copiar=False)
+    try:
+        memoria_guardar(phone, ULTIMO_CONTENIDO=f"PULSO-{ed.get('numero')}")
+        MEMORIA_CACHE.pop(phone, None)
+    except Exception:
+        pass
     if enviado and ed.get("paginas"):
         wati_send_text(phone, f"👀 ¿Prefieres verla en pantalla, página por página? https://acierta.pro/pulso/ver.html?ed={ed.get('numero')}", copiar=False)
     _pulso_metrica("MENSAJES_WHATSAPP")
