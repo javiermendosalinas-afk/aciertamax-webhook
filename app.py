@@ -6888,13 +6888,21 @@ _PULSO_PDFS = {}            # numero -> (pdf_raw, bytes)
 _RE_PULSO_BAJA = re.compile(r"^\s*(baja|cancelar|stop|alto)\s+pulso\b", re.I)
 
 
+def _pulso_publicadas(eds):
+    """Solo las ediciones cuya fecha de publicación (publicar_desde, hora de Guadalajara) ya llegó."""
+    hoy = hora_gdl()[:10]
+    return [e for e in (eds or []) if not e.get("publicar_desde") or e["publicar_desde"] <= hoy]
+
+
 def _pulso_edicion():
     """Edición vigente desde el repo del sitio (cache 1 h) y su PDF (cache)."""
     if not _PULSO_CACHE["ed"] or time.time() - _PULSO_CACHE["ts"] > 3600:
         try:
             r = requests.get(PULSO_EDICIONES_URL, timeout=10)
             if r.status_code == 200:
-                eds = r.json().get("ediciones") or []
+                todas = r.json().get("ediciones") or []
+                _PULSO_CACHE["todas"] = todas
+                eds = _pulso_publicadas(todas)
                 vig = next((e for e in eds if e.get("vigente")), eds[0] if eds else None)
                 if vig:
                     _PULSO_CACHE.update(ed=vig, ts=time.time())
@@ -6923,7 +6931,7 @@ def _pulso_ediciones():
         except Exception as e:
             print(f"[MAX-PULSO] No se pudo leer ediciones.json: {e}", flush=True)
             eds = []
-    return sorted(eds, key=lambda e: str(e.get("numero", "")))
+    return sorted(_pulso_publicadas(eds), key=lambda e: str(e.get("numero", "")))
 
 
 def _pulso_pdf_de(ed):
@@ -6946,7 +6954,7 @@ def _pulso_pdf_de(ed):
 
 def _pulso_menu_texto(eds):
     return ("¿Cuál edición del *PULSO de Acierta Max* quieres recibir? 📚\n\n"
-            + "\n".join(f"*{int(e['numero'])}* · {e.get('tema') or e.get('titulo')}" + (" _(la más reciente)_" if e.get("vigente") else "") for e in eds)
+            + "\n".join(f"*{int(e['numero'])}* · {e.get('tema') or e.get('titulo')}" + (" _(la más reciente)_" if str(e.get("numero")) == str((_pulso_edicion()[0] or {}).get("numero")) else "") for e in eds)
             + "\n\nResponde solo con el número.")
 
 
@@ -7287,7 +7295,8 @@ def _pulso_bienvenida(phone, nombre, reenvio=False):
         mensajes += 1 if enviado else 0
     if not enviado and ed and ed.get("url"):
         mensajes += 1 if wati_send_text(phone, f"📄 Descárgalo aquí: {ed['url']}", copiar=False) else 0
-    anteriores = [e for e in _pulso_ediciones() if not e.get("vigente")]
+    _vig_num = str((_pulso_edicion()[0] or {}).get("numero"))
+    anteriores = [e for e in _pulso_ediciones() if str(e.get("numero")) != _vig_num]
     if anteriores and not reenvio:
         time.sleep(0.6)
         mensajes += 1 if wati_send_text(phone, "¿Quieres las ediciones anteriores? Escribe " + " o ".join(f"*PULSO {int(e['numero'])}*" for e in anteriores) +
