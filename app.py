@@ -3415,8 +3415,8 @@ CAMPANAS = {
         "seguimiento": "¿Lo comprarías con crédito bancario, INFONAVIT o recursos propios? Con eso te digo el paso a paso y te agendo visita 🙌",
     },
     "bellavittoria": {
-        "claves": ["bella", "vittoria", "bellavittoria", "eb-vi0277"],
-        "foto": "https://assets.easybroker.com/property_images/5810277/101922700/EB-VI0277.png",
+        "claves": ["bella", "vittoria", "bellavittoria", "eb-vi0283", "eb-vi0277", "eb-wu8547", "eb-wg7572"],
+        "foto": "https://acierta.pro/assets/openhouse/bv-03-sala-cocina.jpg",
         "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,450,000 MXN · 🔑 20 departamentos disponibles",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 70–75 m² · 🚗 1-2 cajones "
                    "(opción con preparación para auto eléctrico) · A ESTRENAR\n\n"
@@ -3427,7 +3427,7 @@ CAMPANAS = {
                    "💳 Créditos bancarios e INFONAVIT/COFINAVIT · Entrega inmediata · "
                    "Documentación 100% en regla, registrado ante PROFECO.\n\n"
                    "🔗 Ficha completa con fotos y video:\n"
-                   "https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es\n\n"
+                   "https://www.aciertamax.com/property/tu-mejor-decision-inmobiliaria-esta-en-bella-vittoria?agent=javier373&lang=es\n\n"
                    "Acierta Max — EXCLUSIVA · Socio AMPI, certificado ✅"),
         "seguimiento": "¿Lo buscas para vivir o como inversión? Hay unidades desde ese precio y te puedo agendar visita al desarrollo esta semana 🙌",
     },
@@ -3450,7 +3450,7 @@ CAMPANAS = {
     "eleve": {
         "claves": ["eleve", "élevé", "valle real", "torre eleve", "eb-wm2996"],
         "foto": "https://assets.easybroker.com/property_images/6112996/108314367/EB-WM2996.jpg",
-        "caption": "🏙 ÉLEVÉ VALLE REAL — Exclusiva de Acierta Max en renta\n📍 Valle Real, Zapopan\n💰 RENTA $40,000/mes + mantenimiento $3,000",
+        "caption": "🏙 ÉLEVÉ VALLE REAL — Exclusiva de Acierta Max en renta\n📍 Valle Real, Zapopan\n💰 RENTA $37,000/mes",
         "cuerpo": ("🛏 3 recámaras (cada una con baño completo) · 🛁 3 baños + 1 medio baño · "
                    "📐 247 m² de construcción · 🚗 2 cajones + bodega en sótano · piso 6 · A ESTRENAR\n\n"
                    "✨ Vista directa al Campo de Golf Las Lomas, ventanales de piso a techo, cocina "
@@ -3786,6 +3786,9 @@ def responder_campana(phone, texto, campana):
     if not ok_img:
         wati_send_text(phone, campana["caption"])
     wati_send_text(phone, campana["cuerpo"])
+    if campana is CAMPANAS.get("bellavittoria") and hora_gdl()[:10] <= "2026-10-31":
+        wati_send_text(phone, "🌼 *Open House de Día de Muertos* · sábado 31 de octubre, 10:00 a 14:00, en Cobre 4232, Lomas de la Victoria. "
+                              "🎁 Si apartas ese día, te regalamos un *calentador solar*. Detalles: acierta.pro/open-house.html")
     wati_send_text(phone, campana["seguimiento"])
     for nombre_c, c in CAMPANAS.items():
         if c is campana:
