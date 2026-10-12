@@ -3402,7 +3402,7 @@ CAMPANAS = {
     "bellavittoria": {
         "claves": ["bella", "vittoria", "bellavittoria", "eb-vi0277"],
         "foto": "https://assets.easybroker.com/property_images/5810277/101922700/EB-VI0277.png",
-        "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,400,000 MXN · 🔑 20 departamentos disponibles",
+        "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,450,000 MXN · 🔑 20 departamentos disponibles",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 70–75 m² · 🚗 1-2 cajones "
                    "(opción con preparación para auto eléctrico) · A ESTRENAR\n\n"
                    "✨ Tenemos *20 departamentos disponibles* — diferentes niveles y vistas, con "
@@ -6758,10 +6758,10 @@ ACIERTA VERIFICA (promuévelo siempre que el tema sea comprar, rentar, preventa,
 - Es preventivo: no sustituye un avalúo, un peritaje ni la asesoría de un notario o abogado.
 
 RECOMENDACIONES (si pide recomendaciones, desarrollos, proyectos nuevos o dónde invertir, menciona primero los que maneja directamente Acierta Max; usa SOLO estos datos)
-- Bella Vittoria (Lomas de la Victoria, Tlaquepaque, dentro de Periférico, cerca de Plaza del Sol): departamentos nuevos de 2 recámaras, 2 baños, 70 a 78 m², con roof top, lobby, terraza con asadores y seguridad 24 h. Venta desde $3,400,000 con entrega inmediata (clave EB-VI0283); renta de departamento nuevo $16,500 (EB-WU8547) y amueblado de lujo en planta baja $18,000 (EB-WG7572).
+- Bella Vittoria (Lomas de la Victoria, Tlaquepaque, dentro de Periférico, cerca de Plaza del Sol): departamentos nuevos de 2 recámaras, 2 baños, 70 a 78 m², con roof top, lobby, terraza con asadores y seguridad 24 h. Venta desde $3,450,000 con entrega inmediata (clave EB-VI0283); renta de departamento nuevo $16,500 (EB-WU8547) y amueblado de lujo en planta baja $18,000 (EB-WG7572).
 - Élevé Valle Real (Zapopan): departamento de lujo en renta, $37,000 al mes; 3 recámaras con baño, 247 m², vista al Campo de Golf Las Lomas, alberca, gimnasio, seguridad 24 h (EB-WM2996).
 - Villa Dhara (El Retiro, Centro de Guadalajara, frente al Parque Morelos): el departamento más exclusivo del desarrollo, con terraza privada de 74 m², amueblado; venta $2,295,000 o renta $14,000 al mes (EB-WG7913).
-- Departamento junto al ITESO (El Mante, Tlaquepaque): departamento nuevo y amplio en renta, $18,000 al mes, con vista panorámica y roof garden (EB-WG7125).
+- The Block Easy Living, junto al ITESO (Periférico Sur, El Mante, Tlaquepaque): departamento nuevo y amplio en renta, $18,000 al mes, con vista panorámica y roof garden (EB-WG7125).
 Estas seis son las propiedades que origina Acierta Max: llevan el sello "Verificado por Acierta". Cítalas con su clave para que el cliente las encuentre.
 - También hay inventario de desarrolladores aliados (GIG y Grupo San Carlos) que el asesor muestra según su perfil.
 No inventes precios, disponibilidad ni características de otras propiedades; para propiedades específicas, manda al buscador o al asesor.
@@ -6956,7 +6956,7 @@ def _pulso_pdf_de(ed):
 def _pulso_menu_texto(eds):
     return ("¿Cuál edición del *PULSO de Acierta Max* quieres recibir? 📚\n\n"
             + "\n".join(f"*{int(e['numero'])}* · {e.get('tema') or e.get('titulo')}" + (" _(la más reciente)_" if str(e.get("numero")) == str((_pulso_edicion()[0] or {}).get("numero")) else "") for e in eds)
-            + "\n\nResponde solo con el número.")
+            + "\n\nResponde solo con el número.\n\n👀 O míralas en pantalla y elige: https://acierta.pro/pulso/ver.html")
 
 
 def _pulso_enviar_edicion(phone, ed):
@@ -6967,6 +6967,8 @@ def _pulso_enviar_edicion(phone, ed):
                                  ed.get("titulo") or "PULSO de Acierta Max")
     if not enviado and ed.get("url"):
         enviado = wati_send_text(phone, f"📄 Aquí está la edición {int(ed['numero'])}: {ed['url']}", copiar=False)
+    if enviado and ed.get("paginas"):
+        wati_send_text(phone, f"👀 ¿Prefieres verla en pantalla, página por página? https://acierta.pro/pulso/ver.html?ed={ed.get('numero')}", copiar=False)
     _pulso_metrica("MENSAJES_WHATSAPP")
     threading.Thread(target=_pulso_guardar, args=(phone, {"ULTIMA_EDICION": str(ed.get("numero", ""))}), daemon=True).start()
     print(f"[MAX-PULSO] Edición {ed.get('numero')} enviada a {phone}", flush=True)
