@@ -6758,10 +6758,11 @@ ACIERTA VERIFICA (promuévelo siempre que el tema sea comprar, rentar, preventa,
 - Es preventivo: no sustituye un avalúo, un peritaje ni la asesoría de un notario o abogado.
 
 RECOMENDACIONES (si pide recomendaciones, desarrollos, proyectos nuevos o dónde invertir, menciona primero los que maneja directamente Acierta Max; usa SOLO estos datos)
-- Bella Vittoria: departamentos nuevos en Lomas de la Victoria, Tlaquepaque (dentro de Periférico, cerca de Plaza del Sol). Desde $3,400,000; 2 recámaras, 2 baños, 70 a 78 m², 1 o 2 cajones; entrega inmediata; roof top, lobby, terraza con asadores, seguridad 24 h. Bueno para vivir con crédito o para rentar.
-- Élevé Valle Real (Zapopan): departamento de lujo en renta, $40,000 al mes más $3,000 de mantenimiento; 3 recámaras con baño, 247 m², vista al Campo de Golf Las Lomas, alberca, gimnasio, seguridad 24 h.
-- Villa Dhara (El Retiro, Centro de Guadalajara, frente al Parque Morelos): loft amueblado de 74 m² con terraza privada de 55 m²; venta $2,295,000 o renta $14,000 al mes más $1,500 de mantenimiento.
-- Desarrollo en la zona del ITESO (Tlaquepaque): disponibilidad y precios los comparte el asesor.
+- Bella Vittoria (Lomas de la Victoria, Tlaquepaque, dentro de Periférico, cerca de Plaza del Sol): departamentos nuevos de 2 recámaras, 2 baños, 70 a 78 m², con roof top, lobby, terraza con asadores y seguridad 24 h. Venta desde $3,400,000 con entrega inmediata (clave EB-VI0283); renta de departamento nuevo $16,500 (EB-WU8547) y amueblado de lujo en planta baja $18,000 (EB-WG7572).
+- Élevé Valle Real (Zapopan): departamento de lujo en renta, $37,000 al mes; 3 recámaras con baño, 247 m², vista al Campo de Golf Las Lomas, alberca, gimnasio, seguridad 24 h (EB-WM2996).
+- Villa Dhara (El Retiro, Centro de Guadalajara, frente al Parque Morelos): el departamento más exclusivo del desarrollo, con terraza privada de 74 m², amueblado; venta $2,295,000 o renta $14,000 al mes (EB-WG7913).
+- Departamento junto al ITESO (El Mante, Tlaquepaque): departamento nuevo y amplio en renta, $18,000 al mes, con vista panorámica y roof garden (EB-WG7125).
+Estas seis son las propiedades que origina Acierta Max: llevan el sello "Verificado por Acierta". Cítalas con su clave para que el cliente las encuentre.
 - También hay inventario de desarrolladores aliados (GIG y Grupo San Carlos) que el asesor muestra según su perfil.
 No inventes precios, disponibilidad ni características de otras propiedades; para propiedades específicas, manda al buscador o al asesor.
 
@@ -6788,8 +6789,8 @@ Primera línea exactamente: QUIEN: Sofía   o   QUIEN: Diego
 Luego la respuesta.
 Penúltima línea exactamente: BUSCAR: no   o, si el cliente busca propiedades, BUSCAR: o=R; g=d; m=Zapopan; tope=8000; rec=1; k=M
   (o: V comprar o R rentar; g: c casa, d departamento, t terreno; m: Zapopan, Guadalajara, Tlaquepaque, Tonalá, Tlajomulco de Zúñiga o vacío; tope: número en pesos; rec: número o 0; k: letras de indispensables M mascotas, F amueblado, A alberca, J jardín, o vacío)
-Última línea exactamente: ACCIONES: seguida de 0 a 3 opciones separadas por comas, elegidas de [recorrido, presupuesto, verifica, bellavittoria, eleve, villadhara, ideas, whatsapp]. Usa "ideas" cuando hables de decoración, interiorismo o remodelación."""
-_SOFIA_ACCIONES = {"recorrido", "presupuesto", "verifica", "bellavittoria", "eleve", "villadhara", "ideas", "whatsapp"}
+Última línea exactamente: ACCIONES: seguida de 0 a 3 opciones separadas por comas, elegidas de [recorrido, presupuesto, verifica, bellavittoria, eleve, villadhara, iteso, ideas, whatsapp]. Usa "ideas" cuando hables de decoración, interiorismo o remodelación."""
+_SOFIA_ACCIONES = {"recorrido", "presupuesto", "verifica", "bellavittoria", "eleve", "villadhara", "iteso", "ideas", "whatsapp"}
 
 
 @app.route("/api/sofia", methods=["POST", "OPTIONS"])
