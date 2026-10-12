@@ -5656,6 +5656,181 @@ def _corr_cerrar(phone, d):
     return True
 
 
+# ------------------------------------------------------------------
+# CONFIRMACIÓN DE ASISTENCIA AL OPEN HOUSE (Bella Vittoria, 31-oct-2026)
+# ------------------------------------------------------------------
+HOJA_OH = "Asistentes Open House"
+COLS_OH = ["FOLIO", "FECHA", "NOMBRE", "TELEFONO", "PERSONAS", "HORARIO", "PAGO", "CORREDOR", "RECORDATORIOS", "ESTATUS"]
+OH_FECHA = "2026-10-31"
+OH_DIRECCION = "Cobre 4232, Lomas de la Victoria, Tlaquepaque"
+OH_MAPA = "https://www.google.com/maps/search/?api=1&query=Cobre%204232%2C%20Lomas%20de%20la%20Victoria%2C%20Tlaquepaque%2C%20Jalisco"
+_OH_ESTADO = {}
+_OH_HORAS = {"1": "10:00", "2": "11:00", "3": "12:00", "4": "13:00"}
+_OH_PAGO = {"1": "Infonavit o Cofinavit", "2": "crédito bancario", "3": "contado", "4": "aún no sabe"}
+
+
+def _oh_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, HOJA_OH, COLS_OH) if libro else None
+
+
+def _oh_registros():
+    try:
+        sh = _oh_hoja()
+        return [dict(zip(COLS_OH, f + [""] * (len(COLS_OH) - len(f)))) for f in (sh.get_all_values()[1:] if sh else [])]
+    except Exception as e:
+        print(f"[OPEN HOUSE] Error leyendo: {e}", flush=True)
+        return []
+
+
+def _oh_entrante(phone, text):
+    t = (text or "").strip()
+    t10 = _ultimos10(phone)
+    if hora_gdl()[:10] > OH_FECHA:
+        return False
+    est = _OH_ESTADO.get(t10)
+    if est and est["expira"] < time.time():
+        _OH_ESTADO.pop(t10, None); est = None
+    if re.fullmatch(r"\s*asistentes\s*", t, re.I) and t10 in {_ultimos10(v["phone"]) for v in VENDEDORES}:
+        regs = [r for r in _oh_registros() if r["ESTATUS"] != "cancelado"]
+        por_hora = {}
+        for r in regs:
+            por_hora[r["HORARIO"]] = por_hora.get(r["HORARIO"], 0) + int(r["PERSONAS"] or 1)
+        total = sum(por_hora.values())
+        wati_send_text(phone, (f"🌼 *Open House · {len(regs)} confirmaciones, {total} personas*\n" +
+                               " · ".join(f"{h}: {n}" for h, n in sorted(por_hora.items())) + "\n\n" +
+                               "\n".join(f"{r['FOLIO']} · {r['NOMBRE']} ({r['PERSONAS']}) · {r['HORARIO']} · {r['PAGO']}"
+                                         + (f" · corredor {r['CORREDOR']}" if r["CORREDOR"] else "") for r in regs[-30:]))
+                       if regs else "Aún no hay confirmaciones para el Open House.")
+        return True
+    if not est and not re.search(r"open\s*house|d[ií]a de muertos", t, re.I):
+        return False
+    if not est:
+        previo = next((r for r in _oh_registros() if _ultimos10(r["TELEFONO"]) == t10 and r["ESTATUS"] != "cancelado"), None)
+        if previo:
+            wati_send_text(phone, f"¡Ya estás en la lista! 🌼 Folio *{previo['FOLIO']}*: {previo['PERSONAS']} persona(s), llegada {previo['HORARIO']}.\n"
+                                  f"📍 {OH_DIRECCION}\n{OH_MAPA}\nSi necesitas cambiar algo, escríbeme aquí.", copiar=False)
+            return True
+        try:
+            nombre = (memoria_leer(phone) or {}).get("NOMBRE", "")
+        except Exception:
+            nombre = ""
+        _OH_ESTADO[t10] = {"paso": "personas" if nombre else "nombre", "datos": {"nombre": nombre}, "expira": time.time() + 3600}
+        wati_send_text(phone, "🌼 ¡Qué gusto! Te apartamos tu lugar en el *Open House de Día de Muertos de Bella Vittoria*: "
+                              "sábado 31 de octubre, de 10:00 a 14:00. Son 3 preguntas rápidas.\n\n"
+                              + (f"1️⃣ {nombre.split()[0]}, ¿cuántas personas vienen contigo (incluyéndote)?" if nombre else "1️⃣ ¿A nombre de quién registro tu asistencia?"),
+                       copiar=False)
+        return True
+    d, paso = est["datos"], est["paso"]
+    if paso == "nombre":
+        d["nombre"] = t[:60]
+        est.update(paso="personas", expira=time.time() + 3600)
+        wati_send_text(phone, f"Gracias, {d['nombre'].split()[0]}. 2️⃣ ¿Cuántas personas vienen contigo (incluyéndote)?", copiar=False)
+        return True
+    if paso == "personas":
+        m = re.search(r"\d+", t)
+        palabras = {"una": 1, "uno": 1, "sola": 1, "solo": 1, "dos": 2, "pareja": 2, "tres": 3, "cuatro": 4, "cinco": 5}
+        n = int(m.group(0)) if m else next((v for k, v in palabras.items() if k in t.lower()), 0)
+        if not n:
+            wati_send_text(phone, "¿Cuántas personas en total? Escríbeme el número, por ejemplo: 2", copiar=False)
+            return True
+        d["personas"] = str(min(n, 15))
+        est.update(paso="hora", expira=time.time() + 3600)
+        wati_send_text(phone, "3️⃣ ¿A qué hora llegarías, más o menos?\n1️⃣ 10:00  2️⃣ 11:00  3️⃣ 12:00  4️⃣ 13:00", copiar=False)
+        return True
+    if paso == "hora":
+        m = re.search(r"\b(1[0-3])\b", t)
+        k = next((c for c in "1234" if re.fullmatch(rf"\s*{c}\s*", t)), None)
+        d["horario"] = _OH_HORAS[k] if k else (f"{m.group(1)}:00" if m else "")
+        if not d["horario"]:
+            wati_send_text(phone, "Elige una opción: 1️⃣ 10:00  2️⃣ 11:00  3️⃣ 12:00  4️⃣ 13:00", copiar=False)
+            return True
+        est.update(paso="pago", expira=time.time() + 3600)
+        wati_send_text(phone, "Última: ¿cómo pagarías tu departamento? Así nuestra especialista en crédito llega preparada para ti.\n"
+                              "1️⃣ Infonavit o Cofinavit  2️⃣ Crédito bancario  3️⃣ Contado  4️⃣ Aún no sé", copiar=False)
+        return True
+    if paso == "pago":
+        k = next((c for c in "1234" if re.fullmatch(rf"\s*{c}\s*", t)), None)
+        tl = t.lower()
+        d["pago"] = _OH_PAGO[k] if k else ("Infonavit o Cofinavit" if "infonavit" in tl or "cofinavit" in tl else "crédito bancario" if "banc" in tl
+                                          else "contado" if "contado" in tl else "aún no sabe")
+        _OH_ESTADO.pop(t10, None)
+        corredor = ""
+        try:
+            ult4 = t10[-4:]
+            reg_c = next((r for r in _corr_registros() if r["CLIENTE_ULT4"] == ult4 and _corr_norm(r["CLIENTE"]).split()[:1] == _corr_norm(d["nombre"]).split()[:1]), None)
+            corredor = f"{reg_c['CORREDOR']} ({reg_c['FOLIO']})" if reg_c else ""
+        except Exception:
+            pass
+        try:
+            regs = _oh_registros()
+            folio = f"OH-{len(regs) + 1:03d}"
+            _oh_hoja().append_row([folio, hora_gdl()[:16], d["nombre"], "521" + t10, d["personas"], d["horario"], d["pago"], corredor, "", "confirmado"])
+        except Exception as e:
+            print(f"[OPEN HOUSE] Error guardando: {e}", flush=True)
+            folio = "(por confirmar)"
+        wati_send_text(phone, f"✅ *¡Listo, {d['nombre'].split()[0]}! Tu lugar está confirmado.* Folio {folio}\n"
+                              f"🌼 Open House de Día de Muertos · Bella Vittoria\n📅 Sábado 31 de octubre · llegada {d['horario']} · {d['personas']} persona(s)\n"
+                              f"📍 {OH_DIRECCION}\n🗺️ {OH_MAPA}\n\n🎁 Si apartas ese día, te regalamos un *calentador solar*. "
+                              "Trae una identificación; si piensas usar tu Infonavit, ten a la mano tu acceso a Mi Cuenta Infonavit.\n"
+                              "Te mando un recordatorio un día antes. ¡Te esperamos!", copiar=False)
+        notificar_interno(JAVIER_PHONE, f"🌼 OPEN HOUSE · nueva confirmación {folio}\n{d['nombre']} · {t10} · {d['personas']} persona(s) · {d['horario']}\n"
+                          f"Pago: {d['pago']}" + (f"\nViene de corredor: {corredor}" if corredor else ""),
+                          resumen_para_plantilla=f"Open House {folio}: {d['nombre']} | {d['personas']} pers | {d['horario']}")
+        try:
+            memoria_guardar(phone, NOMBRE=d["nombre"], ULTIMO_CONTENIDO="IG-OPENHOUSE")
+        except Exception:
+            pass
+        return True
+    return False
+
+
+def oh_recordatorios(hoy_hora=None):
+    """Viernes 30-oct 17:00 y sábado 31-oct 8:30: recordatorio a quienes confirmaron."""
+    ahora = hoy_hora or hora_gdl()
+    tipo = "dia_antes" if ahora[:10] == "2026-10-30" and ahora[11:13] >= "17" else "mismo_dia" if ahora[:10] == OH_FECHA and "08:30" <= ahora[11:16] < "12:00" else ""
+    if not tipo:
+        return 0
+    enviados = 0
+    try:
+        sh = _oh_hoja(); filas = sh.get_all_values()[1:] if sh else []
+    except Exception:
+        return 0
+    for i, f in enumerate(filas, start=2):
+        r = dict(zip(COLS_OH, f + [""] * (len(COLS_OH) - len(f))))
+        if r["ESTATUS"] == "cancelado" or tipo in r["RECORDATORIOS"]:
+            continue
+        nombre = (r["NOMBRE"] or "").split()[0]
+        if tipo == "dia_antes":
+            txt = (f"🌼 ¡{nombre}, mañana es el *Open House de Día de Muertos* en Bella Vittoria! Te esperamos a las {r['HORARIO']} "
+                   f"en {OH_DIRECCION}. 🗺️ {OH_MAPA}\n¿Sigue en pie? Responde *SÍ*, o escríbeme si necesitas cambiar la hora.")
+        else:
+            txt = (f"🌼 ¡Hoy es el día, {nombre}! Te esperamos a las {r['HORARIO']} en Bella Vittoria, {OH_DIRECCION}. 🗺️ {OH_MAPA}\n"
+                   "Recuerda: si apartas hoy, te llevas un calentador solar. 🎁")
+        ok = wati_send_template_message(r["TELEFONO"], "recordatorio_evento", [nombre, "el Open House de Bella Vittoria", r["HORARIO"]]) or wati_send_text(r["TELEFONO"], txt, copiar=False)
+        if ok:
+            enviados += 1
+            try:
+                sh.update_cell(i, COLS_OH.index("RECORDATORIOS") + 1, (r["RECORDATORIOS"] + " " + tipo).strip())
+            except Exception:
+                pass
+    print(f"[OPEN HOUSE] Recordatorios {tipo}: {enviados}", flush=True)
+    return enviados
+
+
+def _loop_oh():
+    while True:
+        try:
+            if hora_gdl()[:10] <= OH_FECHA:
+                oh_recordatorios()
+        except Exception as e:
+            print(f"[OPEN HOUSE] Error en recordatorios: {e}", flush=True)
+        time.sleep(900)
+
+
+threading.Thread(target=_loop_oh, daemon=True).start()
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
@@ -5699,6 +5874,8 @@ def webhook():
         try:
             if _corredor_entrante(phone, text):
                 return jsonify(ok=True, ruta="corredor")
+            if _oh_entrante(phone, text):
+                return jsonify(ok=True, ruta="open_house")
         except Exception as e:
             print(f"[CORREDOR] Error: {e}", flush=True)
         _origen_detectar(phone, text)
