@@ -5071,9 +5071,12 @@ def contenido_por_codigo(codigo):
 
 def _contenido_detectar(phone, text):
     m = _RE_CONTENIDO.search(text or "")
-    if not m:
+    if m:
+        codigo = m.group(1).upper().replace(" ", "")
+    elif re.match(r"^\s*valor\b", text or "", re.I) or re.search(r"cu[aá]nto vale (mi|tu) (casa|depa|departamento|terreno|propiedad)", text or "", re.I):
+        codigo = "IG-VALOR"
+    else:
         return None
-    codigo = m.group(1).upper().replace(" ", "")
     item = contenido_por_codigo(codigo)
     if item:
         try:
