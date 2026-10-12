@@ -5512,6 +5512,150 @@ def _loop_posventa():
 threading.Thread(target=_loop_posventa, daemon=True).start()
 
 
+# ------------------------------------------------------------------
+# REGISTRO DE CORREDORES (Open House Bella Vittoria, 4% de comisión)
+# El corredor escribe CORREDOR; queda registrado con folio, fecha y hora: corredor, inmobiliaria,
+# su WhatsApp, cliente y últimos 4 dígitos del teléfono del cliente. Gana el primer registro.
+# ------------------------------------------------------------------
+HOJA_CORREDORES = "Registro corredores"
+COLS_CORREDORES = ["FOLIO", "FECHA", "CORREDOR", "INMOBILIARIA", "CORREDOR_TEL", "CLIENTE", "CLIENTE_ULT4", "DESARROLLO", "VIGENCIA", "ESTATUS", "NOTAS"]
+CORREDOR_DESARROLLO = "Open House Bella Vittoria (31 oct 2026)"
+CORREDOR_VIGENCIA = "Apartado el 31-oct-2026 o hasta el 15-nov-2026 y compra concretada"
+_CORR_ESTADO = {}   # tel10 -> {"paso":..., "datos": {...}, "expira": ts}
+
+
+def _corr_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, HOJA_CORREDORES, COLS_CORREDORES) if libro else None
+
+
+def _corr_norm(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode().lower()
+    return " ".join(re.sub(r"[^a-z ]", " ", s).split())
+
+
+def _corr_registros():
+    try:
+        sh = _corr_hoja()
+        return [dict(zip(COLS_CORREDORES, f + [""] * (len(COLS_CORREDORES) - len(f)))) for f in (sh.get_all_values()[1:] if sh else [])]
+    except Exception as e:
+        print(f"[CORREDOR] Error leyendo: {e}", flush=True)
+        return []
+
+
+def _corr_mismo_cliente(a_nombre, a_ult4, b_nombre, b_ult4):
+    if a_ult4 != b_ult4:
+        return False
+    a, b = _corr_norm(a_nombre).split(), _corr_norm(b_nombre).split()
+    return bool(a and b and a[0] == b[0] and (len(a) == 1 or len(b) == 1 or a[1] == b[1]))
+
+
+def _corr_guardar(phone, d):
+    regs = _corr_registros()
+    previo = next((r for r in regs if _corr_mismo_cliente(r["CLIENTE"], r["CLIENTE_ULT4"], d["cliente"], d["ult4"])), None)
+    if previo and _ultimos10(previo["CORREDOR_TEL"]) != _ultimos10(phone):
+        notificar_interno(JAVIER_PHONE, f"⚠️ CONFLICTO DE CORREDOR\nCliente {d['cliente']} (···{d['ult4']}) ya estaba registrado con folio {previo['FOLIO']} "
+                          f"por {previo['CORREDOR']} ({previo['INMOBILIARIA']}) el {previo['FECHA']}.\nAhora lo intenta registrar {d['corredor']} ({d['inmobiliaria']}, {_ultimos10(phone)}).",
+                          resumen_para_plantilla=f"Conflicto corredor: {d['cliente']} ···{d['ult4']} | {previo['FOLIO']}")
+        return None, previo
+    if previo:
+        return previo["FOLIO"], None
+    folio = f"CORR-{len(regs) + 1:04d}"
+    fila = [folio, hora_gdl()[:16], d["corredor"], d["inmobiliaria"], "521" + _ultimos10(phone), d["cliente"], d["ult4"],
+            CORREDOR_DESARROLLO, CORREDOR_VIGENCIA, "registrado", ""]
+    _corr_hoja().append_row(fila)
+    notificar_interno(JAVIER_PHONE, f"🤝 NUEVO REGISTRO DE CORREDOR {folio}\nCorredor: {d['corredor']} · {d['inmobiliaria']} · {_ultimos10(phone)}\n"
+                      f"Cliente: {d['cliente']} (···{d['ult4']})\n{CORREDOR_DESARROLLO} · 4% · {CORREDOR_VIGENCIA}",
+                      resumen_para_plantilla=f"Corredor {folio}: {d['corredor']} | cliente {d['cliente']} ···{d['ult4']}")
+    return folio, None
+
+
+def _corredor_entrante(phone, text):
+    """Registro guiado de corredores. Devuelve True si el mensaje quedó atendido."""
+    t = (text or "").strip()
+    t10 = _ultimos10(phone)
+    est = _CORR_ESTADO.get(t10)
+    if est and est["expira"] < time.time():
+        _CORR_ESTADO.pop(t10, None); est = None
+    # Javier o un asesor: lista de registros
+    if re.fullmatch(r"\s*corredores\s*", t, re.I) and t10 in {_ultimos10(v["phone"]) for v in VENDEDORES}:
+        regs = _corr_registros()
+        wati_send_text(phone, ("🤝 *Registro de corredores*\n" + "\n".join(
+            f"{r['FOLIO']} · {r['FECHA'][5:10]} · {r['CLIENTE']} ···{r['CLIENTE_ULT4']} → {r['CORREDOR']} ({r['INMOBILIARIA']}) · {r['ESTATUS']}" for r in regs[-25:]))
+                       if regs else "Aún no hay corredores registrados.")
+        return True
+    if not est and not re.match(r"^\s*corredor\b", t, re.I):
+        return False
+    if not est:
+        resto = re.sub(r"^\s*corredor\b[\s:·\-]*", "", t, flags=re.I)
+        # Todo en un mensaje: CORREDOR Nombre | Inmobiliaria | Cliente | 1234
+        partes = [p.strip() for p in re.split(r"[|\n]", resto) if p.strip()]
+        ult4 = next((re.sub(r"\D", "", p)[-4:] for p in partes if len(re.sub(r"\D", "", p)) >= 4), "")
+        textos = [p for p in partes if not re.fullmatch(r"[\d\s\-·.]+", p) and not re.search(r"registrar a mi cliente|open house", p, re.I)]
+        conocido = next((r for r in reversed(_corr_registros()) if _ultimos10(r["CORREDOR_TEL"]) == t10), None)
+        datos = {"corredor": conocido["CORREDOR"] if conocido else "", "inmobiliaria": conocido["INMOBILIARIA"] if conocido else ""}
+        if len(textos) >= 3 and ult4:
+            datos.update(corredor=textos[0], inmobiliaria=textos[1], cliente=textos[2], ult4=ult4)
+            return _corr_cerrar(phone, datos)
+        if conocido:
+            _CORR_ESTADO[t10] = {"paso": "cliente", "datos": datos, "expira": time.time() + 1800}
+            wati_send_text(phone, f"¡Hola, {datos['corredor'].split()[0]}! 🤝 Registremos a tu cliente para el *Open House de Bella Vittoria* (sábado 31 de octubre) "
+                                  "con *4% de comisión*.\n\n¿Cuál es el *nombre completo de tu cliente*?", copiar=False)
+        else:
+            _CORR_ESTADO[t10] = {"paso": "corredor", "datos": datos, "expira": time.time() + 1800}
+            wati_send_text(phone, "¡Hola! 🤝 Registremos a tu cliente para el *Open House de Bella Vittoria* (sábado 31 de octubre, 10:00 a 14:00) "
+                                  "con *4% de comisión* en lugar del 2% habitual.\n\n1️⃣ ¿Cuál es *tu nombre completo* y tu *inmobiliaria*? "
+                                  "(por ejemplo: Juan Pérez, Inmobiliaria Las Águilas)", copiar=False)
+        return True
+    d, paso = est["datos"], est["paso"]
+    if paso == "corredor":
+        partes = [p.strip() for p in re.split(r",|\||·| de la inmobiliaria | inmobiliaria ", t, maxsplit=1) if p.strip()]
+        d["corredor"] = partes[0][:60]
+        d["inmobiliaria"] = (partes[1] if len(partes) > 1 else "independiente")[:60]
+        est.update(paso="cliente", expira=time.time() + 1800)
+        wati_send_text(phone, "2️⃣ ¿Cuál es el *nombre completo de tu cliente*?", copiar=False)
+        return True
+    if paso == "cliente":
+        if len(_corr_norm(t).split()) < 2:
+            wati_send_text(phone, "Necesito *nombre y apellido* de tu cliente para registrarlo bien. 🙏", copiar=False)
+            return True
+        d["cliente"] = t[:60]
+        est.update(paso="ult4", expira=time.time() + 1800)
+        wati_send_text(phone, "3️⃣ ¿Cuáles son los *últimos 4 dígitos del teléfono* de tu cliente? (solo los 4 números; así protegemos sus datos)", copiar=False)
+        return True
+    if paso == "ult4":
+        digitos = re.sub(r"\D", "", t)
+        if len(digitos) < 4:
+            wati_send_text(phone, "Escríbeme solo los *4 últimos dígitos* del teléfono de tu cliente, por ejemplo: 4521", copiar=False)
+            return True
+        d["ult4"] = digitos[-4:]
+        _CORR_ESTADO.pop(t10, None)
+        return _corr_cerrar(phone, d)
+    return False
+
+
+def _corr_cerrar(phone, d):
+    try:
+        folio, previo = _corr_guardar(phone, d)
+    except Exception as e:
+        print(f"[CORREDOR] Error guardando: {e}", flush=True)
+        notificar_interno(JAVIER_PHONE, f"🤝 Registro de corredor (no se pudo guardar en la hoja, regístralo a mano):\nCorredor: {d.get('corredor')} · {d.get('inmobiliaria')} · {_ultimos10(phone)}\n"
+                          f"Cliente: {d.get('cliente')} (···{d.get('ult4')})", resumen_para_plantilla=f"Corredor: {d.get('corredor')} | {d.get('cliente')} ···{d.get('ult4')}")
+        wati_send_text(phone, "Recibí tus datos y ya se los pasé a Javier Mendoza para confirmar tu registro por escrito. 🙌", copiar=False)
+        return True
+    if previo:
+        wati_send_text(phone, f"Ese cliente (···{d['ult4']}) ya está registrado por otro corredor con fecha anterior. "
+                              "Le avisé a Javier Mendoza para revisarlo contigo. 🙏", copiar=False)
+        return True
+    wati_send_text(phone, f"✅ *Registro {folio}*\nCorredor: {d['corredor']} · {d['inmobiliaria']}\nCliente: {d['cliente']} (tel. ···{d['ult4']})\n"
+                          f"Desarrollo: {CORREDOR_DESARROLLO}\n\n💰 *4% de comisión* si tu cliente aparta durante el Open House o en los 15 días siguientes "
+                          "(hasta el 15 de noviembre) y concreta la compra. Las condiciones finales se confirman por escrito con Acierta Max.\n\n"
+                          "📍 Sábado 31 de octubre, 10:00 a 14:00, Cobre 4232, Lomas de la Victoria.\n"
+                          "Para registrar a otro cliente, escribe *CORREDOR* otra vez. 🙌", copiar=False)
+    return True
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
@@ -5552,6 +5696,11 @@ def webhook():
     if text and _pulso_entrante(phone, text, data.get("senderName") or ""):
         return jsonify(ok=True, pulso=True)
     if text:
+        try:
+            if _corredor_entrante(phone, text):
+                return jsonify(ok=True, ruta="corredor")
+        except Exception as e:
+            print(f"[CORREDOR] Error: {e}", flush=True)
         _origen_detectar(phone, text)
         _contenido_detectar(phone, text)
         try:
