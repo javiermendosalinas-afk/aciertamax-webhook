@@ -3415,7 +3415,7 @@ CAMPANAS = {
         "seguimiento": "¿Lo comprarías con crédito bancario, INFONAVIT o recursos propios? Con eso te digo el paso a paso y te agendo visita 🙌",
     },
     "bellavittoria": {
-        "claves": ["bella", "vittoria", "bellavittoria", "eb-vi0283", "eb-vi0277", "eb-wu8547", "eb-wg7572"],
+        "claves": ["bella", "vittoria", "bellavittoria", "eb-vi0283", "eb-vi0277"],
         "foto": "https://acierta.pro/assets/openhouse/bv-03-sala-cocina.jpg",
         "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,450,000 MXN · 🔑 20 departamentos disponibles",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 70–75 m² · 🚗 1-2 cajones "
@@ -5703,7 +5703,9 @@ def _oh_entrante(phone, text):
                                          + (f" · corredor {r['CORREDOR']}" if r["CORREDOR"] else "") for r in regs[-30:]))
                        if regs else "Aún no hay confirmaciones para el Open House.")
         return True
-    if not est and not re.search(r"open\s*house|d[ií]a de muertos", t, re.I):
+    es_bv = (not est and not re.search(r"eb-wu8547|eb-wg7572|\brenta", t, re.I)
+             and bool(re.search(r"bella\s*vit+oria|bellavit+oria|\bbella\b|eb-vi0283", t, re.I)))
+    if not est and not es_bv and not re.search(r"open\s*house|d[ií]a de muertos", t, re.I):
         return False
     if not est:
         previo = next((r for r in _oh_registros() if _ultimos10(r["TELEFONO"]) == t10 and r["ESTATUS"] != "cancelado"), None)
@@ -5716,6 +5718,22 @@ def _oh_entrante(phone, text):
         except Exception:
             nombre = ""
         _OH_ESTADO[t10] = {"paso": "personas" if nombre else "nombre", "datos": {"nombre": nombre}, "expira": time.time() + 3600}
+        if es_bv:
+            # Hasta el 31-oct, BELLAVITTORIA = información del Open House (desde el 1-nov vuelve la ficha normal)
+            cap = ("🌼 *OPEN HOUSE DE DÍA DE MUERTOS · BELLA VITTORIA*\n📅 Sábado 31 de octubre · 10:00 a 14:00\n📍 " + OH_DIRECCION)
+            if not wati_send_image(phone, "https://acierta.pro/assets/openhouse/bv-03-sala-cocina.jpg", cap):
+                wati_send_text(phone, cap, copiar=False)
+            wati_send_text(phone, "🏛 Departamentos nuevos de 2 recámaras y 2 baños, 70 a 78 m², roof top, lobby, terraza con asadores y seguridad 24 h. "
+                                  "Dentro de Periférico, a minutos de Plaza del Sol. Entrega inmediata.\n\n"
+                                  "💰 *Desde $3,450,000* · 💳 Usa tu *Infonavit*, Cofinavit o crédito bancario: nuestra especialista te calcula tu crédito ese mismo día.\n"
+                                  "🎁 Si apartas durante el Open House, te regalamos un *calentador solar*.\n\n"
+                                  "📸 Fotos y detalles: acierta.pro/open-house.html", copiar=False)
+            FICHAS_ENVIADAS.setdefault(phone, set()).add("bellavittoria")
+            if CAMPANAS.get("bellavittoria"):
+                threading.Thread(target=_campana_avisar_asesor, args=(phone, t, CAMPANAS["bellavittoria"]), daemon=True).start()
+            wati_send_text(phone, ("¿Te aparto tu lugar? 🙌 " + (f"{nombre.split()[0]}, ¿cuántas personas vienen contigo (incluyéndote)?" if nombre
+                                   else "¿A nombre de quién registro tu asistencia?")), copiar=False)
+            return True
         wati_send_text(phone, "🌼 ¡Qué gusto! Te apartamos tu lugar en el *Open House de Día de Muertos de Bella Vittoria*: "
                               "sábado 31 de octubre, de 10:00 a 14:00. Son 3 preguntas rápidas.\n\n"
                               + (f"1️⃣ {nombre.split()[0]}, ¿cuántas personas vienen contigo (incluyéndote)?" if nombre else "1️⃣ ¿A nombre de quién registro tu asistencia?"),
