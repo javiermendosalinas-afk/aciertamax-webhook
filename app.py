@@ -3795,6 +3795,37 @@ def responder_campana(phone, texto, campana):
     append_history(phone, "assistant",
         f"[Envié la ficha oficial de campaña con foto, datos y liga] {campana['caption']} "
         f"Y pregunté: {campana['seguimiento']}")
+    threading.Thread(target=_campana_avisar_asesor, args=(phone, texto, campana), daemon=True).start()
+
+
+def _campana_avisar_asesor(phone, texto, campana):
+    """Al pedir un desarrollo (BELLAVITTORIA, ELEVE, VILLADHARA, ITESO…), crea o actualiza el expediente
+    en el CRM y avisa de inmediato al asesor. Si el cliente ya tiene asesor, va a ese mismo; si no, al
+    asesor fijo del desarrollo (variable ASESOR_<DESARROLLO>, p. ej. ASESOR_BELLAVITTORIA=Ubaldo Mendez) o por turno."""
+    try:
+        nombre_c = next((n for n, c in CAMPANAS.items() if c is campana), "")
+        clave = next((k.upper() for k in campana.get("claves", []) if k.lower().startswith("eb-")), "")
+        m = re.search(r"https://www\.aciertamax\.com/property/\S+", campana.get("cuerpo", ""))
+        liga = m.group(0).rstrip(".,)") if m else ""
+        cap = campana.get("caption", "")
+        operacion = "renta" if "RENTA" in cap and "VENTA" not in cap else "venta"
+        titulo = cap.split("\n")[0].strip()
+        try:
+            nombre = (memoria_leer(phone) or {}).get("NOMBRE") or "Cliente de WhatsApp"
+        except Exception:
+            nombre = "Cliente de WhatsApp"
+        preferido = os.environ.get(f"ASESOR_{nombre_c.upper()}", "").strip() or None
+        r = crm_crear_registro(phone, nombre, [{"titulo": titulo, "codigo_eb": clave, "liga": liga}],
+                               operacion=operacion, vendedor_preferido=preferido)
+        print(f"[MAX-CAMPAÑA] {nombre_c}: asesor avisado → {r}", flush=True)
+    except Exception as e:
+        print(f"[MAX-CAMPAÑA] No pude avisar al asesor: {e}", flush=True)
+        try:
+            notificar_interno(JAVIER_PHONE, f"🔔 Cliente {phone} pidió {campana.get('caption','').splitlines()[0]} por WhatsApp. "
+                              "No pude crear el expediente automático: atiéndelo por favor.",
+                              resumen_para_plantilla=f"Campaña: {phone} | {campana.get('caption','')[:60]}")
+        except Exception:
+            pass
 
 FICHAS_ENVIADAS = {}  # phone -> set de desarrollos ya enviados
 
