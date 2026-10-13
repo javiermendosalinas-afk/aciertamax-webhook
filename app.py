@@ -1911,7 +1911,7 @@ def enviar_email_vendedor(destinatario, asunto, cuerpo):
 def emails_vendedores():
     """Retorna dict nombre->email de los vendedores configurados."""
     return {
-        "Javier":  os.environ.get("EMAIL_JAVIER",  "javiermendosalinas@gmail.com"),
+        "Javier":  os.environ.get("EMAIL_JAVIER",  "javier.mendoza@acierta.com.mx"),
         "Ubaldo":  os.environ.get("EMAIL_UBALDO",  ""),
         "Leticia": os.environ.get("EMAIL_LETICIA", ""),
         "Gloria":  os.environ.get("EMAIL_GLORIA",  ""),
@@ -2238,7 +2238,7 @@ def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None)
     if email_v:
         enviar_email_vendedor(email_v, asunto_v, cuestionario)
     # Siempre enviar copia por email a Javier
-    email_javier = emails.get("Javier", "javiermendosalinas@gmail.com")
+    email_javier = emails.get("Javier", "javier.mendoza@acierta.com.mx")
     if email_javier and email_v != email_javier:
         asunto_copia = f"[AciertaMax COPIA] {icono} {folio} asignado a {nombre_v} | {nombre}"
         enviar_email_vendedor(email_javier, asunto_copia,
