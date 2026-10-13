@@ -1,3 +1,4 @@
+# Despliegue automatico verificado (prueba de conexion GitHub -> Render, 12-oct-2026)
 # -*- coding: utf-8 -*-
 """
 MAX 2.0 — Agente Inmobiliario de Acierta Max (ZMG)
