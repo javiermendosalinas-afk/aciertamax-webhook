@@ -5961,11 +5961,25 @@ def prueba_asesores():
         if any(f and f[0] == PRUEBA_ID for f in filas):
             for i, f in enumerate(filas, start=2):   # recupera pendientes tras un reinicio
                 if f and f[0] == PRUEBA_ID and len(f) > 5 and f[5] != "Sí":
-                    _PRUEBA_PEND[_ultimos10(f[3])] = {"nombre": f[2], "fila": i}
+                    _PRUEBA_PEND[_ultimos10(f[3])] = {"nombre": f[2], "fila": i, "enviado": f[4] != "NO SE PUDO"}
             print(f"[PRUEBA] Ya enviada; pendientes de confirmar: {len(_PRUEBA_PEND)}", flush=True)
             return
         resumen = []
         for nombre, tel in _prueba_destinatarios():
+            ok, via = _prueba_enviar_uno(nombre, tel)
+            sh.append_row([PRUEBA_ID, hora_gdl()[:16], nombre, _ultimos10(tel), (via if ok else "NO SE PUDO"), "", ""])
+            _PRUEBA_PEND[_ultimos10(tel)] = {"nombre": nombre, "fila": len(sh.get_all_values()), "enviado": ok}
+            resumen.append(f"{'✅' if ok else '❌'} {nombre} ({_ultimos10(tel)}){' por plantilla' if ok and via == 'plantilla' else ''}")
+        notificar_interno(JAVIER_PHONE, "🧪 Prueba de avisos a asesores enviada:\n" + "\n".join(resumen) +
+                          "\n\n❌ = WhatsApp no dejó entregarlo (no ha escrito al número en 24 h y la plantilla no está aprobada). "
+                          "Pídele que escriba 'hola' al 33 3377 7337 y le llega en ese momento. Escribe PRUEBA ASESORES para reenviar.",
+                          resumen_para_plantilla="Prueba de avisos a asesores enviada")
+        print("[PRUEBA] " + " | ".join(resumen), flush=True)
+    except Exception as e:
+        print(f"[PRUEBA] Error: {e}", flush=True)
+
+
+def _prueba_enviar_uno(nombre, tel):
             primero = nombre.split()[0]
             txt = (f"Hola {primero} 👋 Soy *Claude*, la inteligencia artificial que trabaja en representación de *MAX* "
                    "en la operación del CRM de *acierta.pro*.\n\n"
@@ -5979,22 +5993,37 @@ def prueba_asesores():
                 ok = wati_send_template_message(_normalizar_phone_wati(tel), "notificacion_lead",
                                                 [f"Prueba del CRM de acierta.pro para {primero}: Claude, en representación de MAX, confirma que te llegan los avisos. Responde 'sí, llegó' a este mensaje."])
                 via = "plantilla"
-            sh.append_row([PRUEBA_ID, hora_gdl()[:16], nombre, _ultimos10(tel), (via if ok else "NO SE PUDO"), "", ""])
-            _PRUEBA_PEND[_ultimos10(tel)] = {"nombre": nombre, "fila": len(sh.get_all_values())}
-            resumen.append(f"{'✅' if ok else '❌'} {nombre} ({_ultimos10(tel)}){' por plantilla' if ok and via == 'plantilla' else ''}")
-        notificar_interno(JAVIER_PHONE, "🧪 Prueba de avisos a asesores enviada:\n" + "\n".join(resumen) +
-                          "\n\nTe aviso aquí conforme cada uno confirme.", resumen_para_plantilla="Prueba de avisos a asesores enviada")
-        print("[PRUEBA] " + " | ".join(resumen), flush=True)
-    except Exception as e:
-        print(f"[PRUEBA] Error: {e}", flush=True)
+            print(f"[PRUEBA] {nombre} {_ultimos10(tel)} → {'enviado por ' + via if ok else 'NO SE PUDO (sin ventana de 24 h ni plantilla aprobada)'}", flush=True)
+            return ok, via
 
 
 def _prueba_respuesta(phone, text):
     """Si un asesor contesta la prueba: le agradece, lo marca y avisa a Javier. True si atendió el mensaje."""
     t10 = _ultimos10(phone)
+    if re.fullmatch(r"\s*prueba\s+asesores\s*", text or "", re.I) and t10 == _ultimos10(JAVIER_PHONE or ""):
+        if not _PRUEBA_PEND:
+            wati_send_text(phone, "Todos los asesores ya confirmaron la prueba de avisos. ✅", copiar=False)
+            return True
+        res = []
+        for tel10, p in list(_PRUEBA_PEND.items()):
+            ok, via = _prueba_enviar_uno(p["nombre"], tel10)
+            p["enviado"] = p.get("enviado") or ok
+            res.append(f"{'✅' if ok else '❌'} {p['nombre']}{' (plantilla)' if ok and via == 'plantilla' else ''}")
+        wati_send_text(phone, "🧪 Reenvié la prueba a quienes no han confirmado:\n" + "\n".join(res), copiar=False)
+        return True
     pend = _PRUEBA_PEND.get(t10)
     if not pend or len((text or "").strip()) > 80:
         return False
+    if not pend.get("enviado"):
+        # No le había llegado: ahora que escribió, su ventana de 24 h está abierta; se la mandamos
+        ok, _ = _prueba_enviar_uno(pend["nombre"], t10)
+        pend["enviado"] = ok
+        if ok:
+            try:
+                _sistema_hoja().update_cell(pend["fila"], COLS_SISTEMA.index("ENVIO") + 1, "texto (al escribir)")
+            except Exception:
+                pass
+        return ok
     _PRUEBA_PEND.pop(t10, None)
     try:
         sh = _sistema_hoja()
