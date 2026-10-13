@@ -1659,13 +1659,28 @@ def guardar_documento_cliente(phone, filename, nombre_archivo_destino, folio=Non
     return {"file_id": archivo["id"], "carpeta_url": url,
             "file_url": archivo.get("webViewLink", url)}
 
+_FORMATO_WA = {}   # últimos 10 dígitos -> número completo que WhatsApp sí aceptó (52… o 521…)
+
+
 def _normalizar_phone_wati(phone):
     """Wati necesita el numero con codigo de pais completo para mensajes salientes.
-    Si el numero tiene 10 digitos (formato local), agrega 521 al inicio."""
+    Si el numero tiene 10 digitos (formato local), agrega 521 al inicio, salvo que
+    ya sepamos que ese número funciona como 52 + 10 dígitos (cuentas nuevas de México)."""
     p = str(phone).strip().replace(" ","").replace("-","").replace("+","")
     if len(p) == 10:
-        return "521" + p
+        return _FORMATO_WA.get(p, "521" + p)
+    if len(p) == 13 and p.startswith("521") and p[3:] in _FORMATO_WA:
+        return _FORMATO_WA[p[3:]]
     return p
+
+
+def _formato_alterno(phone_norm):
+    """521XXXXXXXXXX <-> 52XXXXXXXXXX (México: cuentas antiguas vs. nuevas)."""
+    if len(phone_norm) == 13 and phone_norm.startswith("521"):
+        return "52" + phone_norm[3:]
+    if len(phone_norm) == 12 and phone_norm.startswith("52"):
+        return "521" + phone_norm[2:]
+    return None
 
 def _ultimos10(phone):
     """Los 10 dígitos del número de celular, sin importar cómo venga el
@@ -1766,6 +1781,17 @@ def wati_send_text(phone, text, copiar=True):
         pass
     print(f"[MAX-WATI] Envío a {phone_norm}: status={r.status_code} ok={ok} "
           f"cuerpo={str(cuerpo)[:300] if cuerpo is not None else r.text[:300]}", flush=True)
+    alterno = _formato_alterno(phone_norm)
+    if not ok and alterno and "not found" in str(cuerpo or "").lower() and not getattr(wati_send_text, "_reintento", False):
+        wati_send_text._reintento = True
+        try:
+            ok2 = wati_send_text(alterno, text, copiar=False)
+        finally:
+            wati_send_text._reintento = False
+        if ok2:
+            _FORMATO_WA[alterno[-10:]] = alterno
+            ok = True
+            phone_norm = alterno
     if ok and copiar:   # copiar=False: mensajes automáticos (Pulso, verificación) que no ameritan copia
         _reenviar_a_javier(phone, max_resp=text)
     return ok
@@ -1796,6 +1822,25 @@ def wati_send_template_message(phone, template_name, parametros_texto):
             not isinstance(cuerpo, dict) or cuerpo.get("result") is not False)
         print(f"[MAX-WATI-PLANTILLA] Envío plantilla '{template_name}' a {phone_norm}: "
               f"status={r.status_code} ok={ok} cuerpo={str(cuerpo)[:300]}", flush=True)
+        try:
+            receptores = cuerpo.get("receivers") or [] if isinstance(cuerpo, dict) else []
+            invalido = any(x.get("isValidWhatsAppNumber") is False for x in receptores)
+        except Exception:
+            invalido = False
+        if invalido:
+            ok = False
+            alterno = _formato_alterno(phone_norm)
+            if alterno and not getattr(wati_send_template_message, "_reintento", False):
+                wati_send_template_message._reintento = True
+                try:
+                    ok = wati_send_template_message(alterno, template_name, parametros_texto)
+                finally:
+                    wati_send_template_message._reintento = False
+                if ok:
+                    _FORMATO_WA[alterno[-10:]] = alterno
+        else:
+            if ok:
+                _FORMATO_WA.setdefault(phone_norm[-10:], phone_norm)
         return ok
     except Exception as e:
         print(f"[MAX-WATI-PLANTILLA] Error enviando plantilla a {phone_norm}: {e}", flush=True)
@@ -5933,7 +5978,7 @@ def _aviso_inicial(phone, texto):
 # PRUEBA DE AVISOS A ASESORES (una sola vez): Claude, en representación de MAX,
 # escribe a cada asesor y a Betty; registra el envío y su confirmación.
 # ------------------------------------------------------------------
-PRUEBA_ID = "prueba-asesores-2026-10-12"
+PRUEBA_ID = "prueba-asesores-2026-10-12b"
 HOJA_SISTEMA = "Sistema MAX"
 COLS_SISTEMA = ["CLAVE", "FECHA", "PERSONA", "TELEFONO", "ENVIO", "CONFIRMO", "RESPUESTA"]
 _PRUEBA_PEND = {}   # tel10 -> {"nombre":..., "fila":...}
