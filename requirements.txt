@@ -6,3 +6,4 @@ google-auth==2.34.0
 google-api-python-client==2.149.0
 fpdf2==2.8.9
 staticmap==0.5.7
+pynacl==1.5.0

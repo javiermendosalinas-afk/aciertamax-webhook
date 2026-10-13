@@ -6088,6 +6088,38 @@ def _prueba_respuesta(phone, text):
 threading.Thread(target=lambda: (time.sleep(45), prueba_asesores()), daemon=True).start()
 
 
+# ------------------------------------------------------------------
+# Copia única y cifrada de la llave de Google (cuenta de servicio) a los secretos de
+# GitHub de los sitios, para que sus actualizaciones automáticas lean Drive.
+# Se activa solo si existen GH_SECRETS_TOKEN y GH_SECRETS_REPOS; la llave nunca se imprime.
+# ------------------------------------------------------------------
+def _copiar_llave_a_github():
+    tok = os.environ.get("GH_SECRETS_TOKEN", "").strip()
+    repos = [r.strip() for r in os.environ.get("GH_SECRETS_REPOS", "").split(",") if r.strip()]
+    if not tok or not repos or not GOOGLE_CREDS_JSON:
+        return
+    import base64
+    try:
+        from nacl import encoding, public
+    except Exception as e:
+        print(f"[LLAVE-GITHUB] Falta pynacl: {e}", flush=True)
+        return
+    h = {"Authorization": f"Bearer {tok}", "Accept": "application/vnd.github+json"}
+    for repo in repos:
+        try:
+            k = requests.get(f"https://api.github.com/repos/{repo}/actions/secrets/public-key", headers=h, timeout=20).json()
+            caja = public.SealedBox(public.PublicKey(k["key"].encode(), encoding.Base64Encoder()))
+            cifrado = base64.b64encode(caja.encrypt(GOOGLE_CREDS_JSON.encode())).decode()
+            r = requests.put(f"https://api.github.com/repos/{repo}/actions/secrets/GOOGLE_CREDENTIALS", headers=h,
+                             json={"encrypted_value": cifrado, "key_id": k["key_id"]}, timeout=20)
+            print(f"[LLAVE-GITHUB] {repo}: HTTP {r.status_code} ({'guardada' if r.status_code in (201, 204) else 'ERROR'})", flush=True)
+        except Exception as e:
+            print(f"[LLAVE-GITHUB] {repo}: error {type(e).__name__}", flush=True)
+
+
+threading.Thread(target=lambda: (time.sleep(20), _copiar_llave_a_github()), daemon=True).start()
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
