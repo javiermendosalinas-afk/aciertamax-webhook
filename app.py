@@ -910,7 +910,7 @@ def _clientes_abiertos_de(vendedor_phone):
     out = []
     for idx in range(1, len(valores)):
         fila = _crm_fila_a_dict(headers, valores[idx])
-        if fila.get("VENDEDOR_PHONE") == vendedor_phone and fila.get("CONCLUIDO") != "Si":
+        if _ultimos10(fila.get("VENDEDOR_PHONE") or "") == _ultimos10(vendedor_phone or "") and fila.get("CONCLUIDO") != "Si":
             out.append({"folio": fila.get("FOLIO"), "nombre": fila.get("NOMBRE_CLIENTE") or "cliente",
                         "fase": fila.get("FASE") or "Atencion", "telefono": fila.get("TELEFONO_CLIENTE") or "sin registrar"})
     return out
