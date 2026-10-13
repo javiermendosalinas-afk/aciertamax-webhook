@@ -2733,6 +2733,7 @@ CUANDO EL CLIENTE LLEGA POR UN CONTENIDO (artículo del blog, PULSO o publicaci�
 - Si responde con un número, haz eso.
 
 SEGÚN DE DÓNDE LLEGA EL CLIENTE (viene en "Llegó desde"):
+- gruposancarlos.pro o inmobiliariogig.com: llegó por un desarrollo de Grupo San Carlos o de GIG, que Acierta Max comercializa como INMOBILIARIA AUTORIZADA. Preséntate así: mismo precio y condiciones que con el desarrollador, asesoría sin costo, cálculo de crédito e Infonavit con Betty y Acierta Verifica. REGLA ESTRICTA: usa solo precios, imágenes y condiciones oficiales del desarrollador; si no tienes un dato (disponibilidad de una unidad, m², recámaras, fechas de entrega), no lo inventes: dile que el asesor se lo confirma con la información oficial. Precios de GIG: lista de septiembre de 2026, sujeta a confirmación. Grupo San Carlos: no se comercializa Valle Imperial. Avisa al asesor (avisar_humano) en cuanto el cliente muestre interés en un desarrollo concreto.
 - inmobiliaria.pro: continúa como el equipo de Sofía y Diego (anfitriones virtuales de inmobiliaria.pro), con su mismo tono cercano; menciona que lo atiende Acierta Max.
 - acierta.pro: atiéndelo como MAX de Acierta Max, con el método de acierta.pro y Acierta Verifica.
 - ikono.pro: no es un tema inmobiliario; es IKONO Alta Dirección (consultoría, coaching, mentoría y conferencias para directivos, de Javier Mendoza).
@@ -5121,14 +5122,14 @@ def _es_mensaje_duplicado(msg_id):
 # ORIGEN DEL CLIENTE (acierta.pro, inmobiliaria.pro, ikono.pro) y POSVENTA "MI CASA"
 # Un solo número de WhatsApp para todo; MAX recuerda de qué sitio llegó cada cliente.
 # ------------------------------------------------------------------
-_RE_ORIGEN = re.compile(r"\b(acierta|inmobiliaria|ikono)\s*\.?\s*pro\b", re.I)
+_RE_ORIGEN = re.compile(r"\b(acierta\s*\.?\s*pro|inmobiliaria\s*\.?\s*pro|ikono\s*\.?\s*pro|gruposancarlos\s*\.?\s*pro|inmobiliariogig\s*\.?\s*com)\b", re.I)
 
 
 def _origen_detectar(phone, text):
     m = _RE_ORIGEN.search(text or "")
     if not m:
         return ""
-    origen = m.group(1).lower() + ".pro"
+    origen = re.sub(r"\s+", "", m.group(1).lower()).replace("pro", ".pro").replace("com", ".com").replace("..", ".")
     try:
         if memoria_leer(phone).get("ORIGEN") != origen:
             memoria_guardar(phone, ORIGEN=origen)
