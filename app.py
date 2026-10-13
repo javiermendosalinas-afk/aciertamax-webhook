@@ -5929,6 +5929,90 @@ def _aviso_inicial(phone, texto):
             pass
 
 
+# ------------------------------------------------------------------
+# PRUEBA DE AVISOS A ASESORES (una sola vez): Claude, en representación de MAX,
+# escribe a cada asesor y a Betty; registra el envío y su confirmación.
+# ------------------------------------------------------------------
+PRUEBA_ID = "prueba-asesores-2026-10-12"
+HOJA_SISTEMA = "Sistema MAX"
+COLS_SISTEMA = ["CLAVE", "FECHA", "PERSONA", "TELEFONO", "ENVIO", "CONFIRMO", "RESPUESTA"]
+_PRUEBA_PEND = {}   # tel10 -> {"nombre":..., "fila":...}
+
+
+def _sistema_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, HOJA_SISTEMA, COLS_SISTEMA) if libro else None
+
+
+def _prueba_destinatarios():
+    gente = [(v["nombre"], v["phone"]) for v in VENDEDORES]
+    credito = os.environ.get("CREDITO_PHONE", "").strip() or BETTY_PHONE
+    if credito and _ultimos10(credito) not in {_ultimos10(p) for _, p in gente}:
+        gente.append(("Betty", credito))
+    return gente
+
+
+def prueba_asesores():
+    try:
+        sh = _sistema_hoja()
+        if not sh:
+            return
+        filas = sh.get_all_values()[1:]
+        if any(f and f[0] == PRUEBA_ID for f in filas):
+            for i, f in enumerate(filas, start=2):   # recupera pendientes tras un reinicio
+                if f and f[0] == PRUEBA_ID and len(f) > 5 and f[5] != "Sí":
+                    _PRUEBA_PEND[_ultimos10(f[3])] = {"nombre": f[2], "fila": i}
+            print(f"[PRUEBA] Ya enviada; pendientes de confirmar: {len(_PRUEBA_PEND)}", flush=True)
+            return
+        resumen = []
+        for nombre, tel in _prueba_destinatarios():
+            primero = nombre.split()[0]
+            txt = (f"Hola {primero} 👋 Soy *Claude*, la inteligencia artificial que trabaja en representación de *MAX* "
+                   "en la operación del CRM de *acierta.pro*.\n\n"
+                   "Desde hoy arranca la publicidad pagada y por aquí te llegarán al instante los avisos de clientes nuevos "
+                   "(🟢 *LEAD INICIAL*) para que los contactes rápido.\n\n"
+                   "Estoy probando que los avisos te lleguen bien. 👉 *¿Me confirmas respondiendo a este mensaje?* "
+                   "Basta con un \"sí, llegó\". ¡Gracias!\n— Claude, en representación de MAX · Acierta Max")
+            ok = wati_send_text(tel, txt, copiar=False)
+            via = "texto"
+            if not ok:
+                ok = wati_send_template_message(_normalizar_phone_wati(tel), "notificacion_lead",
+                                                [f"Prueba del CRM de acierta.pro para {primero}: Claude, en representación de MAX, confirma que te llegan los avisos. Responde 'sí, llegó' a este mensaje."])
+                via = "plantilla"
+            sh.append_row([PRUEBA_ID, hora_gdl()[:16], nombre, _ultimos10(tel), (via if ok else "NO SE PUDO"), "", ""])
+            _PRUEBA_PEND[_ultimos10(tel)] = {"nombre": nombre, "fila": len(sh.get_all_values())}
+            resumen.append(f"{'✅' if ok else '❌'} {nombre} ({_ultimos10(tel)}){' por plantilla' if ok and via == 'plantilla' else ''}")
+        notificar_interno(JAVIER_PHONE, "🧪 Prueba de avisos a asesores enviada:\n" + "\n".join(resumen) +
+                          "\n\nTe aviso aquí conforme cada uno confirme.", resumen_para_plantilla="Prueba de avisos a asesores enviada")
+        print("[PRUEBA] " + " | ".join(resumen), flush=True)
+    except Exception as e:
+        print(f"[PRUEBA] Error: {e}", flush=True)
+
+
+def _prueba_respuesta(phone, text):
+    """Si un asesor contesta la prueba: le agradece, lo marca y avisa a Javier. True si atendió el mensaje."""
+    t10 = _ultimos10(phone)
+    pend = _PRUEBA_PEND.get(t10)
+    if not pend or len((text or "").strip()) > 80:
+        return False
+    _PRUEBA_PEND.pop(t10, None)
+    try:
+        sh = _sistema_hoja()
+        sh.update_cell(pend["fila"], COLS_SISTEMA.index("CONFIRMO") + 1, "Sí")
+        sh.update_cell(pend["fila"], COLS_SISTEMA.index("RESPUESTA") + 1, f"{hora_gdl()[:16]} · {text.strip()[:60]}")
+    except Exception as e:
+        print(f"[PRUEBA] No pude marcar la confirmación: {e}", flush=True)
+    wati_send_text(phone, f"¡Gracias, {pend['nombre'].split()[0]}! ✅ Confirmado: los avisos te llegan bien. "
+                          "Cuando veas un 🟢 LEAD INICIAL, salúdalo lo antes posible: el primer contacto rápido es el que cierra. 💪", copiar=False)
+    faltan = ", ".join(p["nombre"].split()[0] for p in _PRUEBA_PEND.values()) or "nadie, ¡todos confirmaron!"
+    notificar_interno(JAVIER_PHONE, f"✅ {pend['nombre']} confirmó la prueba de avisos («{text.strip()[:40]}»).\nFaltan: {faltan}",
+                      resumen_para_plantilla=f"{pend['nombre']} confirmó la prueba de avisos")
+    return True
+
+
+threading.Thread(target=lambda: (time.sleep(45), prueba_asesores()), daemon=True).start()
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
@@ -5970,6 +6054,8 @@ def webhook():
         return jsonify(ok=True, pulso=True)
     if text:
         try:
+            if _prueba_respuesta(phone, text):
+                return jsonify(ok=True, ruta="prueba_asesores")
             if _corredor_entrante(phone, text):
                 return jsonify(ok=True, ruta="corredor")
             if _oh_entrante(phone, text):
