@@ -717,7 +717,7 @@ def _crm_buscar_por_vendedor_pendiente(vendedor_phone, texto=""):
     activos = []
     for idx in range(len(valores) - 1, 0, -1):  # más reciente primero
         fila = _crm_fila_a_dict(headers, valores[idx])
-        if fila.get("VENDEDOR_PHONE") == vendedor_phone and fila.get("CONCLUIDO") != "Si":
+        if _ultimos10(fila.get("VENDEDOR_PHONE") or "") == _ultimos10(vendedor_phone or "") and fila.get("CONCLUIDO") != "Si":
             activos.append((idx + 1, fila))
     if not activos:
         return None, None, []
@@ -1002,7 +1002,7 @@ def _reporte_lunes_manejar(vendedor_phone, texto):
     if memoria_leer(vendedor_phone).get("REPORTE_LUNES_PENDIENTE") != "Si":
         return False
     memoria_guardar(vendedor_phone, REPORTE_LUNES_PENDIENTE="")
-    nombre_v = next((v.get("nombre", vendedor_phone) for v in VENDEDORES if v["phone"] == vendedor_phone), vendedor_phone)
+    nombre_v = next((v.get("nombre", vendedor_phone) for v in VENDEDORES if _ultimos10(v["phone"]) == _ultimos10(vendedor_phone or "")), vendedor_phone)
     if JAVIER_PERSONAL:
         notificar_interno(JAVIER_PERSONAL,
             f"📅 PLAN DEL LUNES -- {nombre_v}:\n\n{texto.strip()}",
