@@ -8554,8 +8554,34 @@ def _ficha_acierta(eb):
     if d.get("uid"):
         fotos = [f"https://cdn.neojaus.com/properties/{d['uid']}/{n}" for n in fotos]
     out = {k: v for k, v in d.items() if k not in ("fotos", "uid") and v}
+    if out.get("medios_banos") and not out.get("medio_banos"):
+        out["medio_banos"] = out.pop("medios_banos")
+    if out.get("anio") and not out.get("antiguedad"):
+        out["antiguedad"] = f"Construida en {out.pop('anio')}"
+    if out.get("piso") and not out.get("niveles"):
+        out["niveles"] = f"Piso {out.pop('piso')}"
+    am = out.get("amenidades")
+    if isinstance(am, str):
+        am = [x.strip(" '\"[]") for x in am.split(",") if x.strip(" '\"[]")]
+    if isinstance(am, list):
+        out["amenidades"] = [AMENIDADES_ES.get(str(x).lower(), str(x).replace("_", " ").capitalize()) for x in am][:24]
     out["fotos"] = [f for f in fotos if isinstance(f, str) and f.startswith("http")][:12]
     return out
+
+
+AMENIDADES_ES = {
+    "controlled_access_entry": "Acceso controlado", "gym": "Gimnasio", "kids_playground": "Juegos infantiles", "multipurpose_room": "Salón de usos múltiples",
+    "pool": "Alberca", "swimming_pool": "Alberca", "garden": "Jardín", "roof_garden": "Roof garden", "rooftop": "Roof top", "security_24h": "Seguridad 24 horas",
+    "security": "Vigilancia", "elevator": "Elevador", "grill": "Asador", "bbq_area": "Área de asadores", "visitor_parking": "Estacionamiento de visitas",
+    "parking_visitors": "Estacionamiento de visitas", "terrace": "Terraza", "storage": "Bodega", "laundry_room": "Cuarto de lavado", "pet_friendly": "Acepta mascotas",
+    "business_center": "Business center", "coworking": "Coworking", "spa": "Spa", "jacuzzi": "Jacuzzi", "sauna": "Sauna", "steam_room": "Vapor",
+    "tennis_court": "Cancha de tenis", "paddle_court": "Cancha de pádel", "basketball_court": "Cancha de básquetbol", "soccer_field": "Cancha de futbol",
+    "cinema": "Cine", "game_room": "Salón de juegos", "playground": "Juegos infantiles", "club_house": "Casa club", "clubhouse": "Casa club",
+    "lobby": "Lobby", "concierge": "Recepción", "air_conditioning": "Aire acondicionado", "heating": "Calefacción", "furnished": "Amueblado",
+    "fireplace": "Chimenea", "balcony": "Balcón", "study": "Estudio", "service_room": "Cuarto de servicio", "cistern": "Cisterna", "water_tank": "Tinaco",
+    "solar_panels": "Paneles solares", "solar_heater": "Calentador solar", "green_areas": "Áreas verdes", "jogging_track": "Pista para correr",
+    "electric_car_charger": "Cargador para autos eléctricos", "gated_community": "Coto privado", "patio": "Patio", "kitchen_integral": "Cocina integral",
+}
 
 
 def _detalle_con_respaldo(p):
@@ -8563,11 +8589,16 @@ def _detalle_con_respaldo(p):
         d = _eb_detalle_completo(p) or {}
     except Exception:
         d = {}
-    if not d.get("fotos") or not d.get("descripcion"):
+    if not d.get("fotos") or not d.get("descripcion") or not d.get("amenidades"):
         extra = _ficha_acierta(p.get("eb"))
         for k, v in extra.items():
             if v and not d.get(k):
                 d[k] = v
+    for k in ("recamaras", "banos", "titulo"):
+        if not d.get(k) and p.get(k):
+            d[k] = p.get(k)
+    if not d.get("ubicacion"):
+        d["ubicacion"] = ", ".join(x for x in (p.get("colonia"), p.get("municipio")) if x)
     return d
 
 
@@ -8677,7 +8708,7 @@ def api_asesor_recomendar():
     except Exception as e:
         print(f"[MAX-ASESOR] Error al redactar recomendación: {type(e).__name__}: {e}", flush=True)
         return _camino_resp({"ok": False, "error": "No se pudo redactar en este momento. Intenta de nuevo."}, 502)
-    print(f"[MAX-ASESOR] Recomendación redactada para {a} con {len(datos)} propiedades", flush=True)
+    print(f"[MAX-ASESOR] Recomendación redactada para {a.get('nombre')} con {len(datos)} propiedades", flush=True)
     return _camino_resp({"ok": True, "propiedades": res.get("propiedades", []), "recomendacion": str(res.get("recomendacion", ""))[:900],
                          "orden": res.get("orden", [])})
 
