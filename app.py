@@ -8660,7 +8660,7 @@ def api_asesor_recomendar():
     a = _asesor_de_token(d.get("token"))
     if not a:
         return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
-    props = (d.get("propiedades") or [])[:8]
+    props = (d.get("propiedades") or [])[:10]
     if not props:
         return _camino_resp({"ok": False, "error": "Agrega al menos una propiedad."}, 400)
     campos = ("eb", "operacion", "tipo", "titulo", "precio", "colonia", "municipio", "recamaras", "banos", "m2", "terreno", "construccion", "niveles", "descripcion")

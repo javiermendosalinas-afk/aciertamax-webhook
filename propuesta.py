@@ -376,21 +376,25 @@ def generar_pdf(datos, detalle_fn=None):
     if pdf.get_y() + 120 > 279:
         pdf.add_page()
     pdf.ln(2)
-    parrafo("Le invito a revisarlas con calma. Su retroalimentación es muy valiosa: respóndame por WhatsApp "
-            "con las claves EB que le interesen y programamos una visita en el día y horario que mejor le acomode."
+    parrafo("Le invito a revisarlas con calma. Cuando alguna le interese, avíseme por WhatsApp con su clave y "
+            "agendamos la visita de forma personalizada: programamos una llamada para platicar el recorrido y, antes de "
+            "confirmarle, verificamos que la propiedad siga disponible (no somos los únicos que la comercializan) y que "
+            "contemos con las llaves y el acceso. Así su visita es segura y no pierde su tiempo."
             if us else
-            "Te invito a revisarlas con calma. Tu retroalimentación es muy valiosa: respóndeme por WhatsApp "
-            "con las claves EB que te interesen y programamos una visita en el día y horario que mejor te acomode.")
+            "Te invito a revisarlas con calma. Cuando alguna te interese, avísame por WhatsApp con su clave y "
+            "agendamos la visita de forma personalizada: programamos una llamada para platicar el recorrido y, antes de "
+            "confirmarte, verificamos que la propiedad siga disponible (no somos los únicos que la comercializan) y que "
+            "contemos con las llaves y el acceso. Así tu visita es segura y no pierdes tu tiempo.")
     # Recuadro Verifica
     y = pdf.get_y() + 1
     pdf.set_fill_color(*CREAM)
-    pdf.rect(18, y, W, 25, "F")
+    pdf.rect(18, y, W, 31, "F")
     pdf.set_fill_color(*RED)
-    pdf.rect(18, y, 2.2, 25, "F")
+    pdf.rect(18, y, 2.2, 31, "F")
     pdf.set_xy(24, y + 2.5)
     pdf.set_font("Poppins", "B", 10.5)
     pdf.set_text_color(*NAVY)
-    pdf.cell(W - 10, 6, "Antes de firmar, verifica.", new_x="LEFT", new_y="NEXT")
+    pdf.cell(W - 10, 6, "Antes de firmar, verifique." if us else "Antes de firmar, verifica.", new_x="LEFT", new_y="NEXT")
     pdf.set_font("Poppins", "", 8.8)
     pdf.set_text_color(*INK)
     pdf.multi_cell(W - 10, 4.6,
@@ -400,10 +404,20 @@ def generar_pdf(datos, detalle_fn=None):
                    ("Te recomiendo Acierta Verifica, nuestra revisión física y documental preventiva del inmueble, "
                     "desde $45 por m² (mínimo $3,500 MXN en la ZMG). Si compras o rentas esa propiedad con "
                     "Acierta Max, te bonificamos su costo."), new_x="LMARGIN", new_y="NEXT")
-    pdf.set_y(y + 29)
-    parrafo("En Acierta Max somos profesionales inmobiliarios. Operamos conforme a la NOM-247-SE-2021, con "
-            "contratos de adhesión registrados ante PROFECO, y somos miembros de la Asociación Mexicana de "
-            "Profesionales Inmobiliarios (AMPI) y, en Estados Unidos, de la National Association of REALTORS® (NAR).")
+    pdf.set_x(24)
+    pdf.set_font("PoppinsM", "", 8.8)
+    pdf.set_text_color(*NAVY)
+    pdf.cell(W - 10, 5, "Vea un reporte de muestra y cotice: acierta.pro/verifica.html ›" if us else
+             "Ve un reporte de muestra y cotiza: acierta.pro/verifica.html ›", link="https://acierta.pro/verifica.html")
+    pdf.set_y(y + 35)
+    parrafo("En Acierta Max somos profesionales inmobiliarios. En todo el proceso actuamos conforme a la ley, "
+            "respetando la NOM-247-SE-2021 y los lineamientos de PROFECO, con contratos de adhesión registrados, y somos "
+            "miembros de la Asociación Mexicana de Profesionales Inmobiliarios (AMPI) y, en Estados Unidos, de la "
+            "National Association of REALTORS® (NAR).")
+    parrafo("Si tiene alguna recomendación o comentario sobre nuestro servicio, le agradeceremos que nos lo haga saber "
+            "por WhatsApp al 33 2577 3277." if us else
+            "Si tienes alguna recomendación o comentario sobre nuestro servicio, te agradeceremos que nos lo hagas saber "
+            "por WhatsApp al 33 2577 3277.")
     pdf.ln(1)
     pdf.set_font("Poppins", "", 9.5)
     pdf.cell(W, 5, "Atentamente,", new_x="LMARGIN", new_y="NEXT")
@@ -541,7 +555,7 @@ def _anexo_verifica(pdf, usted=True):
                           "En temas legales complejos canalizamos con notario o abogado.", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(3)
     pdf.set_font("PoppinsM", "", 10); pdf.set_text_color(*NAVY)
-    pdf.cell(W, 6, "Más información: acierta.pro/verifica.html · WhatsApp 33 3377 7337", link="https://acierta.pro/verifica.html", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(W, 6, "Reporte de muestra y cotización: acierta.pro/verifica.html · WhatsApp 33 3377 7337", link="https://acierta.pro/verifica.html", new_x="LMARGIN", new_y="NEXT")
 
 
 def _anexo_fichas(pdf, props, detalles, galerias, fotos_principales):
