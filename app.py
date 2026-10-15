@@ -8713,6 +8713,125 @@ def api_asesor_recomendar():
                          "orden": res.get("orden", [])})
 
 
+# ------------------------------------------------------------------
+# Originadores: quién publicó cada propiedad (inmobiliaria, asesor, teléfono).
+# Se construye poco a poco desde el Portal del coach. En NeoJaus, un registro
+# identifica todas las propiedades del mismo asesor (código interno "agente").
+# El teléfono se completa con el directorio de inmobiliarias (pestaña "Envío").
+# Todo es privado: vive en la hoja de MAX, nunca en el sitio público.
+# ------------------------------------------------------------------
+ORIG_HOJA = "Originadores"
+ORIG_COLUMNAS = ["CLAVE", "AGENTE_NEOJAUS", "INMOBILIARIA", "ASESOR", "TELEFONO", "NOTAS", "REGISTRO", "FECHA"]
+DIRECTORIO_ID = "1fKudPDoznm76sdsDWElLGsyl-FtqAs03mW2cSUw_tYk"
+_DIR_CACHE = {"t": 0, "filas": []}
+
+
+def _orig_libro():
+    import gspread
+    from google.oauth2.service_account import Credentials
+    cr = Credentials.from_service_account_info(json.loads(GOOGLE_CREDS_JSON), scopes=["https://www.googleapis.com/auth/spreadsheets"])
+    return gspread.authorize(cr)
+
+
+def _orig_sheet():
+    libro = _orig_libro().open_by_key(SHEET_ID)
+    try:
+        return libro.worksheet(ORIG_HOJA)
+    except Exception:
+        sh = libro.add_worksheet(title=ORIG_HOJA, rows=2000, cols=len(ORIG_COLUMNAS))
+        sh.append_row(ORIG_COLUMNAS)
+        return sh
+
+
+def _clave_inmob(n):
+    s = unicodedata.normalize("NFKD", str(n or "")).encode("ascii", "ignore").decode().lower()
+    s = re.sub(r"\b(inmobiliaria|inmobiliario|grupo|bienes raices|real estate|realty|inmuebles|asesores|s\.?a\.? de c\.?v\.?|de|del|la|el|the)\b", " ", s)
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+def _directorio():
+    """Inmobiliarias con su contacto, de la pestaña "Envío" del directorio (caché de 30 minutos)."""
+    if time.time() - _DIR_CACHE["t"] < 1800 and _DIR_CACHE["filas"]:
+        return _DIR_CACHE["filas"]
+    try:
+        v = _orig_libro().open_by_key(DIRECTORIO_ID).worksheet("Envío").get_all_values()
+        h = v[0]
+        filas = [dict(zip(h, r)) for r in v[1:] if any(r)]
+        _DIR_CACHE.update(t=time.time(), filas=filas)
+    except Exception as e:
+        print(f"[MAX-ORIG] Directorio no disponible: {type(e).__name__}", flush=True)
+    return _DIR_CACHE["filas"]
+
+
+def _contacto_directorio(inmobiliaria):
+    k = _clave_inmob(inmobiliaria)
+    if not k:
+        return {}
+    for f in _directorio():
+        if f.get("Clave") == k or _clave_inmob(f.get("Inmobiliaria")) == k:
+            return {"inmobiliaria": f.get("Inmobiliaria", ""), "contacto": f.get("Contacto", ""),
+                    "telefono": f.get("Celular / WhatsApp") or f.get("Teléfono oficina") or "", "correo": f.get("Correo", ""),
+                    "estatus_eb": f.get("Estatus EasyBroker", ""), "enviado": f.get("Enviado", "")}
+    return {}
+
+
+@app.route("/api/asesor/originadores", methods=["POST", "OPTIONS"])
+def api_asesor_originadores():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(60_000) or {}
+    a = _asesor_de_token(d.get("token"))
+    if not a:
+        return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
+    items = (d.get("propiedades") or [])[:12]          # [{eb, agente}]
+    try:
+        v = _orig_sheet().get_all_values()
+    except Exception as e:
+        print(f"[MAX-ORIG] Hoja no disponible: {type(e).__name__}", flush=True)
+        v = [ORIG_COLUMNAS]
+    h = v[0] if v else ORIG_COLUMNAS
+    regs = [dict(zip(h, r)) for r in v[1:]]
+    res = {}
+    for it in items:
+        eb, ag = str(it.get("eb") or "").upper(), str(it.get("agente") or "")
+        r = next((x for x in reversed(regs) if x.get("CLAVE") == eb), None) or (next((x for x in reversed(regs) if ag and x.get("AGENTE_NEOJAUS") == ag), None))
+        if r:
+            info = {"inmobiliaria": r.get("INMOBILIARIA", ""), "asesor": r.get("ASESOR", ""), "telefono": r.get("TELEFONO", ""), "notas": r.get("NOTAS", ""),
+                    "fuente": "mismo asesor en NeoJaus" if r.get("CLAVE") != eb else "registrado"}
+            if not info["telefono"]:
+                dct = _contacto_directorio(info["inmobiliaria"])
+                info["telefono"] = dct.get("telefono", ""); info["correo"] = dct.get("correo", "")
+            res[eb] = info
+    return _camino_resp({"ok": True, "originadores": res})
+
+
+@app.route("/api/asesor/originador/guardar", methods=["POST", "OPTIONS"])
+def api_asesor_originador_guardar():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(20_000) or {}
+    a = _asesor_de_token(d.get("token"))
+    if not a:
+        return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
+    eb = str(d.get("eb") or "").upper()
+    inmob = _camino_limpiar(d.get("inmobiliaria"), 120)
+    if not eb or not inmob:
+        return _camino_resp({"ok": False, "error": "Escribe al menos el nombre de la inmobiliaria."}, 400)
+    tel = re.sub(r"\D", "", str(d.get("telefono") or ""))[-10:]
+    dct = _contacto_directorio(inmob) if not tel else {}
+    if not tel:
+        tel = re.sub(r"\D", "", dct.get("telefono", ""))[-10:]
+    fila = [eb, str(d.get("agente") or ""), dct.get("inmobiliaria") or inmob, _camino_limpiar(d.get("asesor"), 80), tel,
+            _camino_limpiar(d.get("notas"), 200), a.get("nombre", ""), hora_gdl()]
+    try:
+        _orig_sheet().append_row(fila)
+    except Exception as e:
+        print(f"[MAX-ORIG] No se pudo guardar: {type(e).__name__}", flush=True)
+        return _camino_resp({"ok": False, "error": "No se pudo guardar. Intenta de nuevo."}, 500)
+    print(f"[MAX-ORIG] Originador de {eb} registrado por {a.get('nombre')}", flush=True)
+    return _camino_resp({"ok": True, "inmobiliaria": fila[2], "telefono": tel, "del_directorio": bool(dct)})
+
+
 @app.route("/api/asesor/pdf/<pid>", methods=["GET"])
 def api_asesor_pdf(pid):
     item = _PROPUESTAS_PDF.get(pid)
