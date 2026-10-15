@@ -6138,6 +6138,29 @@ def _copiar_llave_a_github():
 threading.Thread(target=lambda: (time.sleep(20), _copiar_llave_a_github()), daemon=True).start()
 
 
+def _diag_originador_eb():
+    """Diagnóstico temporal: qué campos de originador entrega la API de EasyBroker (solo nombres de campos)."""
+    time.sleep(25)
+    for eb in ("EB-XD5404", "EB-VI0283"):
+        for ruta in (f"/mls_properties/{eb}", f"/properties/{eb}"):
+            try:
+                r = requests.get(EB_API + ruta, headers=eb_headers(), timeout=10)
+                if r.status_code != 200:
+                    print(f"[DIAG-ORIG] {eb} {ruta}: HTTP {r.status_code}", flush=True); continue
+                j = r.json()
+                print(f"[DIAG-ORIG] {eb} {ruta}: campos={sorted(j.keys())}", flush=True)
+                for k in ("agent", "agency", "organization", "broker", "company", "owner", "contact", "user"):
+                    if isinstance(j.get(k), dict):
+                        print(f"[DIAG-ORIG]   {k}: subcampos={sorted(j[k].keys())} nombre={str(j[k].get('name') or j[k].get('full_name') or '')[:60]}", flush=True)
+                    elif j.get(k):
+                        print(f"[DIAG-ORIG]   {k}: {str(j[k])[:60]}", flush=True)
+            except Exception as e:
+                print(f"[DIAG-ORIG] {eb} {ruta}: error {type(e).__name__}", flush=True)
+
+
+threading.Thread(target=_diag_originador_eb, daemon=True).start()
+
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
