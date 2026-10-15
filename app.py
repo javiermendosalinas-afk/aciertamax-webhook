@@ -5735,7 +5735,7 @@ HOJA_OH = "Asistentes Open House"
 COLS_OH = ["FOLIO", "FECHA", "NOMBRE", "TELEFONO", "PERSONAS", "HORARIO", "PAGO", "CORREDOR", "RECORDATORIOS", "ESTATUS"]
 OH_FECHA = "2026-10-31"
 OH_DIRECCION = "Cobre 4232, Lomas de la Victoria, Tlaquepaque"
-OH_MAPA = "https://www.google.com/maps/search/?api=1&query=Cobre%204232%2C%20Lomas%20de%20la%20Victoria%2C%20Tlaquepaque%2C%20Jalisco"
+OH_MAPA = "https://www.google.com/maps/search/?api=1&query=BellaVittoria%20Residencial%20Cobre%204232&query_place_id=ChIJBfJ4Z2WtKIQRyzWSZl3_wRc"
 _OH_ESTADO = {}
 _OH_HORAS = {"1": "10:00", "2": "11:00", "3": "12:00", "4": "13:00"}
 _OH_PAGO = {"1": "Infonavit o Cofinavit", "2": "crédito bancario", "3": "contado", "4": "aún no sabe"}
