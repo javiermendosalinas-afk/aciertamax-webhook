@@ -5574,8 +5574,8 @@ threading.Thread(target=_loop_posventa, daemon=True).start()
 # ------------------------------------------------------------------
 HOJA_CORREDORES = "Registro corredores"
 COLS_CORREDORES = ["FOLIO", "FECHA", "CORREDOR", "INMOBILIARIA", "CORREDOR_TEL", "CLIENTE", "CLIENTE_ULT4", "DESARROLLO", "VIGENCIA", "ESTATUS", "NOTAS"]
-CORREDOR_DESARROLLO = "Open House Bella Vittoria (31 oct 2026)"
-CORREDOR_VIGENCIA = "Apartado el 31-oct-2026 o hasta el 15-nov-2026 y compra concretada"
+CORREDOR_DESARROLLO = "Bella Vittoria · promoción corredores 4% (octubre 2026)"
+CORREDOR_VIGENCIA = "Apartado del 14 al 31-oct-2026; escritura a más tardar el 05-ene-2027; 4% IVA incluido, pagado al recibir el pago total"
 _CORR_ESTADO = {}   # tel10 -> {"paso":..., "datos": {...}, "expira": ts}
 
 
@@ -5655,12 +5655,17 @@ def _corredor_entrante(phone, text):
             return _corr_cerrar(phone, datos)
         if conocido:
             _CORR_ESTADO[t10] = {"paso": "cliente", "datos": datos, "expira": time.time() + 1800}
-            wati_send_text(phone, f"¡Hola, {datos['corredor'].split()[0]}! 🤝 Registremos a tu cliente para el *Open House de Bella Vittoria* (sábado 31 de octubre) "
-                                  "con *4% de comisión*.\n\n¿Cuál es el *nombre completo de tu cliente*?", copiar=False)
+            wati_send_text(phone, f"¡Hola, {datos['corredor'].split()[0]}! 🤝 Registremos a tu cliente para *Bella Vittoria* "
+                                  "con *4% de comisión* (apartados del 14 al 31 de octubre).\n\n¿Cuál es el *nombre completo de tu cliente*?", copiar=False)
         else:
             _CORR_ESTADO[t10] = {"paso": "corredor", "datos": datos, "expira": time.time() + 1800}
-            wati_send_text(phone, "¡Hola! 🤝 Registremos a tu cliente para el *Open House de Bella Vittoria* (sábado 31 de octubre, 10:00 a 14:00) "
-                                  "con *4% de comisión* en lugar del 2% habitual.\n\n1️⃣ ¿Cuál es *tu nombre completo* y tu *inmobiliaria*? "
+            wati_send_text(phone, "¡Hola! 🤝 Este mes compartimos *4% de comisión (IVA incluido)* en *Bella Vittoria*, en lugar del 2% habitual, "
+                                  "para clientes que aparten del 14 al 31 de octubre de 2026.\n\n" + "🏡 *Bella Vittoria* · Cobre 4232, Lomas de la Victoria, Tlaquepaque · *entrega inmediata*\n"
+                          "• 16 departamentos disponibles: 14 de *71 m² a $3,450,000* y 2 de *78 m² a $3,800,000*\n"
+                          "• Apartado con *$100,000* · Infonavit, Cofinavit, crédito bancario o contado\n"
+                          "• Contrato conforme a la NOM-247 y Profeco\n"
+                          "• Sitio: bellavittoria.vip · Fichas para tu bolsa: EasyBroker *EB-VI0283* · NeoJaus *NJ-B341*\n\n" +
+                                  "Registremos a tu cliente:\n1️⃣ ¿Cuál es *tu nombre completo* y tu *inmobiliaria*? "
                                   "(por ejemplo: Juan Pérez, Inmobiliaria Las Águilas)", copiar=False)
         return True
     d, paso = est["datos"], est["paso"]
@@ -5704,9 +5709,10 @@ def _corr_cerrar(phone, d):
                               "Le avisé a Javier Mendoza para revisarlo contigo. 🙏", copiar=False)
         return True
     wati_send_text(phone, f"✅ *Registro {folio}*\nCorredor: {d['corredor']} · {d['inmobiliaria']}\nCliente: {d['cliente']} (tel. ···{d['ult4']})\n"
-                          f"Desarrollo: {CORREDOR_DESARROLLO}\n\n💰 *4% de comisión* si tu cliente aparta durante el Open House o en los 15 días siguientes "
-                          "(hasta el 15 de noviembre) y concreta la compra. Las condiciones finales se confirman por escrito con Acierta Max.\n\n"
-                          "📍 Sábado 31 de octubre, 10:00 a 14:00, Cobre 4232, Lomas de la Victoria.\n"
+                          f"Desarrollo: {CORREDOR_DESARROLLO}\n\n💰 *4% de comisión, IVA incluido*, si tu cliente aparta del 14 al 31 de octubre de 2026 y escritura a más tardar "
+                          "el 5 de enero de 2027. La comisión se paga al recibir el pago total, contra tu factura. Las condiciones se confirman por escrito con Acierta Max.\n\n"
+                          "📞 Para coordinar visitas y dar seguimiento, comunícate con *Javier Mendoza* al *33 2497 0007*.\n\n"
+                          "📍 Open House: sábado 31 de octubre, 10:00 a 14:00, Cobre 4232, Lomas de la Victoria.\n"
                           "Para registrar a otro cliente, escribe *CORREDOR* otra vez. 🙌", copiar=False)
     return True
 
