@@ -365,6 +365,11 @@ def generar_pdf(datos, detalle_fn=None):
         pdf.cell(32, 5, "Ver ficha completa ›", link=ficha)
         if p.get("lat") and p.get("lon"):
             pdf.cell(32, 5, "Ver en el mapa ›", link=f"https://www.google.com/maps?q={p['lat']},{p['lon']}")
+        pdf.ln(5)
+        pdf.set_x(x2)
+        pdf.set_font("Poppins", "", 7.2)
+        pdf.set_text_color(110, 116, 126)
+        pdf.cell(w2 - 4, 4, ficha.replace("https://", ""), link=ficha)
         pdf.set_y(max(pdf.get_y() + 6, yc + 41.3 + 5))
 
     # Cierre
@@ -437,7 +442,42 @@ def generar_pdf(datos, detalle_fn=None):
 
     if anexo:
         _anexo_fichas(pdf, props, detalles, galerias, fotos)
+    _anexo_verifica(pdf, datos.get("trato") == "usted")
     return bytes(pdf.output())
+
+
+def _anexo_verifica(pdf, usted=True):
+    """Página final: qué es Acierta Verifica y qué revisa."""
+    W = 174
+    pdf.add_page()
+    pdf.set_font("Poppins", "B", 16); pdf.set_text_color(*NAVY)
+    pdf.cell(W, 9, "Anexo · Acierta Verifica", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Poppins", "", 10); pdf.set_text_color(*INK)
+    su, tu = ("su", "usted") if usted else ("tu", "tú")
+    intro = (f"Antes de apartar o firmar, {'le' if usted else 'te'} recomendamos Acierta Verifica: una revisión física y documental "
+             f"preventiva del inmueble, para que {tu} decida con información y sin sorpresas después de la compra o de la firma del contrato.")
+    pdf.multi_cell(W, 5.4, intro, new_x="LMARGIN", new_y="NEXT"); pdf.ln(3)
+    bloques = [
+        ("Revisión física", ["Estructura visible: grietas, asentamientos y desniveles.", "Humedad y filtraciones, con mediciones comparadas contra puntos sanos.",
+                             "Instalación eléctrica, hidráulica y sanitaria, y gas.", "Impermeabilización, ventanas, puertas, acabados y equipos incluidos."]),
+        ("Revisión documental", ["Escritura o título de propiedad y datos del vendedor.", "Predial y agua al corriente.",
+                                 "Libertad de gravámenes y, si aplica, régimen de condominio y reglamento.", "Congruencia entre la superficie de la escritura y la construida."]),
+        ("Lo que recibe" if usted else "Lo que recibes", ["Un reporte con fotografías, hallazgos y su nivel de importancia.",
+                                                        "Recomendaciones claras: qué negociar, qué reparar y qué consultar con un especialista."]),
+    ]
+    for titulo, puntos in bloques:
+        pdf.set_font("Poppins", "B", 11); pdf.set_text_color(*NAVY)
+        pdf.cell(W, 7, titulo, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Poppins", "", 9.6); pdf.set_text_color(*INK)
+        for pt in puntos:
+            pdf.multi_cell(W, 5.2, "•  " + pt, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+    pdf.set_font("Poppins", "", 8.6); pdf.set_text_color(110, 116, 126)
+    pdf.multi_cell(W, 4.6, "Acierta Verifica es una revisión preventiva; no sustituye un peritaje, un avalúo ni una opinión jurídica. "
+                          "En temas legales complejos canalizamos con notario o abogado.", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+    pdf.set_font("PoppinsM", "", 10); pdf.set_text_color(*NAVY)
+    pdf.cell(W, 6, "Más información: acierta.pro/verifica.html · WhatsApp 33 3377 7337", link="https://acierta.pro/verifica.html", new_x="LMARGIN", new_y="NEXT")
 
 
 def _anexo_fichas(pdf, props, detalles, galerias, fotos_principales):

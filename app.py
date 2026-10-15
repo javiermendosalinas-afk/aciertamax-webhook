@@ -8538,6 +8538,39 @@ def _eb_json_a_detalle(j):
     }
 
 
+def _ficha_acierta(eb):
+    """Detalle publicado en acierta.pro (herramientas/eb|neojaus/fichas/XX.json): descripción y fotos."""
+    eb = (eb or "").upper()
+    if not eb:
+        return {}
+    archivo = re.sub(r"[^a-z0-9]", "0", eb[-2:].lower())
+    carpeta = "neojaus" if eb.startswith("NJ-") else "eb"
+    try:
+        r = requests.get(f"https://acierta.pro/herramientas/{carpeta}/fichas/{archivo}.json", timeout=10)
+        d = (r.json() or {}).get(eb) or {}
+    except Exception:
+        return {}
+    fotos = d.get("fotos") or []
+    if d.get("uid"):
+        fotos = [f"https://cdn.neojaus.com/properties/{d['uid']}/{n}" for n in fotos]
+    out = {k: v for k, v in d.items() if k not in ("fotos", "uid") and v}
+    out["fotos"] = [f for f in fotos if isinstance(f, str) and f.startswith("http")][:12]
+    return out
+
+
+def _detalle_con_respaldo(p):
+    try:
+        d = _eb_detalle_completo(p) or {}
+    except Exception:
+        d = {}
+    if not d.get("fotos") or not d.get("descripcion"):
+        extra = _ficha_acierta(p.get("eb"))
+        for k, v in extra.items():
+            if v and not d.get(k):
+                d[k] = v
+    return d
+
+
 def _eb_detalle_completo(p):
     """Ficha completa para el anexo del PDF. 1) API de EasyBroker (propias de
     Acierta Max); 2) API de la bolsa MLS (compartidas); 3) página pública en
@@ -8711,9 +8744,18 @@ def api_asesor_propuesta():
     props, faltan = [], []
     for item in (d.get("propiedades") or [])[:12]:
         base = _prop_de_inventario(item.get("eb"), item.get("operacion", ""))
+        if not base and item.get("eb") and (item.get("titulo") or item.get("precio")):
+            eb_i = str(item.get("eb")).upper()
+            base = {"eb": eb_i, "operacion": item.get("operacion", ""), "titulo": _camino_limpiar(item.get("titulo"), 160), "tipo": item.get("tipo", ""),
+                    "precio": item.get("precio"), "municipio": item.get("municipio", ""), "colonia": item.get("colonia", ""), "recamaras": item.get("recamaras"),
+                    "banos": item.get("banos"), "m2": item.get("m2"), "foto": item.get("foto", ""), "lat": item.get("lat"), "lon": item.get("lon"),
+                    "liga": item.get("liga") or ""}
+            print(f"[MAX-ASESOR] {eb_i} tomada de los datos de acierta.pro", flush=True)
         if not base:
             faltan.append(str(item.get("eb")))
             continue
+        if not base.get("foto") and item.get("foto"):
+            base["foto"] = item.get("foto")
         base["resumen"] = _camino_limpiar(item.get("resumen"), 600)
         base["ventajas"] = [_camino_limpiar(str(v).strip(" •-*\t"), 160).lstrip("'")
                             for v in (item.get("ventajas") or [])[:4] if str(v).strip(" •-*\t")]
@@ -8732,7 +8774,7 @@ def api_asesor_propuesta():
              "propiedades": props}
     try:
         datos["anexo"] = d.get("anexo", True) is not False
-        pdf = _prop.generar_pdf(datos, detalle_fn=_eb_detalle_completo)
+        pdf = _prop.generar_pdf(datos, detalle_fn=_detalle_con_respaldo)
     except Exception as e:
         print(f"[MAX-ASESOR] Error generando PDF: {e}", flush=True)
         return _camino_resp({"ok": False, "error": "No se pudo generar el PDF. Intenta de nuevo."}, 500)
