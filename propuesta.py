@@ -440,10 +440,74 @@ def generar_pdf(datos, detalle_fn=None):
     pdf.set_text_color(*NAVY)
     pdf.cell(W, 4, "Contratos de adhesión registrados ante PROFECO · Conforme a la NOM-247-SE-2021", align="C")
 
+    if len(props) >= 2:
+        _comparativo(pdf, props, datos.get("trato") == "usted")
     if anexo:
         _anexo_fichas(pdf, props, detalles, galerias, fotos)
     _anexo_verifica(pdf, datos.get("trato") == "usted")
     return bytes(pdf.output())
+
+
+def _comparativo(pdf, props, usted=True):
+    """Página de análisis comparativo: tabla lado a lado y lo que destaca de cada opción, solo con datos de las fichas."""
+    W = 174
+    pdf.add_page()
+    pdf.set_font("Poppins", "B", 16); pdf.set_text_color(*NAVY)
+    pdf.cell(W, 9, "Análisis comparativo", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Poppins", "", 9.5); pdf.set_text_color(*INK)
+    pdf.multi_cell(W, 5, ("Así se comparan las opciones que " + ("le" if usted else "te") + " propongo, lado a lado. "
+                          "El precio por metro cuadrado ayuda a comparar propiedades de distinto tamaño."), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+    filas = []
+    for i, p in enumerate(props, 1):
+        precio = _num(p.get("precio")) or 0; m2 = _num(p.get("m2")) or 0
+        pm2 = precio / m2 if precio and m2 else 0
+        filas.append({"i": i, "nombre": (p.get("titulo") or p.get("tipo") or p.get("eb") or "")[:38], "zona": ", ".join(x for x in (p.get("colonia"), p.get("municipio")) if x)[:34],
+                      "precio": precio, "m2": m2, "pm2": pm2, "rec": _num(p.get("recamaras")) or 0, "ban": _num(p.get("banos")) or 0,
+                      "renta": (p.get("operacion") or "").upper() == "RENTA"})
+    cols = [("#", 8), ("Propiedad y ubicación", 60), ("Precio", 30), ("m²", 16), ("Precio por m²", 26), ("Rec.", 16), ("Baños", 18)]
+    pdf.set_fill_color(*NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font("PoppinsM", "", 8.5)
+    for nom, w in cols:
+        pdf.cell(w, 8, nom, border=0, align="C" if nom != "Propiedad y ubicación" else "L", fill=True)
+    pdf.ln(8)
+    pdf.set_text_color(*INK)
+    for k, f in enumerate(filas):
+        pdf.set_fill_color(*(CREAM if k % 2 == 0 else (255, 255, 255)))
+        y0 = pdf.get_y(); x0 = pdf.l_margin
+        pdf.set_font("PoppinsM", "", 8.5); pdf.cell(8, 11, str(f["i"]), align="C", fill=True)
+        pdf.set_font("Poppins", "", 8)
+        pdf.multi_cell(60, 5.5, f["nombre"] + "\n" + f["zona"], fill=True, new_x="RIGHT", new_y="TOP", max_line_height=5.5)
+        pdf.set_xy(x0 + 68, y0)
+        pdf.cell(30, 11, (f"${f['precio']:,.0f}" + ("/mes" if f["renta"] else "")) if f["precio"] else "—", align="C", fill=True)
+        pdf.cell(16, 11, f"{f['m2']:,}" if f["m2"] else "—", align="C", fill=True)
+        pdf.cell(26, 11, (f"${f['pm2']:,.0f}" + ("/mes" if f["renta"] else "")) if f["pm2"] else "—", align="C", fill=True)
+        pdf.cell(16, 11, str(f["rec"]) if f["rec"] else "—", align="C", fill=True)
+        pdf.cell(18, 11, str(f["ban"]) if f["ban"] else "—", align="C", fill=True)
+        pdf.set_xy(x0, y0 + 11)
+    pdf.ln(5)
+    # lo que destaca de cada opción
+    def mejor(clave, fn):
+        vals = [f for f in filas if f[clave]]
+        if len(vals) < 2:
+            return None
+        g = fn(vals, key=lambda f: f[clave])
+        return g if sum(1 for f in vals if f[clave] == g[clave]) == 1 else None   # en empate, nadie lo lleva
+    destaca = {}
+    for etiqueta, f in (("Mejor precio por m²", mejor("pm2", min)), ("Menor precio", mejor("precio", min)),
+                        ("La más amplia", mejor("m2", max)), ("Más recámaras", mejor("rec", max))):
+        if f:
+            destaca.setdefault(f["i"], []).append(etiqueta)
+    if destaca:
+        pdf.set_font("Poppins", "B", 11); pdf.set_text_color(*NAVY)
+        pdf.cell(W, 7, "Lo que destaca de cada opción", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Poppins", "", 9.5); pdf.set_text_color(*INK)
+        for f in filas:
+            if f["i"] in destaca:
+                pdf.multi_cell(W, 5.4, f"•  Opción {f['i']} ({f['nombre']}): " + ", ".join(destaca[f["i"]]).lower().capitalize() + ".", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2)
+    pdf.set_font("Poppins", "", 8.3); pdf.set_text_color(110, 116, 126)
+    pdf.multi_cell(W, 4.4, ("Datos tomados de las fichas publicadas; superficies y precios deben confirmarse por escrito y en la visita. "
+                            "El precio por m² es una referencia para comparar, no un avalúo."), new_x="LMARGIN", new_y="NEXT")
 
 
 def _anexo_verifica(pdf, usted=True):
