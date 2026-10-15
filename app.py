@@ -8762,13 +8762,13 @@ def api_asesor_propuesta():
     a = _asesor_de_token(d.get("token"))
     if not a:
         return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
-    modo = d.get("modo") if d.get("modo") in ("vista", "enviar") else "vista"
+    modo = d.get("modo") if d.get("modo") in ("vista", "enviar", "registrar") else "vista"
     cli = d.get("cliente") or {}
     nombre = _camino_limpiar(cli.get("nombre"), 80)
     tel = _camino_tel(cli.get("whatsapp"))
     if len(nombre) < 2:
         return _camino_resp({"ok": False, "error": "Escribe el nombre del cliente."}, 400)
-    if modo == "enviar" and not tel:
+    if modo in ("enviar", "registrar") and not tel:
         return _camino_resp({"ok": False, "error": "Falta el WhatsApp del cliente."}, 400)
     if not _camino_limite("asesorpdf:" + a["usuario"], 40, 3600):
         return _camino_resp({"ok": False, "error": "Demasiadas propuestas en poco tiempo. Espera un momento."}, 429)
@@ -8803,6 +8803,32 @@ def api_asesor_propuesta():
              "vio_en_sitio": bool(d.get("vio_en_sitio")),
              "criterios": _camino_limpiar(d.get("criterios"), 300), "nota": _camino_limpiar(d.get("nota"), 900),
              "propiedades": props}
+    # --- REGISTRAR: el asesor la envió desde SU WhatsApp; aquí solo queda en el CRM y la bitácora ---
+    if modo == "registrar":
+        claves = ", ".join(p["eb"] for p in props)
+        folio_r = datos["cliente"].get("folio") or ""
+        try:
+            fila = _crm_buscar_por_tel10(_ultimos10(tel)) if GOOGLE_CREDS_JSON else None
+            if not fila and GOOGLE_CREDS_JSON:
+                r = crm_crear_registro(tel, nombre, [{"codigo_eb": p["eb"], "titulo": p.get("titulo", ""), "liga": ""} for p in props],
+                                       props[0].get("operacion", ""), vendedor_preferido=a["nombre"], busca=str(d.get("criterios") or "")[:200])
+                folio_r = (r or {}).get("folio_crm") or folio_r
+            elif fila:
+                folio_r = fila.get("FOLIO") or folio_r
+                col = {h: i + 1 for i, h in enumerate(CRM_COLUMNAS)}
+                _crm_sheet().update_cell(fila["_fila"], col["ULTIMA_ACCION"], f"{hora_gdl()} propuesta PDF por WhatsApp del asesor ({claves})")
+        except Exception as e:
+            print(f"[MAX-ASESOR] No se pudo registrar en el CRM: {type(e).__name__}: {e}", flush=True)
+        try:
+            _actividad_sheet().append_row([hora_gdl(), a["telefono"], "propuesta", folio_r, f"{nombre} ({tel}) · {claves} · enviada desde el WhatsApp del asesor"[:500]])
+        except Exception as e:
+            print(f"[MAX-ASESOR] No se pudo registrar la actividad: {type(e).__name__}", flush=True)
+        if _ultimos10(a["telefono"]) != _ultimos10(JAVIER_PHONE):
+            notificar_interno(JAVIER_PHONE, f"📄 PROPUESTA ENVIADA por {a['nombre']} desde su WhatsApp\nCliente: {nombre} ({tel})\nPropiedades: {claves}",
+                              f"Propuesta de {a['nombre']} a {nombre} | {claves}")
+        print(f"[MAX-ASESOR] Propuesta registrada (envío desde el WhatsApp de {a['nombre']}) para {tel}: folio={folio_r}", flush=True)
+        return _camino_resp({"ok": True, "folio": folio_r})
+
     try:
         datos["anexo"] = d.get("anexo", True) is not False
         pdf = _prop.generar_pdf(datos, detalle_fn=_detalle_con_respaldo)
