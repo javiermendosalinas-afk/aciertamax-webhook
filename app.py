@@ -8604,6 +8604,51 @@ def api_asesor_propiedad():
 _PROPUESTAS_PDF = {}   # id -> (bytes, nombre_archivo, ts) respaldo si Drive no está disponible
 
 
+# ------------------------------------------------------------------
+# Portal del coach: la IA redacta resumen, ventajas y una recomendación comparativa
+# de las propiedades elegidas por el asesor, SOLO con los datos de las fichas.
+# ------------------------------------------------------------------
+RECOMENDAR_SISTEMA = """Eres el analista inmobiliario de Acierta Max (Guadalajara). Un asesor eligió varias propiedades para un cliente y te pide redactar su propuesta.
+REGLAS ESTRICTAS:
+- Usa SOLO los datos que vienen en cada propiedad. No inventes amenidades, distancias, acabados, plusvalía, rendimientos ni nada que no esté en los datos.
+- No prometas plusvalía ni ganancias. Puedes decir «según la ficha» cuando un dato venga de la descripción.
+- Escribe en español de México, claro y cálido, hablándole al cliente de tú (o de usted si el trato es «usted»).
+- Compara con honestidad: precio contra superficie (precio por m² cuando haya m²), recámaras, baños, ubicación y operación. Señala lo que hay que verificar en visita.
+- La recomendación final debe decir cuál o cuáles encajan mejor con los criterios del cliente y por qué, y qué considerar de cada una. Máximo 850 caracteres.
+Responde ÚNICAMENTE con JSON válido, sin texto adicional, con esta forma:
+{"propiedades":[{"eb":"...","resumen":"máx 300 caracteres","ventajas":["máx 3, cortas"]}],"recomendacion":"texto","orden":["eb de la más recomendada", "..."]}"""
+
+
+@app.route("/api/asesor/recomendar", methods=["POST", "OPTIONS"])
+def api_asesor_recomendar():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(120_000) or {}
+    a = _asesor_de_token(d.get("token"))
+    if not a:
+        return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
+    props = (d.get("propiedades") or [])[:8]
+    if not props:
+        return _camino_resp({"ok": False, "error": "Agrega al menos una propiedad."}, 400)
+    campos = ("eb", "operacion", "tipo", "titulo", "precio", "colonia", "municipio", "recamaras", "banos", "m2", "terreno", "construccion", "niveles", "descripcion")
+    datos = [{k: (str(p.get(k))[:900] if k == "descripcion" else p.get(k)) for k in campos if p.get(k) not in (None, "", 0)} for p in props]
+    entrada = {"criterios_del_cliente": str(d.get("criterios") or "")[:300], "nota_del_asesor": str(d.get("nota") or "")[:600],
+               "trato": "usted" if str(d.get("trato") or "").lower().startswith("u") else "tú", "propiedades": datos}
+    try:
+        r = requests.post(ANTHROPIC_API, timeout=60, headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                          json={"model": CLAUDE_MODEL, "max_tokens": 1800, "system": RECOMENDAR_SISTEMA,
+                                "messages": [{"role": "user", "content": json.dumps(entrada, ensure_ascii=False)}]})
+        texto = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
+        texto = re.sub(r"^```(?:json)?|```$", "", texto).strip()
+        res = json.loads(texto[texto.find("{"): texto.rfind("}") + 1])
+    except Exception as e:
+        print(f"[MAX-ASESOR] Error al redactar recomendación: {type(e).__name__}: {e}", flush=True)
+        return _camino_resp({"ok": False, "error": "No se pudo redactar en este momento. Intenta de nuevo."}, 502)
+    print(f"[MAX-ASESOR] Recomendación redactada para {a} con {len(datos)} propiedades", flush=True)
+    return _camino_resp({"ok": True, "propiedades": res.get("propiedades", []), "recomendacion": str(res.get("recomendacion", ""))[:900],
+                         "orden": res.get("orden", [])})
+
+
 @app.route("/api/asesor/pdf/<pid>", methods=["GET"])
 def api_asesor_pdf(pid):
     item = _PROPUESTAS_PDF.get(pid)
