@@ -454,8 +454,10 @@ def generar_pdf(datos, detalle_fn=None):
     pdf.set_text_color(*NAVY)
     pdf.cell(W, 4, "Contratos de adhesión registrados ante PROFECO · Conforme a la NOM-247-SE-2021", align="C")
 
-    if len(props) >= 2:
+    if len(props) >= 2 or datos.get("inversion"):
         _comparativo(pdf, props, datos.get("trato") == "usted")
+    if datos.get("inversion"):
+        _metodologia(pdf, datos.get("trato") == "usted")
     if anexo:
         _anexo_fichas(pdf, props, detalles, galerias, fotos)
     _anexo_verifica(pdf, datos.get("trato") == "usted")
@@ -478,8 +480,10 @@ def _comparativo(pdf, props, usted=True):
         pm2 = precio / m2 if precio and m2 else 0
         filas.append({"i": i, "nombre": (p.get("titulo") or p.get("tipo") or p.get("eb") or "")[:38], "zona": ", ".join(x for x in (p.get("colonia"), p.get("municipio")) if x)[:34],
                       "precio": precio, "m2": m2, "pm2": pm2, "rec": _num(p.get("recamaras")) or 0, "ban": _num(p.get("banos")) or 0,
-                      "renta": (p.get("operacion") or "").upper() == "RENTA"})
-    cols = [("#", 8), ("Propiedad y ubicación", 60), ("Precio", 30), ("m²", 16), ("Precio por m²", 26), ("Rec.", 16), ("Baños", 18)]
+                      "renta": (p.get("operacion") or "").upper() == "RENTA", "med": _num(p.get("mediana_pm2")) or 0, "med_n": _num(p.get("mediana_n")) or 0})
+    hay_zona = any(f["med"] and f["pm2"] for f in filas)
+    cols = ([("#", 8), ("Propiedad y ubicación", 46), ("Precio", 27), ("m²", 14), ("Precio/m²", 22), ("Zona $/m²", 22), ("vs. zona", 15), ("Rec.", 10), ("Baños", 10)]
+            if hay_zona else [("#", 8), ("Propiedad y ubicación", 60), ("Precio", 30), ("m²", 16), ("Precio por m²", 26), ("Rec.", 16), ("Baños", 18)])
     pdf.set_fill_color(*NAVY); pdf.set_text_color(255, 255, 255); pdf.set_font("PoppinsM", "", 8.5)
     for nom, w in cols:
         pdf.cell(w, 8, nom, border=0, align="C" if nom != "Propiedad y ubicación" else "L", fill=True)
@@ -489,14 +493,18 @@ def _comparativo(pdf, props, usted=True):
         pdf.set_fill_color(*(CREAM if k % 2 == 0 else (255, 255, 255)))
         y0 = pdf.get_y(); x0 = pdf.l_margin
         pdf.set_font("PoppinsM", "", 8.5); pdf.cell(8, 11, str(f["i"]), align="C", fill=True)
-        pdf.set_font("Poppins", "", 8)
-        pdf.multi_cell(60, 5.5, f["nombre"] + "\n" + f["zona"], fill=True, new_x="RIGHT", new_y="TOP", max_line_height=5.5)
-        pdf.set_xy(x0 + 68, y0)
-        pdf.cell(30, 11, (f"${f['precio']:,.0f}" + ("/mes" if f["renta"] else "")) if f["precio"] else "—", align="C", fill=True)
-        pdf.cell(16, 11, f"{f['m2']:,}" if f["m2"] else "—", align="C", fill=True)
-        pdf.cell(26, 11, (f"${f['pm2']:,.0f}" + ("/mes" if f["renta"] else "")) if f["pm2"] else "—", align="C", fill=True)
-        pdf.cell(16, 11, str(f["rec"]) if f["rec"] else "—", align="C", fill=True)
-        pdf.cell(18, 11, str(f["ban"]) if f["ban"] else "—", align="C", fill=True)
+        w_nom = cols[1][1]
+        pdf.set_font("Poppins", "", 8 if not hay_zona else 7.4)
+        pdf.multi_cell(w_nom, 5.5, f["nombre"] + "\n" + f["zona"], fill=True, new_x="RIGHT", new_y="TOP", max_line_height=5.5)
+        pdf.set_xy(x0 + 8 + w_nom, y0)
+        sfx = "/mes" if f["renta"] else ""
+        valores = [(f"${f['precio']:,.0f}" + sfx) if f["precio"] else "—", f"{f['m2']:,}" if f["m2"] else "—", (f"${f['pm2']:,.0f}") if f["pm2"] else "—"]
+        if hay_zona:
+            dif = (f["pm2"] / f["med"] - 1) * 100 if f["pm2"] and f["med"] else None
+            valores += [f"${f['med']:,.0f}" if f["med"] else "—", (f"{dif:+.0f}%" if dif is not None else "—")]
+        valores += [str(f["rec"]) if f["rec"] else "—", str(f["ban"]) if f["ban"] else "—"]
+        for (nom, w), val in zip(cols[2:], valores):
+            pdf.cell(w, 11, val, align="C", fill=True)
         pdf.set_xy(x0, y0 + 11)
     pdf.ln(5)
     # lo que destaca de cada opción
@@ -521,7 +529,46 @@ def _comparativo(pdf, props, usted=True):
         pdf.ln(2)
     pdf.set_font("Poppins", "", 8.3); pdf.set_text_color(110, 116, 126)
     pdf.multi_cell(W, 4.4, ("Datos tomados de las fichas publicadas; superficies y precios deben confirmarse por escrito y en la visita. "
-                            "El precio por m² es una referencia para comparar, no un avalúo."), new_x="LMARGIN", new_y="NEXT")
+                            "El precio por m² es una referencia para comparar, no un avalúo."
+                            + (" «Zona $/m²» es la mediana del precio por m² de propiedades del mismo tipo y operación publicadas en el mismo municipio; "
+                               "«vs. zona» indica cuánto está por arriba (+) o por debajo (−) de esa referencia." if hay_zona else "")), new_x="LMARGIN", new_y="NEXT")
+
+
+def _metodologia(pdf, usted=True):
+    """Para inversionistas: cómo se hizo el análisis, qué incluye, qué no, y su alcance."""
+    W = 174
+    if pdf.get_y() > 170:
+        pdf.add_page()
+    else:
+        pdf.ln(6)
+    pdf.set_font("Poppins", "B", 14); pdf.set_text_color(*NAVY)
+    pdf.cell(W, 8, "Metodología y alcance del análisis", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Poppins", "", 9.4); pdf.set_text_color(*INK)
+    v = "le" if usted else "te"
+    pdf.multi_cell(W, 5.1, f"Para que {'usted tome' if usted else 'tomes'} decisiones con claridad, {v} explico cómo se elaboró esta comparación y hasta dónde llega.",
+                   new_x="LMARGIN", new_y="NEXT"); pdf.ln(2)
+    bloques = [
+        ("Cómo se calculó", ["Precio por m²: precio publicado entre la superficie publicada de cada propiedad.",
+                             "Referencia de zona: mediana del precio por m² de propiedades del mismo tipo y operación publicadas en el mismo municipio, con el inventario de acierta.pro.",
+                             "Comparación: diferencia en porcentaje contra esa referencia, y lado a lado entre las opciones propuestas."]),
+        ("Qué NO considera", ["Costos de compra (escrituración, impuestos, avalúo, comisiones bancarias), ISR por arrendamiento ni predial.",
+                              "Mantenimiento, cuotas de condominio, vacancia, mobiliario ni administración.",
+                              "Financiamiento, plusvalía futura ni rendimientos: no se proyectan cifras que no estén respaldadas por datos."]),
+        ("Alcance", ["La recomendación es un análisis aritmético preliminar con los datos publicados en las fichas; no es asesoría financiera ni fiscal.",
+                     "Aún NO está respaldada por Acierta Verifica: antes de decidir, recomendamos la revisión física y documental del inmueble elegido.",
+                     "Precios, superficies y disponibilidad pueden cambiar y deben confirmarse por escrito con el propietario o desarrollador."]),
+    ]
+    for titulo, puntos in bloques:
+        pdf.set_font("Poppins", "B", 10.5); pdf.set_text_color(*NAVY)
+        pdf.cell(W, 6.5, titulo, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Poppins", "", 9.2); pdf.set_text_color(*INK)
+        for pt in puntos:
+            pdf.multi_cell(W, 4.9, "•  " + pt, new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(1.5)
+    pdf.set_font("PoppinsM", "", 9.4); pdf.set_text_color(*NAVY)
+    pdf.cell(W, 6, ("Siguiente paso sugerido: elija la opción que más le interese y la validamos con Acierta Verifica ›" if usted else
+                    "Siguiente paso sugerido: elige la opción que más te interese y la validamos con Acierta Verifica ›"),
+             link="https://acierta.pro/verifica.html", new_x="LMARGIN", new_y="NEXT")
 
 
 def _anexo_verifica(pdf, usted=True):

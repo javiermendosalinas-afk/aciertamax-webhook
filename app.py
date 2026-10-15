@@ -8679,6 +8679,7 @@ REGLAS ESTRICTAS:
 - Escribe en español de México, claro y cálido, hablándole al cliente de tú (o de usted si el trato es «usted»).
 - Compara con honestidad: precio contra superficie (precio por m² cuando haya m²), recámaras, baños, ubicación y operación. Señala lo que hay que verificar en visita.
 - La recomendación final debe decir cuál o cuáles encajan mejor con los criterios del cliente y por qué, y qué considerar de cada una. Máximo 850 caracteres.
+- Si el enfoque es «inversión»: compara el precio por m² de cada propiedad contra «mediana_pm2_zona» (precio por m² típico del municipio para ese tipo y operación, calculado con el inventario publicado) y di si está por debajo o por encima y en qué porcentaje aproximado. No calcules rentas, rendimientos ni plusvalías que no vengan en los datos. Deja claro que es un análisis aritmético preliminar con datos publicados, que no considera costos de compra, impuestos, mantenimiento ni vacancia, y que aún no está respaldado por Acierta Verifica.
 Responde ÚNICAMENTE con JSON válido, sin texto adicional, con esta forma:
 {"propiedades":[{"eb":"...","resumen":"máx 300 caracteres","ventajas":["máx 3, cortas"]}],"recomendacion":"texto","orden":["eb de la más recomendada", "..."]}"""
 
@@ -8694,10 +8695,11 @@ def api_asesor_recomendar():
     props = (d.get("propiedades") or [])[:10]
     if not props:
         return _camino_resp({"ok": False, "error": "Agrega al menos una propiedad."}, 400)
-    campos = ("eb", "operacion", "tipo", "titulo", "precio", "colonia", "municipio", "recamaras", "banos", "m2", "terreno", "construccion", "niveles", "descripcion")
+    campos = ("eb", "operacion", "tipo", "titulo", "precio", "colonia", "municipio", "recamaras", "banos", "m2", "terreno", "construccion", "niveles", "descripcion", "mediana_pm2_zona")
     datos = [{k: (str(p.get(k))[:900] if k == "descripcion" else p.get(k)) for k in campos if p.get(k) not in (None, "", 0)} for p in props]
     entrada = {"criterios_del_cliente": str(d.get("criterios") or "")[:300], "nota_del_asesor": str(d.get("nota") or "")[:600],
-               "trato": "usted" if str(d.get("trato") or "").lower().startswith("u") else "tú", "propiedades": datos}
+               "trato": "usted" if str(d.get("trato") or "").lower().startswith("u") else "tú", "propiedades": datos,
+               "enfoque": "inversión" if d.get("inversion") else "vivienda"}
     try:
         r = requests.post(ANTHROPIC_API, timeout=60, headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
                           json={"model": CLAUDE_MODEL, "max_tokens": 1800, "system": RECOMENDAR_SISTEMA,
@@ -8910,6 +8912,11 @@ def api_asesor_propuesta():
         base["ventajas"] = [_camino_limpiar(str(v).strip(" •-*\t"), 160).lstrip("'")
                             for v in (item.get("ventajas") or [])[:4] if str(v).strip(" •-*\t")]
         base["resumen"] = base["resumen"].lstrip("'")
+        try:
+            base["mediana_pm2"] = float(item.get("mediana_pm2")) if item.get("mediana_pm2") else None
+            base["mediana_n"] = int(item.get("mediana_n")) if item.get("mediana_n") else None
+        except (TypeError, ValueError):
+            base["mediana_pm2"] = base["mediana_n"] = None
         props.append(base)
     if not props:
         return _camino_resp({"ok": False, "error": "Agrega al menos una propiedad del inventario."}, 400)
@@ -8919,6 +8926,7 @@ def api_asesor_propuesta():
                        "cargo": "Director General" if a["usuario"] == "javier" else "Coach inmobiliario"},
              "trato": "usted" if d.get("trato") == "usted" else "tu",
              "genero": d.get("genero") if d.get("genero") in ("f", "m") else "",
+             "inversion": bool(d.get("inversion")),
              "vio_en_sitio": bool(d.get("vio_en_sitio")),
              "criterios": _camino_limpiar(d.get("criterios"), 300), "nota": _camino_limpiar(d.get("nota"), 900),
              "propiedades": props}
