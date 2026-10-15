@@ -5792,7 +5792,7 @@ def _oh_entrante(phone, text):
         _OH_ESTADO[t10] = {"paso": "personas" if nombre else "nombre", "datos": {"nombre": nombre}, "expira": time.time() + 3600}
         if es_bv:
             # Hasta el 31-oct, BELLAVITTORIA = información del Open House (desde el 1-nov vuelve la ficha normal)
-            cap = ("🌼 *OPEN HOUSE DE DÍA DE MUERTOS · BELLA VITTORIA*\n📅 Sábado 31 de octubre · 10:00 a 14:00\n📍 " + OH_DIRECCION)
+            cap = ("🌼 *OPEN HOUSE DE DÍA DE MUERTOS · BELLA VITTORIA*\n📅 Sábado 31 de octubre · 10:00 a 14:00\n📍 " + OH_DIRECCION + "\n🗺️ " + OH_MAPA)
             if not wati_send_image(phone, "https://acierta.pro/assets/openhouse/bv-03-sala-cocina.jpg", cap):
                 wati_send_text(phone, cap, copiar=False)
             wati_send_text(phone, "🏛 Departamentos nuevos de 2 recámaras y 2 baños, 70 a 78 m², roof top, lobby, terraza con asadores y seguridad 24 h. "
