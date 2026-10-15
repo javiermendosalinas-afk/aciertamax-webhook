@@ -1747,13 +1747,14 @@ def _reenviar_a_javier(phone, cliente=None, max_resp=None):
         # para que Javier sepa de un vistazo si es "su" cliente asignado
         # (por el turno de rotación) o solo la copia general de otro caso.
         vendedor = _vendedor_asignado_de(phone)
-        etiqueta = f" [Asignado a: {vendedor}]" if vendedor else ""
+        es_mio = bool(vendedor) and vendedor.split()[0].lower() == "javier"
+        etiqueta = (" · 🔴 TU CLIENTE" if es_mio else f" · lo atiende {vendedor.split()[0]}") if vendedor else " · sin asesor aún"
         if cliente:
-            texto = f"📩 Cliente {phone}{etiqueta}:\n{cliente[:500]}"
+            texto = f"📋 COPIA (solo informativo){etiqueta}\n👤 Cliente {phone[-10:]} escribió:\n{cliente[:500]}"
             if not wati_send_text(JAVIER_PERSONAL, texto):
                 wati_send_template_message(JAVIER_PERSONAL, "copia_interna", [texto[:600]])
         if max_resp:
-            texto = f"🤖 MAX → {phone}{etiqueta}:\n{max_resp[:500]}"
+            texto = f"📋 COPIA (solo informativo){etiqueta}\n🤖 MAX le respondió a {phone[-10:]}:\n{max_resp[:500]}"
             if not wati_send_text(JAVIER_PERSONAL, texto):
                 wati_send_template_message(JAVIER_PERSONAL, "copia_interna", [texto[:600]])
     except Exception as e:
@@ -1808,7 +1809,7 @@ def wati_send_template_message(phone, template_name, parametros_texto):
     payload = {
         "template_name": template_name,
         "broadcast_name": template_name,
-        "parameters": [{"name": str(i + 1), "value": v} for i, v in enumerate(parametros_texto)],
+        "parameters": [{"name": str(i + 1), "value": re.sub(r"\s{2,}", " ", re.sub(r"[\r\n\t]+", " · ", str(v))).strip()[:1000]} for i, v in enumerate(parametros_texto)],
     }
     try:
         headers = dict(wati_headers())
@@ -2062,8 +2063,18 @@ def memoria_leer(phone):
         if not libro:
             return {}
         sh = _get_o_crear_hoja(libro, HOJA_MEMORIA, COLS_MEMORIA)
-        celdas = sh.findall(phone, in_column=1)
+        celdas = None
+        for intento in range(3):
+            try:
+                celdas = sh.findall(phone, in_column=1)
+                break
+            except Exception as e:
+                if "429" in str(e) and intento < 2:
+                    time.sleep(2 + intento * 3)
+                    continue
+                raise
         if not celdas:
+            MEMORIA_CACHE[phone] = {}
             return {}
         fila = sh.row_values(celdas[-1].row)
         datos = dict(zip(COLS_MEMORIA, fila + [""]*(len(COLS_MEMORIA)-len(fila))))
