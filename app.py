@@ -9330,17 +9330,24 @@ def _camp_corr_paso():
     for correo, inmo in pendientes[:cupo]:
         try:
             _camp_corr_enviar(correo, inmo, ronda_idx)
-            filas.append([hora_gdl(), ronda, correo, inmo, "ENVIADO"])
+            fila = [hora_gdl(), ronda, correo, inmo, "ENVIADO"]
             _CAMP_CORR["envios"].append(time.time())
+            fallas = 0
         except Exception as e:
             fallas += 1
-            filas.append([hora_gdl(), ronda, correo, inmo, f"ERROR: {str(e)[:80]}"])
-            if fallas >= 3:
-                print("[MAX-CORREDORES] Tres fallas seguidas: pauso esta tanda.", flush=True)
-                break
+            fila = [hora_gdl(), ronda, correo, inmo, f"ERROR: {str(e)[:80]}"]
+        filas.append(fila)
+        # Se anota en cuanto sale: si MAX se reinicia a media tanda, no repite a nadie.
+        for intento in range(3):
+            try:
+                sh.append_row(fila); break
+            except Exception:
+                time.sleep(3 + intento * 4)
+        if fallas >= 3:
+            print("[MAX-CORREDORES] Tres fallas seguidas: pauso esta tanda.", flush=True)
+            break
         time.sleep(random.uniform(20, 40))
     if filas:
-        sh.append_rows(filas)
         ok = sum(1 for f in filas if f[4] == "ENVIADO")
         print(f"[MAX-CORREDORES] Ronda {ronda}: {ok} enviados en esta tanda, {len(pendientes) - ok} pendientes", flush=True)
 
