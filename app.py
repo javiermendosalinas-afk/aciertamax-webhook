@@ -26,6 +26,7 @@ import random
 import datetime
 import threading
 import re
+import unicodedata
 import requests
 from urllib.parse import quote
 from flask import Flask, request, jsonify
@@ -9282,6 +9283,14 @@ def _camp_corr_enviar(correo, inmobiliaria, ronda_idx):
 
 
 def _camp_corr_paso():
+    # Candado: la campaña solo sale desde el correo de Acierta (no desde Gmail u otra cuenta).
+    remitente_ok = GMAIL_USER.lower().endswith("@acierta.com.mx") or os.environ.get("CAMP_CORR_REMITENTE_LIBRE") == "1"
+    if GMAIL_USER and not remitente_ok:
+        hoy = hora_gdl()[:10]
+        if _CAMP_CORR["sin_config_dia"] != hoy:
+            _CAMP_CORR["sin_config_dia"] = hoy
+            print(f"[MAX-CORREDORES] El remitente configurado no es @acierta.com.mx: la campaña espera.", flush=True)
+        return
     if not (GMAIL_USER and GMAIL_PASS):
         hoy = hora_gdl()[:10]
         if _CAMP_CORR["sin_config_dia"] != hoy:
