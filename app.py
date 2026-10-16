@@ -7626,7 +7626,7 @@ ACIERTA VERIFICA (promuévelo siempre que el tema sea comprar, rentar, preventa,
 - Es preventivo: no sustituye un avalúo, un peritaje ni la asesoría de un notario o abogado.
 
 RECOMENDACIONES (si pide recomendaciones, desarrollos, proyectos nuevos o dónde invertir, menciona primero los que maneja directamente Acierta Max; usa SOLO estos datos)
-- Bella Vittoria (Lomas de la Victoria, Tlaquepaque, dentro de Periférico, cerca de Plaza del Sol): departamentos nuevos de 2 recámaras, 2 baños, 70 a 78 m², con roof top, lobby, terraza con asadores y seguridad 24 h. Venta desde $3,450,000 con entrega inmediata (clave EB-VI0283); renta de $15,000 sin amueblar (EB-WU8547) y $18,000 amueblado (EB-WG7572). El departamento y su estacionamiento tienen un avalúo de $3,700,000 ($3,500,000 más $200,000) y hoy se venden en $3,450,000 con un cajón incluido. Sitio oficial: bellavittoria.vip
+- Bella Vittoria (Lomas de la Victoria, Guadalajara, donde se juntan Guadalajara, Zapopan y Tlaquepaque; municipio de San Pedro Tlaquepaque; dentro de Periférico, cerca de Plaza del Sol): departamentos nuevos de 2 recámaras, 2 baños, 70 a 78 m², con roof top, lobby, terraza con asadores y seguridad 24 h. Venta desde $3,450,000 con entrega inmediata (clave EB-VI0283); renta de $15,000 sin amueblar (EB-WU8547) y $18,000 amueblado (EB-WG7572). El departamento y su estacionamiento tienen un avalúo de $3,700,000 ($3,500,000 más $200,000) y hoy se venden en $3,450,000 con un cajón incluido. Sitio oficial: bellavittoria.vip
 - Élevé Valle Real (Zapopan): departamento de lujo en renta, $37,000 al mes; 3 recámaras con baño, 247 m², vista al Campo de Golf Las Lomas, alberca, gimnasio, seguridad 24 h (EB-WM2996).
 - Villa Dhara (El Retiro, Centro de Guadalajara, frente al Parque Morelos): el departamento más exclusivo del desarrollo, con terraza privada (74 m² en total: unos 55 m² de departamento y unos 20 m² de terraza), amueblado; venta $2,295,000 o renta $14,000 al mes (EB-WG7913).
 - The Block Easy Living, junto al ITESO (Periférico Sur, El Mante, Tlaquepaque): departamento nuevo y amplio en renta, $18,000 al mes, con vista panorámica y roof garden (EB-WG7125).
@@ -9271,7 +9271,7 @@ def _camp_corr_enviar(correo, inmobiliaria, ronda_idx):
     msg["Subject"] = CAMP_CORR_ASUNTOS.get(ronda_idx, CAMP_CORR_ASUNTOS[0])
     msg["List-Unsubscribe"] = f"<{baja}>, <mailto:{GMAIL_USER}?subject=BAJA>"
     texto = (f"Hola, colegas de {inmobiliaria or 'su inmobiliaria'}:\n\n4% de comisión (IVA incluido) en Bella Vittoria del 14 de octubre "
-             "al 15 de noviembre. 16 departamentos de entrega inmediata en Lomas de la Victoria, Tlaquepaque, desde $3,450,000, "
+             "al 15 de noviembre. 16 departamentos de entrega inmediata en Lomas de la Victoria, Guadalajara (donde se juntan Guadalajara, Zapopan y Tlaquepaque), desde $3,450,000, "
              "abajo de su avalúo. Open House de Día de Muertos: sábado 31 de octubre, 10:00 a 14:00.\n\n"
              "Su publicidad con su logotipo, lista en 30 segundos: https://bellavittoria.vip/corredores/\n"
              "Registren a su cliente al WhatsApp 33 2497 0007 antes de la visita.\n\nJavier Mendoza Salinas · Acierta Max\n"
