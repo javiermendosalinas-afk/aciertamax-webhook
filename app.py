@@ -9147,5 +9147,222 @@ def health():
     """Para UptimeRobot (evita cold start de Render)."""
     return jsonify(status="ok", agente="MAX 2.0", ts=time.time())
 
+# =====================================================================
+# CAMPAÑA DE CORREO A CORREDORES · Bella Vittoria / Open House Día de Muertos
+# =====================================================================
+# Envía el correo de invitación (plantilla en bellavittoria.vip/corredores/
+# correo_corredores.html) a todas las inmobiliarias con correo de la pestaña
+# "Envío" del directorio, en tres rondas. Solo de 9:00 a 19:00 (Guadalajara),
+# como máximo CAMP_CORR_POR_HORA por hora. Nunca repite a nadie en la misma
+# ronda y excluye a quien pidió BAJA (columna BAJA, nota, liga de baja, o
+# respuesta "BAJA" al correo). Registro en la hoja "Campaña Correo Corredores".
+CAMP_CORR_RONDAS = [r.strip() for r in os.environ.get("CAMP_CORR_RONDAS", "2026-10-16,2026-10-23,2026-10-29").split(",") if r.strip()]
+CAMP_CORR_POR_HORA = int(os.environ.get("CAMP_CORR_POR_HORA", "40") or 40)
+CAMP_CORR_HOJA = "Campaña Correo Corredores"
+CAMP_CORR_COLS = ["FECHA Y HORA", "RONDA", "CORREO", "INMOBILIARIA", "ESTADO"]
+CAMP_CORR_BAJAS_HOJA = "Bajas Correo Corredores"
+CAMP_CORR_BAJAS_COLS = ["FECHA Y HORA", "CORREO", "ORIGEN"]
+CAMP_CORR_BAJAS_FIJAS = {"vsdesarrollador"}   # Grupo VS Desarrollador pidió baja (oct 2026)
+CAMP_CORR_PLANTILLA_URL = "https://bellavittoria.vip/corredores/correo_corredores.html"
+CAMP_CORR_ASUNTOS = {
+    0: "4% de comisión en Bella Vittoria + su publicidad de Día de Muertos lista en 30 segundos",
+    1: "Recordatorio: 4% en Bella Vittoria y Open House de Día de Muertos el sábado 31",
+    2: "Este sábado 31: Open House de Día de Muertos en Bella Vittoria · 4% para corredores",
+}
+_CAMP_CORR = {"plantilla": "", "t_plantilla": 0, "envios": [], "sin_config_dia": "", "copia": set(), "imap_t": 0}
+_RE_CORREO = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+
+
+def _camp_corr_token(correo):
+    return hmac.new(_asesor_llave(), ("corrbaja:" + correo.lower()).encode(), hashlib.sha256).hexdigest()[:24]
+
+
+def _camp_corr_hojas():
+    libro, _ = _sheets_client()
+    if not libro:
+        return None, None
+    return (_get_o_crear_hoja(libro, CAMP_CORR_HOJA, CAMP_CORR_COLS),
+            _get_o_crear_hoja(libro, CAMP_CORR_BAJAS_HOJA, CAMP_CORR_BAJAS_COLS))
+
+
+def _camp_corr_baja(correo, origen):
+    try:
+        _, shb = _camp_corr_hojas()
+        if shb:
+            shb.append_row([hora_gdl(), correo.lower(), origen])
+            print(f"[MAX-CORREDORES] BAJA de {correo} ({origen})", flush=True)
+    except Exception as e:
+        print(f"[MAX-CORREDORES] No se pudo registrar baja de {correo}: {e}", flush=True)
+
+
+def _camp_corr_plantilla():
+    if _CAMP_CORR["plantilla"] and time.time() - _CAMP_CORR["t_plantilla"] < 3600:
+        return _CAMP_CORR["plantilla"]
+    r = requests.get(CAMP_CORR_PLANTILLA_URL, timeout=20)
+    r.raise_for_status()
+    r.encoding = "utf-8"
+    _CAMP_CORR.update(plantilla=r.text, t_plantilla=time.time())
+    return r.text
+
+
+def _camp_corr_destinatarios(bajas):
+    """[(correo, inmobiliaria)] sin duplicados ni bajas, de la pestaña Envío."""
+    _DIR_CACHE["t"] = 0   # siempre fresco: la hoja pudo cambiar (bajas nuevas)
+    vistos, salida = set(), []
+    for f in _directorio():
+        nombre = (f.get("Inmobiliaria") or "").strip()
+        notas = (f.get("Notas Javier") or "").lower()
+        if (f.get("BAJA") or "").strip() or "baja" in notas or _clave_inmob(nombre) in CAMP_CORR_BAJAS_FIJAS:
+            continue
+        for c in re.split(r"[;,\s/]+", f.get("Correo") or ""):
+            c = c.strip().lower()
+            if c and _RE_CORREO.match(c) and c not in vistos and c not in bajas:
+                vistos.add(c)
+                salida.append((c, nombre))
+    return salida
+
+
+def _camp_corr_revisar_respuestas_baja():
+    """Lee el buzón (solo lectura) y registra como baja a quien respondió BAJA."""
+    if time.time() - _CAMP_CORR["imap_t"] < 1800:
+        return
+    _CAMP_CORR["imap_t"] = time.time()
+    import imaplib, email as _email
+    from email.utils import parseaddr
+    host = os.environ.get("MAIL_IMAP_HOST") or ("imap.gmail.com" if "gmail" in MAIL_SMTP_HOST else MAIL_SMTP_HOST)
+    try:
+        m = imaplib.IMAP4_SSL(host, int(os.environ.get("MAIL_IMAP_PORT", "993")), timeout=30)
+        m.login(GMAIL_USER, GMAIL_PASS)
+        m.select("INBOX", readonly=True)
+        typ, data = m.search(None, '(SINCE "16-Oct-2026")')
+        nuevos = 0
+        _, shb = _camp_corr_hojas()
+        ya = {r[1].lower() for r in (shb.get_all_values()[1:] if shb else []) if len(r) > 1}
+        for num in (data[0].split() if data and data[0] else [])[-300:]:
+            typ, md = m.fetch(num, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)] BODY.PEEK[TEXT]<0.400>)")
+            crudo = b"".join(p[1] for p in md if isinstance(p, tuple)).decode("utf-8", "ignore")
+            remitente = parseaddr(_email.message_from_string(crudo).get("From", ""))[1].lower()
+            cuerpo = crudo.lower()
+            if remitente and remitente not in ya and re.search(r"(^|\n)\s*baja\b", cuerpo):
+                _camp_corr_baja(remitente, "respondió BAJA por correo")
+                ya.add(remitente); nuevos += 1
+        m.logout()
+        if nuevos:
+            print(f"[MAX-CORREDORES] {nuevos} bajas nuevas por respuesta de correo", flush=True)
+    except Exception as e:
+        print(f"[MAX-CORREDORES] No se pudo revisar el buzón ({host}): {e}", flush=True)
+
+
+def _camp_corr_enviar(correo, inmobiliaria, ronda_idx):
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+    import html as _h
+    baja = f"{MAX_URL_PUBLICA}/api/corredores/baja?e={quote(correo)}&t={_camp_corr_token(correo)}"
+    cuerpo = (_camp_corr_plantilla()
+              .replace("{{BASE}}", "https://bellavittoria.vip")
+              .replace("{{INMOBILIARIA}}", _h.escape(inmobiliaria or "su inmobiliaria"))
+              .replace("{{BAJA_URL}}", baja))
+    msg = MIMEMultipart("alternative")
+    msg["From"] = formataddr(("Javier Mendoza · Acierta Max", GMAIL_USER))
+    msg["To"] = correo
+    msg["Reply-To"] = GMAIL_USER
+    msg["Subject"] = CAMP_CORR_ASUNTOS.get(ronda_idx, CAMP_CORR_ASUNTOS[0])
+    msg["List-Unsubscribe"] = f"<{baja}>, <mailto:{GMAIL_USER}?subject=BAJA>"
+    texto = (f"Hola, colegas de {inmobiliaria or 'su inmobiliaria'}:\n\n4% de comisión (IVA incluido) en Bella Vittoria del 14 de octubre "
+             "al 15 de noviembre. 16 departamentos de entrega inmediata en Lomas de la Victoria, Tlaquepaque, desde $3,450,000, "
+             "abajo de su avalúo. Open House de Día de Muertos: sábado 31 de octubre, 10:00 a 14:00.\n\n"
+             "Su publicidad con su logotipo, lista en 30 segundos: https://bellavittoria.vip/corredores/\n"
+             "Registren a su cliente al WhatsApp 33 2497 0007 antes de la visita.\n\nJavier Mendoza Salinas · Acierta Max\n"
+             f"Para no recibir más correos: {baja}")
+    msg.attach(MIMEText(texto, "plain", "utf-8"))
+    msg.attach(MIMEText(cuerpo, "html", "utf-8"))
+    with _smtp_conexion(timeout=30) as s:
+        s.send_message(msg)
+
+
+def _camp_corr_paso():
+    if not (GMAIL_USER and GMAIL_PASS):
+        hoy = hora_gdl()[:10]
+        if _CAMP_CORR["sin_config_dia"] != hoy:
+            _CAMP_CORR["sin_config_dia"] = hoy
+            print("[MAX-CORREDORES] Correo sin configurar (GMAIL_USER/GMAIL_PASS): la campaña espera.", flush=True)
+        return
+    ahora = hora_gdl(); hoy, hora = ahora[:10], int(ahora[11:13])
+    activas = [i for i, r in enumerate(CAMP_CORR_RONDAS) if r <= hoy]
+    if not activas or not (9 <= hora < 19):
+        return
+    ronda_idx = activas[-1]; ronda = CAMP_CORR_RONDAS[ronda_idx]
+    _camp_corr_revisar_respuestas_baja()
+    sh, shb = _camp_corr_hojas()
+    if not sh:
+        return
+    log = sh.get_all_values()[1:]
+    bajas = {r[1].lower() for r in (shb.get_all_values()[1:] if shb else []) if len(r) > 1}
+    ya = {r[2].lower() for r in log if len(r) > 4 and r[1] == ronda and r[4] in ("ENVIADO", "COPIA")}
+    # Copia de control a Javier al arrancar cada ronda
+    if f"COPIA-{ronda}" not in {(r[2] if len(r) > 2 else "") for r in log if len(r) > 1 and r[1] == ronda} and ronda not in _CAMP_CORR["copia"]:
+        for c in {GMAIL_USER.lower(), "javiermendosalinas@gmail.com"}:
+            try:
+                _camp_corr_enviar(c, "Acierta Max (copia de control)", ronda_idx)
+            except Exception as e:
+                print(f"[MAX-CORREDORES] Falló la copia de control a {c}: {e}", flush=True)
+        sh.append_row([ahora, ronda, f"COPIA-{ronda}", "Copia de control a Javier", "COPIA"])
+        _CAMP_CORR["copia"].add(ronda)
+    hace_una_hora = time.time() - 3600
+    _CAMP_CORR["envios"] = [t for t in _CAMP_CORR["envios"] if t > hace_una_hora]
+    cupo = CAMP_CORR_POR_HORA - len(_CAMP_CORR["envios"])
+    if cupo <= 0:
+        return
+    pendientes = [d for d in _camp_corr_destinatarios(bajas) if d[0] not in ya]
+    if not pendientes:
+        return
+    filas, fallas = [], 0
+    for correo, inmo in pendientes[:cupo]:
+        try:
+            _camp_corr_enviar(correo, inmo, ronda_idx)
+            filas.append([hora_gdl(), ronda, correo, inmo, "ENVIADO"])
+            _CAMP_CORR["envios"].append(time.time())
+        except Exception as e:
+            fallas += 1
+            filas.append([hora_gdl(), ronda, correo, inmo, f"ERROR: {str(e)[:80]}"])
+            if fallas >= 3:
+                print("[MAX-CORREDORES] Tres fallas seguidas: pauso esta tanda.", flush=True)
+                break
+        time.sleep(random.uniform(20, 40))
+    if filas:
+        sh.append_rows(filas)
+        ok = sum(1 for f in filas if f[4] == "ENVIADO")
+        print(f"[MAX-CORREDORES] Ronda {ronda}: {ok} enviados en esta tanda, {len(pendientes) - ok} pendientes", flush=True)
+
+
+def _loop_camp_corredores():
+    time.sleep(90)
+    while True:
+        try:
+            _camp_corr_paso()
+        except Exception as e:
+            print(f"[MAX-CORREDORES] Error: {e}", flush=True)
+        time.sleep(600)
+
+
+if os.environ.get("CAMP_CORREDORES", "1") != "0":
+    threading.Thread(target=_loop_camp_corredores, daemon=True).start()
+
+
+@app.route("/api/corredores/baja", methods=["GET", "POST"])
+def api_corredores_baja():
+    correo = (request.args.get("e") or "").strip().lower()
+    token = request.args.get("t") or ""
+    if not (correo and _RE_CORREO.match(correo) and hmac.compare_digest(token, _camp_corr_token(correo))):
+        return ("<p style='font-family:Arial'>Liga no válida.</p>", 400, {"Content-Type": "text/html; charset=utf-8"})
+    threading.Thread(target=_camp_corr_baja, args=(correo, "liga de baja"), daemon=True).start()
+    return ("<div style='font-family:Arial;max-width:480px;margin:60px auto;text-align:center'>"
+            "<h2>Listo</h2><p>Ya no recibirá más correos de esta campaña de Acierta Max.</p>"
+            "<p style='color:#777;font-size:13px'>Si fue un error, escríbanos a javier.mendoza@acierta.com.mx.</p></div>",
+            200, {"Content-Type": "text/html; charset=utf-8"})
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+
