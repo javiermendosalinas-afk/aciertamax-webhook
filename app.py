@@ -44,6 +44,23 @@ if "/d/" in SHEET_ID:  # tolerancia: si pegaron la URL completa, extraer el ID
 HUMAN_HANDOFF       = os.environ.get("HUMAN_HANDOFF_NUMBER", "")
 GMAIL_USER          = os.environ.get("GMAIL_USER", "")
 GMAIL_PASS          = os.environ.get("GMAIL_PASS", "")
+# Servidor de correo de salida. Por omisión Gmail; para el correo propio de
+# acierta.com.mx (cPanel) usar MAIL_SMTP_HOST=mail.acierta.com.mx y el puerto
+# que indique cPanel (465 con SSL o 587 con STARTTLS). GMAIL_USER/GMAIL_PASS
+# guardan el correo completo y su contraseña, sea Gmail o el dominio propio.
+MAIL_SMTP_HOST      = os.environ.get("MAIL_SMTP_HOST", "smtp.gmail.com")
+MAIL_SMTP_PORT      = int(os.environ.get("MAIL_SMTP_PORT", "465") or 465)
+
+def _smtp_conexion(timeout=30):
+    """Abre la conexión SMTP ya autenticada, con SSL (465) o STARTTLS (587)."""
+    import smtplib, ssl
+    if MAIL_SMTP_PORT == 465:
+        s = smtplib.SMTP_SSL(MAIL_SMTP_HOST, MAIL_SMTP_PORT, timeout=timeout, context=ssl.create_default_context())
+    else:
+        s = smtplib.SMTP(MAIL_SMTP_HOST, MAIL_SMTP_PORT, timeout=timeout)
+        s.ehlo(); s.starttls(context=ssl.create_default_context()); s.ehlo()
+    s.login(GMAIL_USER, GMAIL_PASS)
+    return s
 
 # ------------------------------------------------------------------
 # EQUIPO DE VENDEDORES — rotacion round-robin
@@ -1900,8 +1917,7 @@ def enviar_email_vendedor(destinatario, asunto, cuerpo):
         msg["To"]      = destinatario
         msg["Subject"] = asunto
         msg.attach(MIMEText(cuerpo, "plain", "utf-8"))
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as s:
-            s.login(GMAIL_USER, GMAIL_PASS)
+        with _smtp_conexion(timeout=15) as s:
             s.send_message(msg)
         print(f"[MAX-EMAIL] Email enviado a {destinatario}: {asunto}", flush=True)
         return True
@@ -7976,8 +7992,7 @@ def _pulso_correo(destino, nombre, ed, pdf, tel, bienvenida=False):
         adj.add_header("Content-Disposition", "attachment", filename=ed.get("archivo") or "Pulso_acierta_pro.pdf")
         msg.attach(adj)
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
-            s.login(GMAIL_USER, GMAIL_PASS)
+        with _smtp_conexion(timeout=30) as s:
             s.send_message(msg)
         _pulso_metrica("CORREOS")
         return True
