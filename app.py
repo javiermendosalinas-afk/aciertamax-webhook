@@ -2304,6 +2304,78 @@ def _actualizar_bitacora_con_lead(phone, folio, operacion, interes):
         import traceback
         print(f"[MAX-ERROR] No se pudo actualizar bitácora con lead {phone}:\n{traceback.format_exc()}", flush=True)
 
+# =====================================================================
+# AVISO DE PRIVACIDAD (LFPDPPP 2025): una sola respuesta "ACEPTO"
+# =====================================================================
+# A cada contacto nuevo se le envía el aviso simplificado (art. 16 de la Ley)
+# unos segundos después de la primera respuesta. "ACEPTO" queda como
+# consentimiento expreso (incluye datos patrimoniales/financieros, art. 7, y
+# finalidades secundarias). "BAJA" registra la negativa a promociones. El
+# servicio NO se condiciona: si no responde ACEPTO, MAX lo sigue atendiendo.
+AVISO_PRIV_VERSION = "16-oct-2026"
+HOJA_CONSENT = "Consentimientos Privacidad"
+COLS_CONSENT = ["FECHA Y HORA", "WHATSAPP", "EVENTO", "VERSION_AVISO", "TEXTO_CLIENTE"]
+CONSENT_CACHE = {}   # phone -> último evento: ENVIADO / ACEPTO / BAJA
+AVISO_PRIV_TEXTO = (
+    "🔒 *Aviso de privacidad*\n"
+    "Acierta Max, S.A. de C.V. (Av. Temuco 293, Tlajomulco, Jal.) usa tus datos para atender tu búsqueda, "
+    "asignarte un asesor, agendar visitas, gestionar tu crédito y formalizar tu operación; y, con tu "
+    "consentimiento, para enviarte promociones y recordatorios. No pedimos datos sensibles. "
+    "Aviso completo, derechos ARCO y cómo limitar el uso de tus datos: acierta.pro/privacidad\n\n"
+    "Responde *ACEPTO* para confirmar que lo leíste y que autorizas el tratamiento de tus datos, "
+    "incluidos los financieros. Puedes escribir *BAJA* en cualquier momento para no recibir promociones.")
+_RE_ACEPTO = re.compile(r"^\s*(s[ií][,\s]*)?acepto\b[\s.!¡,]*", re.I)
+_RE_BAJA_SOLA = re.compile(r"^\s*baja\s*[.!]*\s*$", re.I)
+
+def _consent_registrar(phone, evento, texto=""):
+    CONSENT_CACHE[phone] = evento
+    try:
+        libro, _ = _sheets_client()
+        if not libro:
+            return False
+        sh = _get_o_crear_hoja(libro, HOJA_CONSENT, COLS_CONSENT)
+        for intento in range(3):
+            try:
+                sh.append_row([hora_gdl(), phone, evento, AVISO_PRIV_VERSION, (texto or "")[:200]])
+                return True
+            except Exception:
+                time.sleep(2 + intento * 3)
+    except Exception:
+        import traceback
+        print(f"[MAX-ERROR] No se pudo registrar consentimiento {evento} de {phone}:\n{traceback.format_exc()}", flush=True)
+    return False
+
+def _consent_estado(phone):
+    if phone in CONSENT_CACHE:
+        return CONSENT_CACHE[phone]
+    try:
+        libro, _ = _sheets_client()
+        if libro:
+            sh = _get_o_crear_hoja(libro, HOJA_CONSENT, COLS_CONSENT)
+            celdas = sh.findall(phone, in_column=2)
+            if celdas:
+                ev = sh.cell(celdas[-1].row, 3).value or ""
+                CONSENT_CACHE[phone] = ev
+                return ev
+    except Exception:
+        pass
+    CONSENT_CACHE[phone] = ""
+    return ""
+
+def _enviar_aviso_privacidad(phone, espera=40):
+    """Envía el aviso simplificado una sola vez por contacto, después de la
+    primera respuesta de MAX para no interrumpir la conversación."""
+    try:
+        time.sleep(espera)
+        if _consent_estado(phone) in ("ENVIADO", "ACEPTO", "BAJA"):
+            return
+        wati_send_text(phone, AVISO_PRIV_TEXTO, copiar=False)
+        _consent_registrar(phone, "ENVIADO")
+        print(f"[MAX] Aviso de privacidad enviado a {phone}", flush=True)
+    except Exception:
+        import traceback
+        print(f"[MAX-ERROR] Aviso de privacidad a {phone}:\n{traceback.format_exc()}", flush=True)
+
 def registrar_contacto_bitacora(phone, primer_mensaje, detectado=""):
     """Anota TODO contacto nuevo desde su primer mensaje, sin filtrar ni
     esperar a que esté calificado. 'Leads MAX' sigue siendo solo los
@@ -6580,9 +6652,36 @@ def webhook():
                             BITACORA_REGISTRADOS.add(phone)
                             AVISO_INICIAL[phone] = time.time()
                             threading.Thread(target=_aviso_inicial, args=(phone, texto), daemon=True).start()
+                            threading.Thread(target=_enviar_aviso_privacidad, args=(phone,), daemon=True).start()
                         except Exception:
                             import traceback
                             print(f"[MAX-ERROR] Bitácora falló para {phone} (no interrumpe la respuesta):\n{traceback.format_exc()}", flush=True)
+                    # FAST-PATH PRIVACIDAD: "ACEPTO" = consentimiento expreso a todo
+                    # el aviso; "BAJA" (sola) = no recibir promociones.
+                    _m_acepto = _RE_ACEPTO.match(texto)
+                    # Solo cuenta como aceptación del aviso si MAX ya se lo envió
+                    # y está pendiente; así un "acepto" sobre otra cosa (una cita,
+                    # una propuesta) no se confunde.
+                    if _m_acepto and _consent_estado(phone) == "ENVIADO":
+                        _consent_registrar(phone, "ACEPTO", texto)
+                        print(f"[MAX] Consentimiento ACEPTO de {phone}", flush=True)
+                        if len(texto[_m_acepto.end():].strip()) < 4:
+                            _conf = ("✅ ¡Gracias! Quedó registrada tu aceptación del aviso de privacidad de Acierta Max "
+                                     f"(versión {AVISO_PRIV_VERSION}). Puedes consultarlo en acierta.pro/privacidad. "
+                                     "¿En qué más te ayudo?")
+                            wati_send_text(phone, _conf)
+                            append_history(phone, "user", texto)
+                            append_history(phone, "assistant", _conf)
+                            continue
+                    elif _RE_BAJA_SOLA.match(texto):
+                        _consent_registrar(phone, "BAJA", texto)
+                        print(f"[MAX] BAJA de promociones de {phone}", flush=True)
+                        _conf = ("Listo, ya no te enviaremos promociones ni recordatorios. Si tienes una búsqueda "
+                                 "o una operación en curso, te seguimos atendiendo con gusto.")
+                        wati_send_text(phone, _conf)
+                        append_history(phone, "user", texto)
+                        append_history(phone, "assistant", _conf)
+                        continue
                     # FAST-PATH de campañas: se revisa en CUALQUIER mensaje de la
                     # conversación, no solo el primero. Antes solo se checaba el
                     # primer mensaje ("if campana and not historial"), lo que hacía
