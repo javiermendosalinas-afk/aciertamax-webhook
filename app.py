@@ -6647,6 +6647,13 @@ def webhook():
                     PENDING[phone] = []
                 try:
                     print(f"[MAX] Mensaje de {phone}: {texto[:200]}", flush=True)
+                    # FAST-PATH ALTA DE COACH: "ALTA ######" desde su WhatsApp = firma del
+                    # convenio. Va antes de la bitácora para no tratar al coach como prospecto.
+                    _m_alta = _RE_ALTA.match(texto)
+                    if _m_alta:
+                        _resp_alta = _coach_firmar(phone, _m_alta.group(1))
+                        wati_send_text(phone, _resp_alta, copiar=False)
+                        continue
                     _reenviar_a_javier(phone, cliente=texto)
                     historial = get_history(phone)
                     # BITÁCORA UNIVERSAL: registra TODO contacto desde su
@@ -8299,6 +8306,10 @@ def _asesores():
         u = _asesor_clave_usuario(v["nombre"])
         out[u] = {"usuario": u, "nombre": v["nombre"], "telefono": v["phone"],
                   "clave": os.environ.get(f"CLAVE_ASESOR_{u.upper()}", "")}
+    try:
+        out.update(_coaches_activos())   # Coaches Acierta dados de alta en línea y aprobados
+    except NameError:
+        pass
     return out
 
 
@@ -8515,7 +8526,11 @@ def api_asesor_login():
         return _camino_resp({"ok": False, "error": "Demasiados intentos. Espera 15 minutos."}, 429)
     a = _asesores().get(str(d.get("usuario") or "").lower())
     clave = str(d.get("clave") or "")
-    if not a or not a["clave"] or not hmac.compare_digest(clave.encode(), a["clave"].encode()):
+    if a and a["clave"].startswith("pbkdf2$"):
+        valida = _coach_clave_ok(clave, a["clave"])
+    else:
+        valida = bool(a and a["clave"]) and hmac.compare_digest(clave.encode(), a["clave"].encode())
+    if not valida:
         print(f"[MAX-ASESOR] Intento de acceso fallido para '{d.get('usuario')}' desde {_camino_ip()}", flush=True)
         return _camino_resp({"ok": False, "error": "Usuario o contraseña incorrectos."}, 401)
     print(f"[MAX-ASESOR] Acceso de {a['nombre']}", flush=True)
@@ -9377,6 +9392,360 @@ def api_corredores_baja():
             "<h2>Listo</h2><p>Ya no recibirá más correos de esta campaña de Acierta Max.</p>"
             "<p style='color:#777;font-size:13px'>Si fue un error, escríbanos a javier.mendoza@acierta.com.mx.</p></div>",
             200, {"Content-Type": "text/html; charset=utf-8"})
+
+
+# =====================================================================
+# ALTA DE COACH ACIERTA (acierta.pro/coach-alta.html)
+# =====================================================================
+# Seis pasos: 1) bienvenida (nombre y WhatsApp); 2) identidad (INE por ambos
+# lados, Constancia de Situación Fiscal y RFC) a una carpeta PRIVADA de Drive;
+# 3) aceptación del convenio, la carta de independencia y el aviso de
+# privacidad; 4) el coach envía "ALTA ######" desde SU WhatsApp a MAX, lo que
+# verifica su teléfono y equivale a su firma (cláusula DUODÉCIMA BIS);
+# 5) constancia en PDF con fecha, hora, versión y huella SHA-256 del texto
+# aceptado (Drive + WhatsApp); 6) contraseña. El acceso al portal se activa
+# solo cuando Javier lo aprueba con la liga que recibe por correo.
+import secrets as _secrets
+COACH_CONV_VERSION = "1.0 · 16-oct-2026"
+COACH_HOJA = "Coaches Acierta"
+COACH_COLS = ["ID", "FECHA ALTA", "NOMBRE", "WHATSAPP", "CORREO", "RFC", "REGIMEN", "CERTIFICACIONES", "ESTATUS",
+              "CARPETA_DRIVE", "ACEPTO_FECHA", "ACEPTO_IP", "ACEPTO_NAVEGADOR", "CODIGO", "FIRMA_FECHA",
+              "HASH_CONVENIO", "CONSTANCIA", "CLAVE_HASH", "APROBADO_FECHA"]
+COACH_DRIVE_RAIZ = "Acierta Max — Coaches Acierta (privado)"
+_COACH_CACHE = {"t": 0, "filas": []}
+_RE_ALTA = re.compile(r"^\s*ALTA\s*(\d{6})\s*$", re.I)
+
+
+def _coach_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, COACH_HOJA, COACH_COLS) if libro else None
+
+
+def _coach_filas(fresco=False):
+    if not fresco and time.time() - _COACH_CACHE["t"] < 120:
+        return _COACH_CACHE["filas"]
+    sh = _coach_hoja()
+    v = sh.get_all_values() if sh else []
+    filas = []
+    for i, r in enumerate(v[1:], start=2):
+        d = dict(zip(COACH_COLS, r + [""] * (len(COACH_COLS) - len(r))))
+        d["_fila"] = i
+        filas.append(d)
+    _COACH_CACHE.update(t=time.time(), filas=filas)
+    return filas
+
+
+def _coach_por_id(cid):
+    if not cid:
+        return None
+    return next((f for f in _coach_filas(fresco=True) if f["ID"] == cid), None)
+
+
+def _coach_actualizar(fila, cambios):
+    sh = _coach_hoja()
+    for k, v in cambios.items():
+        sh.update_cell(fila["_fila"], COACH_COLS.index(k) + 1, v)
+        fila[k] = v
+    _COACH_CACHE["t"] = 0
+
+
+def _coach_hash_clave(clave):
+    sal = _secrets.token_hex(8)
+    h = hashlib.pbkdf2_hmac("sha256", clave.encode(), sal.encode(), 200_000).hex()
+    return f"pbkdf2${sal}${h}"
+
+
+def _coach_clave_ok(clave, guardada):
+    try:
+        _, sal, h = guardada.split("$")
+        return hmac.compare_digest(hashlib.pbkdf2_hmac("sha256", clave.encode(), sal.encode(), 200_000).hex(), h)
+    except Exception:
+        return False
+
+
+def _convenio_texto(nombre="[NOMBRE COMPLETO]", rfc="[RFC]", regimen="[RÉGIMEN FISCAL]"):
+    t = open(os.path.join(os.path.dirname(__file__), "recursos", "convenio_coach.md"), encoding="utf-8").read()
+    seguro = os.environ.get("COACH_SEGURO", "")
+    reemplazos = {
+        "{{NOMBRE}}": nombre, "{{RFC}}": rfc, "{{REGIMEN}}": regimen,
+        "{{CUOTA}}": os.environ.get("COACH_CUOTA", "[cuota por definir]"),
+        "{{DIAS_CUOTA}}": os.environ.get("COACH_DIAS_CUOTA", "5"),
+        "{{DIAS_PAGO}}": os.environ.get("COACH_DIAS_PAGO", "[por definir]"),
+        "{{PENA}}": os.environ.get("COACH_PENA", "[monto por definir]"),
+        "{{SEGURO}}": seguro or "Opcional. EL ASESOR podrá contratar un seguro de responsabilidad civil profesional y entregar copia de la póliza a ACIERTA.",
+    }
+    for k, v in reemplazos.items():
+        t = t.replace(k, v)
+    return t
+
+
+def _coach_drive_carpeta(nombre, tel10):
+    raiz = _drive_obtener_o_crear_carpeta(COACH_DRIVE_RAIZ)
+    return _drive_obtener_o_crear_carpeta(f"{nombre} · {tel10}"[:100].replace("/", "-"), raiz)
+
+
+def _coach_drive_subir(carpeta_id, contenido, nombre_archivo, mime):
+    from googleapiclient.http import MediaIoBaseUpload
+    f = _drive_client().files().create(body={"name": nombre_archivo, "parents": [carpeta_id]},
+                                       media_body=MediaIoBaseUpload(io.BytesIO(contenido), mimetype=mime),
+                                       fields="id, webViewLink").execute()
+    return f.get("webViewLink") or f"https://drive.google.com/file/d/{f['id']}/view"
+
+
+def _coach_dataurl(valor, max_bytes=6_000_000):
+    m = re.match(r"^data:([\w/+.-]+);base64,(.+)$", str(valor or ""), re.S)
+    if not m:
+        return None, None
+    mime = m.group(1).lower()
+    if mime not in ("image/jpeg", "image/png", "image/webp", "application/pdf"):
+        return None, None
+    datos = _b64.b64decode(m.group(2))
+    return (datos, mime) if 0 < len(datos) <= max_bytes else (None, None)
+
+
+def _coach_correo(destinos, asunto, html_cuerpo):
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+    if not (GMAIL_USER and GMAIL_PASS):
+        return False
+    try:
+        msg = MIMEText(html_cuerpo, "html", "utf-8")
+        msg["From"] = formataddr(("MAX · Acierta Max", GMAIL_USER))
+        msg["To"] = ", ".join(destinos)
+        msg["Subject"] = asunto
+        with _smtp_conexion(timeout=30) as s:
+            s.send_message(msg)
+        return True
+    except Exception as e:
+        print(f"[MAX-COACH] No se pudo enviar correo: {e}", flush=True)
+        return False
+
+
+def _coach_constancia_pdf(f):
+    """Convenio completo + hoja de constancia de aceptación electrónica."""
+    from fpdf import FPDF
+    rec = os.path.join(os.path.dirname(__file__), "recursos", "fuentes")
+    pdf = FPDF(format="Letter")
+    pdf.set_margins(20, 18, 20)
+    pdf.set_auto_page_break(True, 18)
+    for estilo, archivo in (("", "Regular"), ("B", "Bold")):
+        pdf.add_font("Poppins", estilo, os.path.join(rec, f"Poppins-{archivo}.ttf"))
+    pdf.add_page()
+    texto = _convenio_texto(f["NOMBRE"], f["RFC"] or "[RFC]", f["REGIMEN"] or "[RÉGIMEN FISCAL]")
+    for linea in texto.split("\n"):
+        linea = linea.rstrip()
+        if not linea:
+            pdf.ln(2); continue
+        if linea.startswith("# "):
+            pdf.set_font("Poppins", "B", 13); pdf.multi_cell(0, 6.5, linea[2:], new_x="LMARGIN", new_y="NEXT"); pdf.ln(1); continue
+        if linea.startswith("## "):
+            pdf.ln(2); pdf.set_font("Poppins", "B", 11); pdf.multi_cell(0, 6, linea[3:], new_x="LMARGIN", new_y="NEXT"); continue
+        pdf.set_font("Poppins", "", 9)
+        pdf.multi_cell(0, 4.6, linea, markdown=True, new_x="LMARGIN", new_y="NEXT")
+    pdf.add_page()
+    pdf.set_font("Poppins", "B", 13); pdf.multi_cell(0, 7, "Constancia de aceptación electrónica", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Poppins", "", 9.5)
+    datos = [
+        ("Documento", "Convenio de Membresía a la Red de Asesores Independientes Acierta, Anexo A (carta de independencia) y Aviso de Privacidad de Acierta Max"),
+        ("Versión", COACH_CONV_VERSION),
+        ("Huella SHA-256 del texto aceptado", f["HASH_CONVENIO"]),
+        ("Coach Acierta", f["NOMBRE"]), ("WhatsApp verificado", f["WHATSAPP"]), ("Correo", f["CORREO"]),
+        ("RFC", f["RFC"]), ("Régimen fiscal", f["REGIMEN"]),
+        ("Aceptación en acierta.pro", f"{f['ACEPTO_FECHA']} (hora de Guadalajara) · IP {f['ACEPTO_IP']}"),
+        ("Navegador", (f["ACEPTO_NAVEGADOR"] or "")[:150]),
+        ("Firma por código de WhatsApp", f"Código {f['CODIGO']} recibido desde {f['WHATSAPP']} el {f['FIRMA_FECHA']} (hora de Guadalajara)"),
+        ("Fundamento", "Artículos 1803 y 1834 bis del Código Civil Federal; 89 y siguientes del Código de Comercio; cláusula DUODÉCIMA BIS del convenio."),
+    ]
+    for k, v in datos:
+        pdf.set_font("Poppins", "B", 9.5); pdf.multi_cell(0, 5.2, k, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Poppins", "", 9.5); pdf.multi_cell(0, 5.2, str(v or "—"), new_x="LMARGIN", new_y="NEXT"); pdf.ln(1.5)
+    pdf.ln(3); pdf.set_font("Poppins", "", 8)
+    pdf.multi_cell(0, 4.2, "Acierta Max conserva esta constancia y el expediente del Coach (identificación y constancia fiscal) en una carpeta privada. Copia enviada al Coach por WhatsApp.", new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
+
+
+def _coach_firmar(phone, codigo):
+    """Llamado desde el webhook cuando llega 'ALTA ######'. Regresa el texto de respuesta."""
+    tel10 = _ultimos10(phone)
+    filas = _coach_filas(fresco=True)
+    f = next((x for x in filas if x["CODIGO"] == codigo and x["ESTATUS"] == "ACEPTADO"), None)
+    if not f:
+        return "No encontré una alta pendiente con ese código. Revisa el número en acierta.pro/coach-alta.html."
+    if f["WHATSAPP"] != tel10:
+        return "Ese código debe enviarse desde el WhatsApp que registraste en tu alta."
+    _coach_actualizar(f, {"FIRMA_FECHA": hora_gdl(), "ESTATUS": "FIRMADO"})
+    def _constancia():
+        try:
+            pdf = _coach_constancia_pdf(f)
+            nombre = f"Constancia convenio Coach Acierta · {f['NOMBRE']}.pdf"
+            url = _coach_drive_subir(f["CARPETA_DRIVE"], pdf, nombre, "application/pdf") if f["CARPETA_DRIVE"] else ""
+            _coach_actualizar(f, {"CONSTANCIA": url})
+            wati_send_file(phone, pdf, nombre, caption="Tu convenio y la constancia de tu firma electrónica. Guárdalos.")
+            if f["CORREO"]:
+                _coach_correo([f["CORREO"]], "Tu convenio Coach Acierta firmado",
+                              f"<p>Hola {f['NOMBRE']}:</p><p>Quedó registrada tu firma electrónica del Convenio de Membresía "
+                              f"(versión {COACH_CONV_VERSION}). Te enviamos el PDF por WhatsApp.</p><p>Acierta Max</p>")
+        except Exception:
+            import traceback
+            print(f"[MAX-COACH] Error en constancia de {f['NOMBRE']}:\n{traceback.format_exc()}", flush=True)
+    threading.Thread(target=_constancia, daemon=True).start()
+    print(f"[MAX-COACH] Firma de convenio: {f['NOMBRE']} ({tel10})", flush=True)
+    return (f"✅ ¡Listo, {f['NOMBRE'].split()[0]}! Quedó registrada tu firma del Convenio de Membresía Coach Acierta. "
+            "En un momento te llega tu constancia en PDF. Regresa a la página de alta para crear tu contraseña.")
+
+
+def _coach_token_aprobar(cid):
+    return hmac.new(_asesor_llave(), ("coachaprobar:" + cid).encode(), hashlib.sha256).hexdigest()[:24]
+
+
+def _coaches_activos():
+    salida = {}
+    try:
+        for f in _coach_filas():
+            if f["ESTATUS"] == "ACTIVO" and f["CLAVE_HASH"]:
+                salida[f["WHATSAPP"]] = {"usuario": f["WHATSAPP"], "nombre": f["NOMBRE"],
+                                         "telefono": "521" + f["WHATSAPP"], "clave": f["CLAVE_HASH"]}
+    except Exception as e:
+        print(f"[MAX-COACH] Coaches no disponibles: {e}", flush=True)
+    return salida
+
+
+@app.route("/api/coach/convenio", methods=["GET", "OPTIONS"])
+def api_coach_convenio():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    return _camino_resp({"ok": True, "version": COACH_CONV_VERSION, "texto": _convenio_texto()})
+
+
+@app.route("/api/coach/alta/iniciar", methods=["POST", "OPTIONS"])
+def api_coach_alta_iniciar():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    if not _camino_limite("coachalta:ip:" + _camino_ip(), 8, 3600):
+        return _camino_resp({"ok": False, "error": "Demasiados intentos. Intenta más tarde."}, 429)
+    d = _asesor_json(8192) or {}
+    nombre = re.sub(r"\s+", " ", str(d.get("nombre") or "")).strip()[:80]
+    tel10 = _ultimos10(str(d.get("whatsapp") or ""))
+    correo = str(d.get("correo") or "").strip().lower()[:120]
+    if len(nombre.split()) < 2 or len(tel10) != 10 or (correo and not _RE_CORREO.match(correo)):
+        return _camino_resp({"ok": False, "error": "Escribe tu nombre completo, tu WhatsApp de 10 dígitos y un correo válido."}, 400)
+    filas = _coach_filas(fresco=True)
+    previa = next((f for f in filas if f["WHATSAPP"] == tel10 and f["ESTATUS"] in ("ACTIVO", "PENDIENTE_APROBACION")), None)
+    if previa:
+        return _camino_resp({"ok": False, "error": "Ese WhatsApp ya tiene un alta " + ("activa: entra al portal con tu contraseña." if previa["ESTATUS"] == "ACTIVO" else "en revisión. Te avisaremos al aprobarla.")}, 409)
+    cid = _secrets.token_urlsafe(16)
+    _coach_hoja().append_row([cid, hora_gdl(), nombre, tel10, correo] + [""] * 3 + ["INICIADO"] + [""] * 10)
+    _COACH_CACHE["t"] = 0
+    print(f"[MAX-COACH] Alta iniciada: {nombre} ({tel10})", flush=True)
+    return _camino_resp({"ok": True, "id": cid})
+
+
+@app.route("/api/coach/alta/documentos", methods=["POST", "OPTIONS"])
+def api_coach_alta_documentos():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(20_000_000) or {}
+    f = _coach_por_id(d.get("id"))
+    if not f or f["ESTATUS"] not in ("INICIADO", "DOCUMENTOS"):
+        return _camino_resp({"ok": False, "error": "Tu alta no se encontró o ya avanzó. Vuelve a empezar."}, 404)
+    rfc = re.sub(r"[^A-ZÑ&0-9]", "", str(d.get("rfc") or "").upper())[:13]
+    regimen = str(d.get("regimen") or "").strip()[:80]
+    if not re.match(r"^[A-ZÑ&]{4}\d{6}[A-Z0-9]{3}$", rfc) or not regimen:
+        return _camino_resp({"ok": False, "error": "Revisa tu RFC (13 caracteres, persona física) y tu régimen fiscal."}, 400)
+    docs = {}
+    for k, etiqueta in (("ine_frente", "INE frente"), ("ine_reverso", "INE reverso"), ("csf", "Constancia de Situación Fiscal")):
+        datos, mime = _coach_dataurl(d.get(k))
+        if not datos:
+            return _camino_resp({"ok": False, "error": f"Falta o no es válido: {etiqueta} (JPG, PNG o PDF de hasta 6 MB)."}, 400)
+        docs[etiqueta] = (datos, mime)
+    try:
+        carpeta = _coach_drive_carpeta(f["NOMBRE"], f["WHATSAPP"])
+        for etiqueta, (datos, mime) in docs.items():
+            ext = {"application/pdf": "pdf", "image/png": "png", "image/webp": "webp"}.get(mime, "jpg")
+            _coach_drive_subir(carpeta, datos, f"{etiqueta} · {f['NOMBRE']}.{ext}", mime)
+    except Exception as e:
+        print(f"[MAX-COACH] Error al guardar documentos: {e}", flush=True)
+        return _camino_resp({"ok": False, "error": "No pudimos guardar tus documentos. Intenta de nuevo."}, 500)
+    _coach_actualizar(f, {"RFC": rfc, "REGIMEN": regimen, "CERTIFICACIONES": str(d.get("cert") or "")[:200],
+                          "CARPETA_DRIVE": carpeta, "ESTATUS": "DOCUMENTOS"})
+    return _camino_resp({"ok": True})
+
+
+@app.route("/api/coach/alta/aceptar", methods=["POST", "OPTIONS"])
+def api_coach_alta_aceptar():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(8192) or {}
+    f = _coach_por_id(d.get("id"))
+    if not f or f["ESTATUS"] not in ("DOCUMENTOS", "ACEPTADO"):
+        return _camino_resp({"ok": False, "error": "Primero sube tus documentos."}, 400)
+    if not (d.get("convenio") is True and d.get("independencia") is True and d.get("privacidad") is True):
+        return _camino_resp({"ok": False, "error": "Para continuar debes aceptar las tres casillas."}, 400)
+    texto = _convenio_texto(f["NOMBRE"], f["RFC"], f["REGIMEN"])
+    codigo = f"{_secrets.randbelow(900000) + 100000}"
+    _coach_actualizar(f, {"ACEPTO_FECHA": hora_gdl(), "ACEPTO_IP": _camino_ip(),
+                          "ACEPTO_NAVEGADOR": (request.headers.get("User-Agent") or "")[:200],
+                          "HASH_CONVENIO": hashlib.sha256(texto.encode()).hexdigest(),
+                          "CODIGO": codigo, "ESTATUS": "ACEPTADO"})
+    return _camino_resp({"ok": True, "codigo": codigo, "wa": f"https://wa.me/523333777337?text=ALTA%20{codigo}"})
+
+
+@app.route("/api/coach/alta/estado", methods=["POST", "OPTIONS"])
+def api_coach_alta_estado():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    f = _coach_por_id((_asesor_json(2048) or {}).get("id"))
+    return _camino_resp({"ok": bool(f), "estatus": f["ESTATUS"] if f else ""})
+
+
+@app.route("/api/coach/alta/clave", methods=["POST", "OPTIONS"])
+def api_coach_alta_clave():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = _asesor_json(4096) or {}
+    f = _coach_por_id(d.get("id"))
+    clave = str(d.get("clave") or "")
+    if not f or f["ESTATUS"] != "FIRMADO":
+        return _camino_resp({"ok": False, "error": "Primero firma tu convenio con el código por WhatsApp."}, 400)
+    if len(clave) < 8 or not re.search(r"\d", clave) or not re.search(r"[A-Za-zÁÉÍÓÚáéíóúÑñ]", clave):
+        return _camino_resp({"ok": False, "error": "Tu contraseña debe tener al menos 8 caracteres, con letras y números."}, 400)
+    _coach_actualizar(f, {"CLAVE_HASH": _coach_hash_clave(clave), "ESTATUS": "PENDIENTE_APROBACION"})
+    liga = f"{MAX_URL_PUBLICA}/api/coach/alta/aprobar?id={f['ID']}&t={_coach_token_aprobar(f['ID'])}"
+    resumen = (f"Nuevo Coach Acierta por aprobar: {f['NOMBRE']} · WhatsApp {f['WHATSAPP']} · RFC {f['RFC']} · "
+               f"{f['CERTIFICACIONES'] or 'sin certificaciones declaradas'}.")
+    _coach_correo([GMAIL_USER, "javiermendosalinas@gmail.com"], f"Aprobar Coach Acierta: {f['NOMBRE']}",
+                  f"<p>{resumen}</p><p>Expediente: <a href='https://drive.google.com/drive/folders/{f['CARPETA_DRIVE']}'>carpeta privada en Drive</a>"
+                  f"{' · <a href=' + chr(39) + f['CONSTANCIA'] + chr(39) + '>constancia</a>' if f['CONSTANCIA'] else ''}</p>"
+                  f"<p>Cuando verifiques sus documentos y su membresía, aprueba su acceso: <a href='{liga}'><b>Aprobar acceso</b></a></p>")
+    try:
+        wati_send_text(JAVIER_PHONE, f"🆕 {resumen}\nAprobar acceso: {liga}", copiar=False)
+    except Exception:
+        pass
+    return _camino_resp({"ok": True})
+
+
+@app.route("/api/coach/alta/aprobar", methods=["GET"])
+def api_coach_alta_aprobar():
+    cid = request.args.get("id") or ""
+    if not hmac.compare_digest(request.args.get("t") or "", _coach_token_aprobar(cid)):
+        return ("<p style='font-family:Arial'>Liga no válida.</p>", 400, {"Content-Type": "text/html; charset=utf-8"})
+    f = _coach_por_id(cid)
+    if not f:
+        return ("<p style='font-family:Arial'>No encontré esa alta.</p>", 404, {"Content-Type": "text/html; charset=utf-8"})
+    if f["ESTATUS"] == "PENDIENTE_APROBACION":
+        _coach_actualizar(f, {"ESTATUS": "ACTIVO", "APROBADO_FECHA": hora_gdl()})
+        print(f"[MAX-COACH] Acceso aprobado: {f['NOMBRE']}", flush=True)
+        aviso = (f"🎉 ¡Bienvenido a la red, {f['NOMBRE'].split()[0]}! Tu acceso como Coach Acierta ya está activo. "
+                 "Entra en acierta.pro/asesor.html: elige tu nombre y usa la contraseña que creaste.")
+        try:
+            wati_send_text("521" + f["WHATSAPP"], aviso, copiar=False)
+        except Exception:
+            pass
+        if f["CORREO"]:
+            _coach_correo([f["CORREO"]], "Tu acceso Coach Acierta está activo", f"<p>{aviso}</p>")
+    estado = "activo" if f["ESTATUS"] == "ACTIVO" else f["ESTATUS"].lower()
+    return (f"<div style='font-family:Arial;max-width:520px;margin:60px auto;text-align:center'><h2>{f['NOMBRE']}</h2>"
+            f"<p>Acceso al portal: <b>{estado}</b>.</p></div>", 200, {"Content-Type": "text/html; charset=utf-8"})
 
 
 if __name__ == "__main__":
