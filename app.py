@@ -10216,6 +10216,7 @@ SITIOS_VIGILAR = ["acierta.pro", "inmobiliaria.pro", "losprofesionalesinmobiliar
                   "gruposancarlos.pro", "bellavittoria.vip", "villadhara.com.mx", "torreeleve.com", "blockiteso.com",
                   "ikono-altadireccion.com", "verifica.casa"]
 _SITIOS_FALLA = {}
+_SITIOS_CAIDOS = set()
 
 
 def _revisar_sitios():
@@ -10235,6 +10236,16 @@ def _revisar_sitios():
                 fallas.append(f"{url}: {type(e).__name__}")
     for x in resultados:
         print(f"[MAX-SITIOS] {x}", flush=True)
+    # Sitios que fallaban y ya abren: se avisa la buena noticia (una vez).
+    caidos_ahora = {f_.split(": ")[0] for f_ in fallas if "://www." not in f_}
+    recuperados = sorted(u for u in _SITIOS_CAIDOS if u not in caidos_ahora)
+    _SITIOS_CAIDOS.clear(); _SITIOS_CAIDOS.update(caidos_ahora)
+    if recuperados:
+        try:
+            _coach_correo([GMAIL_USER, "javiermendosalinas@gmail.com"], "✅ Ya abre: " + ", ".join(u.split("//")[1].strip("/") for u in recuperados),
+                          "<p>Estos sitios ya funcionan con su certificado de seguridad:</p><ul>" + "".join(f"<li>{u}</li>" for u in recuperados) + "</ul>")
+        except Exception:
+            pass
     # solo se avisa de las fallas del dominio principal (sin www), y una vez al día por sitio
     hoy = hora_gdl()[:10]
     nuevas = [f_ for f_ in fallas if "://www." not in f_ and _SITIOS_FALLA.get(f_.split(":")[0] + f_.split(":")[1]) != hoy]
@@ -10256,7 +10267,8 @@ def _loop_sitios():
             _revisar_sitios()
         except Exception as e:
             print(f"[MAX-SITIOS] Error: {e}", flush=True)
-        time.sleep(6 * 3600)
+        # cada hora mientras haya algún sitio caído; si todo está bien, cada 6 horas
+        time.sleep(3600 if _SITIOS_CAIDOS else 6 * 3600)
 
 
 threading.Thread(target=_loop_sitios, daemon=True).start()
