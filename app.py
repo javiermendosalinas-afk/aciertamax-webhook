@@ -9750,28 +9750,23 @@ def api_coach_alta_aprobar():
 
 
 
-# ---- DIAGNÓSTICO TEMPORAL 6: la consulta del teléfono (t7 con puid y whatsapp) ----
+# ---- DIAGNÓSTICO TEMPORAL 7: ¿la API MLS de EasyBroker trae al agente? ----
 def _diag_neojaus():
     time.sleep(20)
-    UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36", "Accept": "application/json"}
-    try:
-        h = requests.get("https://neojaus.com/propiedades/renta-nave-industrial-en-el-salto-7113705111", timeout=30, headers=UA).text
-        rutas = set()
-        for s in re.findall(r'src="(/_next/static/chunks/[^"]+\.js)"', h):
-            js = requests.get("https://neojaus.com" + s, timeout=30, headers=UA).text
-            for m in re.finditer(r't7:\(\)=>([A-Za-z_$][\w$]*)', js):
-                nombre = m.group(1)
-                print(f"[DIAG-NJ6] t7 → {nombre} en {s.split('/')[-1]}", flush=True)
-                for d in re.finditer(r'(?:let|const|var|,)\s*' + re.escape(nombre) + r'\s*=\s*async.{0,700}', js):
-                    print(f"[DIAG-NJ6] def: {d.group(0)[:700]}", flush=True)
-            for m in re.finditer(r'.{0,160}\.puid.{0,200}', js):
-                if "JR" in m.group(0):
-                    print(f"[DIAG-NJ6] puid {s.split('/')[-1]}: {m.group(0)[:360]}", flush=True)
-            for m in re.finditer(r'JR\)\(\)\}(/v[0-9]/[^`]*(?:contact|phone|lead|whats|inquir)[^`]*)`', js):
-                rutas.add(m.group(1))
-        print(f"[DIAG-NJ6] rutas candidatas: {sorted(rutas)}", flush=True)
-    except Exception as e:
-        print(f"[DIAG-NJ6] error: {e}", flush=True)
+    for eb in ['EB-TR8355', 'EB-QL0083', 'EB-MZ6885', 'EB-SL3821', 'EB-VY8819']:
+        for ruta in (f"/mls_properties/{eb}", f"/properties/{eb}"):
+            try:
+                r = requests.get(EB_API + ruta, headers=eb_headers(), timeout=12)
+                if r.status_code != 200:
+                    print(f"[DIAG-EB] {eb} {ruta} → {r.status_code}", flush=True); continue
+                j = r.json()
+                print(f"[DIAG-EB] {eb} {ruta} claves: {list(j.keys())}", flush=True)
+                for k in ("agent", "agency", "broker", "contact", "user", "publisher", "collaboration", "commission"):
+                    if k in j:
+                        print(f"[DIAG-EB] {eb} {k} = {str(j[k])[:400]}", flush=True)
+                break
+            except Exception as e:
+                print(f"[DIAG-EB] {eb} error {e}", flush=True)
 threading.Thread(target=_diag_neojaus, daemon=True).start()
 
 
