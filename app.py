@@ -10084,8 +10084,7 @@ def _loop_lote_originadores():
         _inv = _hoja_en_directorio(INV_ORIG_HOJA, INV_ORIG_COLS).row_count
     except Exception:
         _hay, _inv = {}, 0
-    if len(_hay) < 450 or _inv < 1000:
-        _lote_originadores()              # primera vez (o lote incompleto): continúa y arma el inventario
+    _lote_originadores()                  # al arrancar: solo consulta asesores nuevos y rearma el inventario
     while True:
         try:
             ahora = hora_gdl()
