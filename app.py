@@ -574,7 +574,8 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
 
         _orig_txt = ""
         try:
-            _orig_txt = _texto_originadores([p.get("codigo_eb", "") for p in propiedades])
+            _orig_txt = _texto_originadores([p.get("codigo_eb", "") for p in propiedades], coach=vendedor.get("nombre", ""),
+                                            titulos={(p.get("codigo_eb") or "").upper(): p.get("titulo", "") for p in propiedades})
         except Exception as e:
             print(f"[MAX-ORIG] No se pudo armar el bloque de originadores: {e}", flush=True)
         msg = (
@@ -590,7 +591,9 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
                 + "El primer contacto humano rápido es el que cierra.\n"
                 + "💬 Cuéntame cómo te fue con tus palabras; si tienes dudas (originador, oferta, documentos, crédito), pregúntame.\n\n") if busca else "")
             + "📋 Por favor:\n"
-            + (f"1. Originador de cada propiedad:\n{_orig_txt}\n" if _orig_txt else (f"1. Busca estas claves en tu EasyBroker para identificar al originador: {codigos}\n" if codigos else "1. Revisa el chat completo que te mando abajo.\n"))
+            + (f"1. *Contacta HOY al originador* (sin él no hay visita):\n{_orig_txt}\n"
+               f"   📞 Si prefieres llamar: «Soy {vendedor.get('nombre', '')} de Acierta Max; tengo un cliente para tu propiedad. ¿Sigue disponible? "
+               f"¿Compartes comisión y cuánto? ¿Cuándo la podemos ver?»\n   Cuando te conteste, dime «originador sí».\n" if _orig_txt else (f"1. Busca estas claves en tu EasyBroker para identificar al originador: {codigos}\n" if codigos else "1. Revisa el chat completo que te mando abajo.\n"))
             + ("2. Llama al propietario para agendar la visita de valuación.\n" if "PROPIETARIO" in busca else "2. Contacta al cliente para agendar visita.\n")
             + ("3. Contacta al originador de cada propiedad para confirmar disponibilidad.\n\n" if codigos else "\n")
             + (f"📁 Expediente del cliente (identificación y documentos): {carpeta_url}\n\n" if carpeta_url else "")
@@ -1309,10 +1312,19 @@ def _crm_revisar_seguimientos():
             faltante = []
             if not cliente_ok: faltante.append("al cliente")
             if not originador_ok: faltante.append("al originador")
+            _bloque_o = ""
+            if not originador_ok:
+                try:
+                    _cods = re.findall(r"(?:EB|NJ)-[A-Z0-9]{3,8}", (registro.get("PROPIEDADES") or "").upper())
+                    _bloque_o = _texto_originadores(list(dict.fromkeys(_cods)), coach=registro.get("VENDEDOR", ""))
+                except Exception as _e:
+                    print(f"[MAX-ORIG] No se pudo armar el recordatorio del originador: {_e}", flush=True)
             notificar_interno(
                 vendedor_phone,
                 f"Hola! Seguimiento de {registro.get('FOLIO')} — {registro.get('NOMBRE_CLIENTE')}. "
-                f"¿Ya contactaste {' y '.join(faltante)}?",
+                f"¿Ya contactaste {' y '.join(faltante)}?"
+                + (f"\n\n👤 Originador:\n{_bloque_o}\n\nCuéntame con tus palabras cómo vas (por ejemplo: «el originador no contesta» o «ya me confirmó, está disponible»)." if _bloque_o else
+                   "\n\nCuéntame con tus palabras cómo vas."),
                 resumen_para_plantilla=(f"Cliente: {registro.get('NOMBRE_CLIENTE')} | "
                     f"Ficha: {codigos_eb} | Pendiente: contactar {' y '.join(faltante)} | "
                     f"Intento #{intentos + 1} | Folio: {registro.get('FOLIO')}"),
@@ -9949,8 +9961,18 @@ def _originador_auto(clave):
     return info
 
 
-def _texto_originadores(codigos):
-    """Bloque para el aviso al coach con el originador de cada clave."""
+def _msg_originador(asesor, coach, clave, titulo=""):
+    """Mensaje que el coach le manda al originador (se arma en una liga wa.me)."""
+    saludo = f"Hola {asesor.split()[0]}" if asesor and not any(w in asesor.lower() for w in ("inmobiliaria", "grupo", "real estate", "bienes")) else "Hola"
+    return (f"{saludo}, soy {coach or 'asesor'} de Acierta Max (AMPI Guadalajara y NAR). Tengo un cliente interesado en tu propiedad "
+            f"{clave}{(' – ' + titulo[:70]) if titulo else ''}. ¿Sigue disponible? ¿Compartes comisión y en qué porcentaje? "
+            f"¿Qué días y horarios tienes para mostrarla esta semana? ¡Gracias!")
+
+
+def _texto_originadores(codigos, coach="", titulos=None):
+    """Bloque para el aviso al coach con el originador de cada clave y su mensaje listo para enviar."""
+    from urllib.parse import quote as _q
+    titulos = titulos or {}
     lineas = []
     for c in [x.strip().upper() for x in codigos if x and x.strip()][:6]:
         o = {}
@@ -9959,10 +9981,13 @@ def _texto_originadores(codigos):
         except Exception as e:
             print(f"[MAX-ORIG] Error con {c}: {e}", flush=True)
         if o and (o.get("asesor") or o.get("inmobiliaria")):
-            tel = o.get("telefono")
+            tel = re.sub(r"\D", "", o.get("telefono") or "")[-10:]
+            msg_o = _msg_originador(o.get("asesor") or "", coach, c, titulos.get(c, ""))
             lineas.append(f"• {c}: {o.get('asesor') or 'asesor sin nombre'} · {o.get('inmobiliaria') or 's/inmobiliaria'}"
                           + (f" · {o['asociacion']}" if o.get("asociacion") else "")
-                          + (f" · 📞 {tel} (wa.me/52{tel})" if tel else " · teléfono: búscalo en NeoJaus (botón WhatsApp de la ficha)"))
+                          + (f" · 📞 {tel}\n   👉 Toca y envía el mensaje ya escrito: https://wa.me/52{tel}?text={_q(msg_o)}" if len(tel) == 10
+                             else (" · sin teléfono: usa el botón WhatsApp de la ficha en NeoJaus" if c.startswith("NJ-")
+                                   else " · sin teléfono: en la Bolsa de EasyBroker usa \"Ver datos de contacto\"")))
         elif c.startswith("EB-"):
             lineas.append(f"• {c}: búscalo en la Bolsa de tu EasyBroker y regístralo en el portal (Originadores) para que quede guardado.")
         else:
@@ -10259,6 +10284,9 @@ ACIERTA MAX · PROCESOS PARA EL COACH (coach = asesor inmobiliario independiente
   comisión compartida (porcentaje y forma de pago), llaves/horarios de visita, documentos al corriente y si hay ofertas.
   Si no hay teléfono: botón WhatsApp de la ficha en NeoJaus, o "Ver datos de contacto" en la Bolsa de EasyBroker. Registrar
   al originador en el portal (Originadores) para que quede guardado.
+- Si el originador no responde: a las 2 horas, llamarle; si no contesta, mensaje de texto; al día siguiente, contactar a la
+  inmobiliaria (teléfono de oficina) o a otro asesor de la misma inmobiliaria. Mientras tanto, ofrecer al cliente 2 o 3 opciones
+  parecidas del inventario para no perderlo. Nunca dar la dirección exacta al cliente antes de confirmar con el originador.
 - Oferta / carta oferta: precio ofrecido, forma de pago (contado o crédito y tipo), monto de apartado, plazos (firma de promesa
   y escrituración), condiciones (avalúo, crédito aprobado, entrega), vigencia de la oferta (48–72 h) y datos del comprador.
   Se presenta por escrito al originador/propietario; el apartado se deposita SOLO a cuentas de Acierta Max o de la notaría,
