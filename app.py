@@ -8923,8 +8923,16 @@ def _contacto_directorio(inmobiliaria):
     k = _clave_inmob(inmobiliaria)
     if not k:
         return {}
-    for f in _directorio():
-        if f.get("Clave") == k or _clave_inmob(f.get("Inmobiliaria")) == k:
+    filas = _directorio()
+    elegida = next((f for f in filas if f.get("Clave") == k or _clave_inmob(f.get("Inmobiliaria")) == k), None)
+    if not elegida and len(k) >= 4:
+        # EasyBroker muestra a veces el nombre corto ("LOTO" por "LOTO REAL ESTATE"):
+        # se acepta si el nombre del directorio empieza igual y es el único que coincide.
+        candidatas = [f for f in filas if (f.get("Clave") or _clave_inmob(f.get("Inmobiliaria"))).startswith(k)]
+        if len(candidatas) == 1:
+            elegida = candidatas[0]
+    for f in ([elegida] if elegida else []):
+        if True:
             return {"inmobiliaria": f.get("Inmobiliaria", ""), "contacto": f.get("Contacto", ""),
                     "telefono": f.get("Celular / WhatsApp") or f.get("Teléfono oficina") or "", "correo": f.get("Correo", ""),
                     "estatus_eb": f.get("Estatus EasyBroker", ""), "enviado": f.get("Enviado", "")}
