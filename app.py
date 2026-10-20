@@ -9750,29 +9750,28 @@ def api_coach_alta_aprobar():
 
 
 
-# ---- DIAGNÓSTICO TEMPORAL 5: de dónde sale contact_information ----
+# ---- DIAGNÓSTICO TEMPORAL 6: la consulta del teléfono (t7 con puid y whatsapp) ----
 def _diag_neojaus():
     time.sleep(20)
     UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36", "Accept": "application/json"}
     try:
         h = requests.get("https://neojaus.com/propiedades/renta-nave-industrial-en-el-salto-7113705111", timeout=30, headers=UA).text
+        rutas = set()
         for s in re.findall(r'src="(/_next/static/chunks/[^"]+\.js)"', h):
-            if not any(x in s for x in ("1712", "%5Bid%5D", "7282", "9426", "1388", "3324")):
-                continue
             js = requests.get("https://neojaus.com" + s, timeout=30, headers=UA).text
-            for m in re.finditer(r'.{0,200}contact_information.{0,120}', js):
-                print(f"[DIAG-NJ5] ci {s.split('/')[-1]}: {m.group(0)[:320]}", flush=True)
-            for m in re.finditer(r'JR\)\(\)\}(/v[0-9]/[^`]{0,80})`', js):
-                print(f"[DIAG-NJ5] api {s.split('/')[-1]}: {m.group(1)}", flush=True)
-        uid = "ea864ce350344ef5ac5b09891967f254"; puid = "528a029793c64343bc4ab966fffc369c"
-        for ruta in (f"/v1/agents/{uid}", f"/v2/agents/{uid}", f"/v1/agents/{uid}/public", f"/v2/agents/{uid}/public", f"/v1/users/{uid}", f"/v2/users/{uid}/profile", f"/v1/agents/{uid}/profile", f"/v2/properties/{puid}/contact", f"/v2/properties/{puid}/agent", f"/v1/properties/{puid}/agent-contact"):
-            try:
-                r = requests.get("https://neojaus.com/api" + ruta, timeout=15, headers=UA)
-                print(f"[DIAG-NJ5] {ruta} → {r.status_code} {r.text[:300]}", flush=True)
-            except Exception as e:
-                print(f"[DIAG-NJ5] {ruta} → error {e}", flush=True)
+            for m in re.finditer(r't7:\(\)=>([A-Za-z_$][\w$]*)', js):
+                nombre = m.group(1)
+                print(f"[DIAG-NJ6] t7 → {nombre} en {s.split('/')[-1]}", flush=True)
+                for d in re.finditer(r'(?:let|const|var|,)\s*' + re.escape(nombre) + r'\s*=\s*async.{0,700}', js):
+                    print(f"[DIAG-NJ6] def: {d.group(0)[:700]}", flush=True)
+            for m in re.finditer(r'.{0,160}\.puid.{0,200}', js):
+                if "JR" in m.group(0):
+                    print(f"[DIAG-NJ6] puid {s.split('/')[-1]}: {m.group(0)[:360]}", flush=True)
+            for m in re.finditer(r'JR\)\(\)\}(/v[0-9]/[^`]*(?:contact|phone|lead|whats|inquir)[^`]*)`', js):
+                rutas.add(m.group(1))
+        print(f"[DIAG-NJ6] rutas candidatas: {sorted(rutas)}", flush=True)
     except Exception as e:
-        print(f"[DIAG-NJ5] error: {e}", flush=True)
+        print(f"[DIAG-NJ6] error: {e}", flush=True)
 threading.Thread(target=_diag_neojaus, daemon=True).start()
 
 
