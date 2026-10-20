@@ -585,8 +585,10 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
             + ((("🤖 MAX le está pidiendo los datos de su propiedad (colonia, m², recámaras, estado y cuándo quiere vender o rentar) para su OPINIÓN DE VALOR gratis en 48 h. Es una posible EXCLUSIVA.\n"
                 if "PROPIETARIO" in busca else
                 "🤖 MAX ya le respondió y lo sigue calificando (presupuesto, zona, crédito, tiempos). Te aviso en cuanto quiera visitar.\n")
-                + "👉 Salúdalo hoy por WhatsApp o llamada" + ("" if asesores_disponibles() else " (a partir de las 9:00)")
-                + ": el primer contacto humano rápido es el que cierra.\n\n") if busca else "")
+                + "👉 *Llámalo en la próxima hora*" + ("" if asesores_disponibles() else " (a partir de las 9:00)")
+                + ". Si no contesta: mándale un mensaje de texto y una nota de voz por WhatsApp, y vuelve a llamar por la tarde. "
+                + "El primer contacto humano rápido es el que cierra.\n"
+                + "💬 Cuéntame cómo te fue con tus palabras; si tienes dudas (originador, oferta, documentos, crédito), pregúntame.\n\n") if busca else "")
             + "📋 Por favor:\n"
             + (f"1. Originador de cada propiedad:\n{_orig_txt}\n" if _orig_txt else (f"1. Busca estas claves en tu EasyBroker para identificar al originador: {codigos}\n" if codigos else "1. Revisa el chat completo que te mando abajo.\n"))
             + ("2. Llama al propietario para agendar la visita de valuación.\n" if "PROPIETARIO" in busca else "2. Contacta al cliente para agendar visita.\n")
@@ -1071,6 +1073,9 @@ def crm_procesar_respuesta_vendedor(vendedor_phone, texto):
             memoria_guardar(vendedor_phone, CRM_ELEGIR_OPCIONES="", CRM_ELEGIR_TEXTO="")
             _resto = texto if not _m_num else ""
             texto = f"{_elegido} {_previo} {_resto}".strip()
+    _menu = {"1": "ya hablé con el cliente", "2": "le marqué al cliente y no contesta", "3": "ya hablé con el originador", "4": "ya no le interesa"}
+    if re.match(r"^\s*[1-4]\s*$", texto) and not _opciones:
+        texto = _menu[texto.strip()]
     fila_num, registro, activos = _crm_buscar_por_vendedor_pendiente(vendedor_phone, texto)
     if not activos:
         return False  # no hay expediente activo de este vendedor; no es una respuesta de CRM
@@ -1165,10 +1170,33 @@ def crm_procesar_respuesta_vendedor(vendedor_phone, texto):
         actualizar("ULTIMA_ACCION", hora_gdl())
         if cambios:
             wati_send_text(vendedor_phone, f"Anotado: {', '.join(cambios)}. Gracias 👍")
+            return True
+        # No coincidió con las frases exactas: MAX lo interpreta con sus palabras.
+        ia = _coach_interpretar(texto, registro) or {}
+        if ia.get("no_interesa"):
+            actualizar("CONCLUIDO", "Si")
+            cambios.append("caso concluido (ya no le interesa)")
+        if not cliente_ok and ia.get("cliente") in ("si", "no"):
+            actualizar("CONTACTO_CLIENTE", "Si" if ia["cliente"] == "si" else "No")
+            if ia["cliente"] == "si":
+                cambios.append("cliente: contactado")
+        if not originador_ok and ia.get("originador") in ("si", "no"):
+            actualizar("CONTACTO_ORIGINADOR", "Si" if ia["originador"] == "si" else "No")
+            if ia["originador"] == "si":
+                cambios.append("originador: contactado")
+        if ia.get("cita"):
+            try:
+                actualizar("FECHA_HORA_CITA", str(ia["cita"])[:80])
+                cambios.append(f"cita: {ia['cita']}")
+            except Exception:
+                pass
+        consejo = (ia.get("respuesta") or "").strip()
+        if cambios or consejo:
+            wati_send_text(vendedor_phone, ((f"✅ Anotado: {', '.join(cambios)}.\n\n" if cambios else "") + consejo).strip())
         else:
             wati_send_text(vendedor_phone,
-                "Para anotarlo bien, contéstame así: 'cliente sí' / 'cliente no' / "
-                "'originador sí' / 'originador no' (uno o los dos).")
+                f"Sobre {registro.get('FOLIO')} ({registro.get('NOMBRE_CLIENTE')}), ¿cómo vas? Contéstame con tus palabras o con un número:\n"
+                "1. Ya hablé con el cliente\n2. El cliente no contesta\n3. Ya hablé con el originador\n4. Ya no le interesa")
         return True
 
     if fase == "Interes":
@@ -6584,6 +6612,9 @@ def webhook():
                 return jsonify(ok=True, ruta="reporte_lunes")
             if _reporte_dia_manejar(phone, text):
                 return jsonify(ok=True, ruta="reporte_dia")
+            if text and not text.strip().lower().startswith("modo cliente"):
+                _coach_asistente(phone, text)
+                return jsonify(ok=True, ruta="coach_asistente")
         except Exception as e:
             print(f"[MAX-CRM] Error procesando respuesta de vendedor {phone}: {e}", flush=True)
         # Si no había expediente pendiente para este número, sigue de largo
@@ -10203,6 +10234,111 @@ def _loop_sitios():
 
 
 threading.Thread(target=_loop_sitios, daemon=True).start()
+
+
+
+
+# =====================================================================
+# MAX, COACH DEL COACH
+# =====================================================================
+# 1) Entiende las respuestas de los coaches con sus propias palabras (IA) y
+#    actualiza el expediente; 2) responde sus preguntas de trabajo con los
+#    procesos de Acierta Max. Nunca contesta "no entendí": si duda, pregunta
+#    con opciones.
+COACH_CONOCIMIENTO = """
+ACIERTA MAX · PROCESOS PARA EL COACH (coach = asesor inmobiliario independiente de la red)
+- Proceso comercial: 1) llega el cliente (MAX lo atiende 24/7 y lo asigna con folio CRM); 2) contacto humano en la PRIMERA HORA;
+  3) precalificación de crédito con Betty; 4) propuesta con IA en el portal acierta.pro/asesor.html; 5) envío y registro;
+  6) contactar al ORIGINADOR (asesor que publicó la propiedad) y agendar cita; 7) visita segura (compartir ubicación con MAX);
+  8) Acierta Verifica; 9) apartado; 10) cierre con Javier.
+- Contactar al cliente (multicanal): llamar primero; si no contesta, mensaje de texto (SMS) + nota de voz por WhatsApp;
+  segundo intento por la tarde (17:00–20:00) y tercero al día siguiente a media mañana. Presentarse con nombre, Acierta Max
+  y la propiedad que pidió; preguntar para qué la busca (vivir o invertir), presupuesto, forma de pago (contado, Infonavit,
+  bancario) y cuándo puede visitar. Nunca presionar; dar información veraz.
+- Originador: MAX manda sus datos en el aviso cuando los tiene. Confirmar con él: que sigue disponible, precio vigente,
+  comisión compartida (porcentaje y forma de pago), llaves/horarios de visita, documentos al corriente y si hay ofertas.
+  Si no hay teléfono: botón WhatsApp de la ficha en NeoJaus, o "Ver datos de contacto" en la Bolsa de EasyBroker. Registrar
+  al originador en el portal (Originadores) para que quede guardado.
+- Oferta / carta oferta: precio ofrecido, forma de pago (contado o crédito y tipo), monto de apartado, plazos (firma de promesa
+  y escrituración), condiciones (avalúo, crédito aprobado, entrega), vigencia de la oferta (48–72 h) y datos del comprador.
+  Se presenta por escrito al originador/propietario; el apartado se deposita SOLO a cuentas de Acierta Max o de la notaría,
+  nunca en efectivo ni a cuentas personales.
+- Apartado y promesa: identificación del cliente; contrato de promesa de compraventa registrado ante PROFECO núm. 5294-2022.
+- Exclusivas (captación con propietarios): contrato de intermediación registrado ante PROFECO (6466-2022); comisión típica 5%;
+  pedir al propietario escritura, predial al corriente, recibos de agua y luz, identificación, acta de matrimonio si aplica,
+  constancia de no adeudo de mantenimiento si es condominio. Ofrecer Acierta Verifica y opinión de valor.
+- Opinión de valor: comparar con propiedades similares (misma zona, tipo, m² y antigüedad) en el inventario de acierta.pro;
+  usar precio por m² de las comparables y ajustar por estado, amenidades y ubicación. MAX puede generarla si se le dan colonia,
+  m² de terreno y construcción, recámaras, baños, antigüedad y estado.
+- Crédito: todo lo de crédito va con Betty (precalificación, autorización de Buró firmada, documentos). Escriturar con crédito
+  ~6 semanas; de contado ~15 días.
+- Documentos del comprador: identificación, CURP, constancia fiscal, comprobante de domicilio, acta de nacimiento, acta de
+  matrimonio si aplica; si es crédito, los que pida la institución. Renta: identificación, comprobantes de ingresos (3 veces la
+  renta), aval o póliza jurídica, referencias.
+- Acierta Verifica: revisión física y documental, $45 por m², mínimo $3,500.
+- Comisiones: exclusiva Acierta 5% (vendedor 30%, originador 30%, Acierta 30%, IA 10%); compartida 2–2.5% (vendedor 30%,
+  Acierta 50%, IA 20%). Bella Vittoria: Open House 31 de octubre, 10:00–14:00; corredores externos 4% IVA incluido.
+- Comandos útiles con MAX: "cliente sí/no", "originador sí/no", fecha de la cita, compartir ubicación en la visita,
+  "terminé la visita", "concluir" (cerrar el caso). Con varios clientes, se elige con el número de la lista.
+"""
+
+
+def _claude_json(sistema, usuario, max_tokens=500):
+    try:
+        r = requests.post(ANTHROPIC_API, timeout=40, headers={
+            "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": CLAUDE_MODEL, "max_tokens": max_tokens, "system": sistema,
+                  "messages": [{"role": "user", "content": usuario}]})
+        if r.status_code != 200:
+            print(f"[MAX-COACHIA] Error del modelo: {r.status_code} {r.text[:200]}", flush=True)
+            return None
+        txt = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
+        txt = re.sub(r"^```(?:json)?|```$", "", txt.strip(), flags=re.M).strip()
+        return json.loads(txt)
+    except Exception as e:
+        print(f"[MAX-COACHIA] Error interpretando: {e}", flush=True)
+        return None
+
+
+def _coach_interpretar(texto, registro):
+    """Respuesta libre del coach sobre un expediente -> qué pasó y un consejo breve."""
+    sistema = ("Eres MAX, el coach del coach de Acierta Max. Interpretas lo que un asesor inmobiliario (coach) responde sobre "
+               "su cliente y le das un consejo práctico y breve. Responde SOLO con un JSON válido, sin texto adicional:\n"
+               '{"cliente": "si"|"no"|null, "originador": "si"|"no"|null, "cita": "fecha y hora tal como la dijo"|null, '
+               '"no_interesa": true|false, "es_pregunta": true|false, "respuesta": "mensaje para el coach"}\n'
+               '"cliente"="si" solo si ya habló o se comunicó con el cliente; "no" si lo intentó y no contestó. Igual para '
+               '"originador". "respuesta": máximo 3 líneas, tono cálido y directo, en español de México, con el siguiente paso '
+               "concreto (si no contestó: llamar en la tarde, mandar SMS y nota de voz; si falta el originador: contactarlo y qué "
+               "confirmar). Si es una pregunta de trabajo, contéstala con estos procesos:\n" + COACH_CONOCIMIENTO)
+    usuario = (f"Expediente {registro.get('FOLIO')} · cliente {registro.get('NOMBRE_CLIENTE')} · fase {registro.get('FASE')} · "
+               f"propiedades {registro.get('PROPIEDADES', '')[:200]} · ¿cliente contactado? {registro.get('CONTACTO_CLIENTE') or 'pendiente'} · "
+               f"¿originador contactado? {registro.get('CONTACTO_ORIGINADOR') or 'pendiente'}.\n\nEl coach escribió: «{texto.strip()[:600]}»")
+    return _claude_json(sistema, usuario)
+
+
+def _coach_asistente(vendedor_phone, texto):
+    """Pregunta libre de un coach (sin expediente pendiente): MAX responde como su coach."""
+    try:
+        clientes = _clientes_abiertos_de(vendedor_phone)
+    except Exception:
+        clientes = []
+    lista = "; ".join(f"{c['folio']} {c['nombre']} ({c['fase']})" for c in clientes[:8]) or "sin clientes abiertos"
+    sistema = ("Eres MAX, el coach del coach de Acierta Max: acompañas a asesores inmobiliarios independientes en todo su trabajo "
+               "(contactar clientes, originadores, citas, visitas, ofertas, exclusivas, contratos, documentos, crédito, opiniones "
+               "de valor). Responde en español de México, cálido y práctico, máximo 8 líneas, con pasos concretos y numerados "
+               "cuando ayude. No inventes datos de propiedades ni cifras que no estén aquí; si falta un dato, pídelo. Si piden "
+               "una opinión de valor, pide colonia, m² de terreno y construcción, recámaras, baños, antigüedad y estado. Si piden "
+               "un contrato, explica cuál aplica y qué documentos reunir, y que Javier lo revisa antes de firmar.\n"
+               "Responde SOLO con un JSON válido: {\"respuesta\": \"...\"}\n" + COACH_CONOCIMIENTO)
+    usuario = f"Clientes abiertos del coach: {lista}.\n\nEl coach escribió: «{texto.strip()[:1200]}»"
+    j = _claude_json(sistema, usuario, max_tokens=700)
+    resp = (j or {}).get("respuesta") if isinstance(j, dict) else None
+    if not resp:
+        resp = ("Aquí estoy para ayudarte 🙌 Dime qué necesitas: contactar a un cliente, hablar con el originador, armar una "
+                "oferta, captar una exclusiva, reunir documentos o una opinión de valor.")
+    wati_send_text(vendedor_phone, resp, copiar=False)
+    print(f"[MAX-COACHIA] Asistente para {vendedor_phone}: «{texto[:80]}»", flush=True)
+    return True
 
 
 def _autoprueba_originador():
