@@ -9750,36 +9750,24 @@ def api_coach_alta_aprobar():
 
 
 
-# ---- DIAGNÓSTICO TEMPORAL 3: probar el servicio agent-process de NeoJaus ----
+# ---- DIAGNÓSTICO TEMPORAL 4: estructura de agent-process ----
 def _diag_neojaus():
     time.sleep(20)
-    import json as _j
     UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36", "Accept": "application/json"}
     try:
-        url = "https://neojaus.com/propiedades/renta-nave-industrial-en-el-salto-7113705111"
-        h = requests.get(url, timeout=30, headers=UA).text
-        d = _j.loads(re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', h, re.S).group(1))
-        p = d["props"]["pageProps"]["property"]
-        print(f"[DIAG-NJ3] claves property: {list(p.keys())[:60]}", flush=True)
-        cands = [str(p.get(k)) for k in ("id", "uid", "puid", "property_uid", "uuid", "code", "folio", "slug") if p.get(k)]
-        cands.append(url.rsplit("-", 1)[-1])
-        print(f"[DIAG-NJ3] candidatos: {cands}", flush=True)
-        js = requests.get("https://neojaus.com" + re.findall(r'src="(/_next/static/chunks/pages/_app[^"]+\.js)"', h)[0], timeout=30, headers=UA).text
-        for m in re.finditer(r'.{0,120}(?:JR|M0)\s*[:=]\s*\(\)\s*=>.{0,160}', js):
-            print(f"[DIAG-NJ3] base: {m.group(0)[:280]}", flush=True)
-        for m in re.finditer(r'"https://[a-z0-9.-]*neojaus\.com[a-z0-9/._-]*"', js):
-            print(f"[DIAG-NJ3] host: {m.group(0)}", flush=True)
-        for base in ("https://cac.neojaus.com", "https://api.neojaus.com", "https://neojaus.com/api", "https://neojaus.com/internal-api"):
-            for c in cands:
-                try:
-                    r = requests.get(f"{base}/v2/properties/{c}/agent-process", timeout=20, headers=UA)
-                    print(f"[DIAG-NJ3] {base} · {c} → {r.status_code} {r.text[:600]}", flush=True)
-                    if r.status_code == 200:
-                        break
-                except Exception as e:
-                    print(f"[DIAG-NJ3] {base} · {c} → error {e}", flush=True)
+        for uid in ("528a029793c64343bc4ab966fffc369c",):
+            d = requests.get(f"https://neojaus.com/api/v2/properties/{uid}/agent-process", timeout=20, headers=UA).json()
+            def walk(o, p=""):
+                if isinstance(o, dict):
+                    for k, v in o.items(): walk(v, p + "." + k)
+                elif isinstance(o, list):
+                    for i, v in enumerate(o[:2]): walk(v, f"{p}[{i}]")
+                else:
+                    if not any(x in p for x in ("billing", "automations", "can_use", "talos", "owed", "pbx", "plan_", "max_crm")):
+                        print(f"[DIAG-NJ4] {p} = {str(o)[:100]}", flush=True)
+            walk(d)
     except Exception as e:
-        print(f"[DIAG-NJ3] error: {e}", flush=True)
+        print(f"[DIAG-NJ4] error: {e}", flush=True)
 threading.Thread(target=_diag_neojaus, daemon=True).start()
 
 
