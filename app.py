@@ -9807,7 +9807,13 @@ def _nj_mapa():
         return _NJ_MAPA["m"]
     try:
         datos = requests.get(_URL_BOLSA + "data.json", timeout=60).json()
-        _NJ_MAPA.update(t=time.time(), m={str(x.get("eb", "")).upper(): (x.get("url_fuente", ""), x.get("agente", "")) for x in datos if x.get("eb")})
+        m = {str(x.get("eb", "")).upper(): (x.get("url_fuente", ""), x.get("agente", "")) for x in datos if x.get("eb")}
+        for x in datos:   # la misma propiedad publicada también en EasyBroker: su clave EB hereda al originador
+            for g in x.get("tambien_en") or []:
+                c = str((g or {}).get("clave", "") if isinstance(g, dict) else g).upper()
+                if c.startswith("EB-") and c not in m:
+                    m[c] = (x.get("url_fuente", ""), x.get("agente", ""))
+        _NJ_MAPA.update(t=time.time(), m=m)
     except Exception as e:
         print(f"[MAX-ORIG] Bolsa NeoJaus no disponible: {e}", flush=True)
     return _NJ_MAPA["m"]
@@ -9833,7 +9839,7 @@ def _originador_auto(clave):
     if clave in _ORIG_AUTO_CACHE and time.time() - _ORIG_AUTO_CACHE[clave][0] < 6 * 3600:
         return _ORIG_AUTO_CACHE[clave][1]
     info = {}
-    url, agente = _nj_mapa().get(clave, ("", "")) if clave.startswith("NJ-") else ("", "")
+    url, agente = _nj_mapa().get(clave, ("", ""))
     try:
         _a = _asesores_nj().get(agente) if agente else None
     except NameError:
@@ -9847,7 +9853,7 @@ def _originador_auto(clave):
     if r and r.get("CLAVE") == clave and (r.get("TELEFONO") or not clave.startswith("NJ-")):
         info = {"inmobiliaria": r.get("INMOBILIARIA", ""), "asesor": r.get("ASESOR", ""), "telefono": r.get("TELEFONO", ""),
                 "asociacion": "", "correo": "", "fuente": "registrado"}
-    elif clave.startswith("NJ-") and url:
+    elif url:
         try:
             h = requests.get(url, timeout=15, headers=_UA_NJ).text
             puid = json.loads(re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', h, re.S).group(1))["props"]["pageProps"]["property"]["uid"]
@@ -10034,14 +10040,25 @@ def _lote_originadores(forzar_asesores=False):
         for r in regs_orig:
             if str(r.get("CLAVE", "")).startswith("EB-"):
                 orig_eb[r["CLAVE"]] = r
+        gemela = {}
+        for x in datos:
+            for g in x.get("tambien_en") or []:
+                cg = str((g or {}).get("clave", "") if isinstance(g, dict) else g).upper()
+                if cg.startswith("EB-"):
+                    gemela.setdefault(cg, x)
         for x in eb_items:
             c = str(x.get("eb", ""))
             if not c.startswith("EB-"):
                 continue
             r = orig_eb.get(c, {})
-            filas.append([c, "EasyBroker", x.get("operacion", ""), x.get("tipo", ""), (x.get("titulo") or "")[:120], x.get("municipio", ""),
-                          x.get("colonia", ""), x.get("precio", ""), r.get("ASESOR", ""), r.get("INMOBILIARIA", ""), "", r.get("TELEFONO", ""),
-                          x.get("liga", ""), ""])
+            gx = gemela.get(c.upper())
+            a = conocidos.get(gx.get("agente"), {}) if gx else {}
+            asesor = r.get("ASESOR") or a.get("ASESOR", "")
+            inmob = r.get("INMOBILIARIA") or a.get("INMOBILIARIA", "")
+            tel = r.get("TELEFONO") or a.get("TELEFONO", "")
+            filas.append([c, "EasyBroker" + (f" (gemela {gx.get('eb')})" if gx and not r else ""), x.get("operacion", ""), x.get("tipo", ""),
+                          (x.get("titulo") or "")[:120], x.get("municipio", ""), x.get("colonia", ""), x.get("precio", ""), asesor, inmob,
+                          a.get("ASOCIACION", "") if not r else "", tel, x.get("liga", ""), (gx or {}).get("url_fuente", "")])
         sh_i = _hoja_en_directorio(INV_ORIG_HOJA, INV_ORIG_COLS, filas=len(filas) + 10)
         sh_i.clear()
         if sh_i.row_count < len(filas) + 1:
@@ -10052,7 +10069,7 @@ def _lote_originadores(forzar_asesores=False):
             time.sleep(2)
         con = sum(1 for f in filas if f[8] or f[9])
         print(f"[MAX-ORIG] Inventario con originador: {len(filas)} propiedades, {con} con originador "
-              f"({sum(1 for f in filas if f[1] == 'NeoJaus')} NeoJaus, {sum(1 for f in filas if f[1] == 'EasyBroker')} EasyBroker)", flush=True)
+              f"({sum(1 for f in filas if f[1] == 'NeoJaus')} NeoJaus, {sum(1 for f in filas if f[1].startswith('EasyBroker'))} EasyBroker, {sum(1 for f in filas if f[1].startswith('EasyBroker') and (f[8] or f[9]))} EB con originador)", flush=True)
     except Exception:
         import traceback
         print(f"[MAX-ORIG] Error en el lote de originadores:\n{traceback.format_exc()}", flush=True)
