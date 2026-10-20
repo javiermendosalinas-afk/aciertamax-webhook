@@ -562,6 +562,11 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
             "No", "",  # ESCALADO_A_JAVIER, ULTIMA_RESPUESTA_VENDEDOR
         ])
 
+        _orig_txt = ""
+        try:
+            _orig_txt = _texto_originadores([p.get("codigo_eb", "") for p in propiedades])
+        except Exception as e:
+            print(f"[MAX-ORIG] No se pudo armar el bloque de originadores: {e}", flush=True)
         msg = (
             (f"🟢 LEAD INICIAL — {folio_crm}\n\n" if busca else f"🆕 NUEVO CLIENTE ASIGNADO — {folio_crm}\n\n")
             + f"Cliente: {nombre_cliente} ({phone_cliente})\n"
@@ -573,7 +578,7 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
                 + "👉 Salúdalo hoy por WhatsApp o llamada" + ("" if asesores_disponibles() else " (a partir de las 9:00)")
                 + ": el primer contacto humano rápido es el que cierra.\n\n") if busca else "")
             + "📋 Por favor:\n"
-            + (f"1. Busca estas claves en tu EasyBroker para identificar al originador: {codigos}\n" if codigos else "1. Revisa el chat completo que te mando abajo.\n")
+            + (f"1. Originador de cada propiedad:\n{_orig_txt}\n" if _orig_txt else (f"1. Busca estas claves en tu EasyBroker para identificar al originador: {codigos}\n" if codigos else "1. Revisa el chat completo que te mando abajo.\n"))
             + ("2. Llama al propietario para agendar la visita de valuación.\n" if "PROPIETARIO" in busca else "2. Contacta al cliente para agendar visita.\n")
             + ("3. Contacta al originador de cada propiedad para confirmar disponibilidad.\n\n" if codigos else "\n")
             + (f"📁 Expediente del cliente (identificación y documentos): {carpeta_url}\n\n" if carpeta_url else "")
@@ -1039,15 +1044,34 @@ def crm_procesar_respuesta_vendedor(vendedor_phone, texto):
     # respuesta normal de CRM.
     if _checklist_visita_procesar(vendedor_phone, texto):
         return True
+    # Si antes le preguntamos "¿a cuál cliente?", aquí llega la elección:
+    # un número de la lista (1, 2…) o el folio, y se aplica su mensaje anterior.
+    _mem_v = memoria_leer(vendedor_phone)
+    _opciones = [x for x in (_mem_v.get("CRM_ELEGIR_OPCIONES") or "").split(",") if x]
+    if _opciones and _mem_v.get("CRM_ELEGIR_TEXTO"):
+        _m_num = re.match(r"^\s*(\d{1,2})\s*[.)]?\s*$", texto)
+        _elegido = ""
+        if _m_num and 1 <= int(_m_num.group(1)) <= len(_opciones):
+            _elegido = _opciones[int(_m_num.group(1)) - 1]
+        else:
+            _elegido = next((o for o in _opciones if o.upper() in texto.upper()
+                             or (len(texto.strip()) <= 12 and re.search(r"\b0*" + o.split("-")[-1].lstrip("0") + r"\b", texto))), "")
+        if _elegido:
+            _previo = _mem_v.get("CRM_ELEGIR_TEXTO")
+            memoria_guardar(vendedor_phone, CRM_ELEGIR_OPCIONES="", CRM_ELEGIR_TEXTO="")
+            _resto = texto if not _m_num else ""
+            texto = f"{_elegido} {_previo} {_resto}".strip()
     fila_num, registro, activos = _crm_buscar_por_vendedor_pendiente(vendedor_phone, texto)
     if not activos:
         return False  # no hay expediente activo de este vendedor; no es una respuesta de CRM
     if not registro:
-        # Ambiguo: 2+ clientes activos y no dijo a cuál se refiere --
-        # mejor preguntar que aplicarlo al cliente equivocado.
-        lista = "\n".join(f"• {f.get('FOLIO')} — {f.get('NOMBRE_CLIENTE')}" for _, f in activos)
+        # Ambiguo: 2+ clientes activos y no dijo a cuál se refiere. Se guarda
+        # su mensaje y se le pide solo el número del cliente.
+        _ops = [str(f.get("FOLIO")) for _, f in activos][:9]
+        memoria_guardar(vendedor_phone, CRM_ELEGIR_OPCIONES=",".join(_ops), CRM_ELEGIR_TEXTO=texto.strip()[:300])
+        lista = "\n".join(f"{k}. {f.get('FOLIO')} — {f.get('NOMBRE_CLIENTE')}" for k, (_, f) in enumerate(activos[:9], start=1))
         wati_send_text(vendedor_phone,
-            f"Tienes más de un cliente activo, ¿a cuál te refieres? Contéstame incluyendo el folio:\n{lista}")
+            f"Tienes {len(activos)} clientes activos. ¿De cuál me hablas? Contéstame solo con el número:\n{lista}")
         return True
 
     t = texto.strip().lower()
@@ -8927,6 +8951,12 @@ def api_asesor_originadores():
     for it in items:
         eb, ag = str(it.get("eb") or "").upper(), str(it.get("agente") or "")
         r = next((x for x in reversed(regs) if x.get("CLAVE") == eb), None) or (next((x for x in reversed(regs) if ag and x.get("AGENTE_NEOJAUS") == ag), None))
+        if not r and eb.startswith("NJ-"):
+            o = _originador_auto(eb)
+            if o:
+                res[eb] = {"inmobiliaria": o.get("inmobiliaria", ""), "asesor": o.get("asesor", ""), "telefono": o.get("telefono", ""),
+                           "notas": o.get("asociacion", ""), "correo": o.get("correo", ""), "fuente": o.get("fuente", "NeoJaus")}
+                continue
         if r:
             info = {"inmobiliaria": r.get("INMOBILIARIA", ""), "asesor": r.get("ASESOR", ""), "telefono": r.get("TELEFONO", ""), "notas": r.get("NOTAS", ""),
                     "fuente": "mismo asesor en NeoJaus" if r.get("CLAVE") != eb else "registrado"}
@@ -9750,24 +9780,130 @@ def api_coach_alta_aprobar():
 
 
 
-# ---- DIAGNÓSTICO TEMPORAL 7: ¿la API MLS de EasyBroker trae al agente? ----
-def _diag_neojaus():
-    time.sleep(20)
-    for eb in ['EB-TR8355', 'EB-QL0083', 'EB-MZ6885', 'EB-SL3821', 'EB-VY8819']:
-        for ruta in (f"/mls_properties/{eb}", f"/properties/{eb}"):
-            try:
-                r = requests.get(EB_API + ruta, headers=eb_headers(), timeout=12)
-                if r.status_code != 200:
-                    print(f"[DIAG-EB] {eb} {ruta} → {r.status_code}", flush=True); continue
-                j = r.json()
-                print(f"[DIAG-EB] {eb} {ruta} claves: {list(j.keys())}", flush=True)
-                for k in ("agent", "agency", "broker", "contact", "user", "publisher", "collaboration", "commission"):
-                    if k in j:
-                        print(f"[DIAG-EB] {eb} {k} = {str(j[k])[:400]}", flush=True)
-                break
-            except Exception as e:
-                print(f"[DIAG-EB] {eb} error {e}", flush=True)
-threading.Thread(target=_diag_neojaus, daemon=True).start()
+
+
+
+
+
+# =====================================================================
+# ORIGINADOR AUTOMÁTICO (NeoJaus)
+# =====================================================================
+# Con la clave NJ-xxxx, MAX abre la ficha pública de NeoJaus, toma su
+# identificador interno y consulta el servicio público de NeoJaus
+# (/api/v2/properties/<uid>/agent-process) que entrega, sin contraseña,
+# el nombre del asesor, su inmobiliaria y su asociación. El teléfono
+# personal NO es público (NeoJaus lo da solo con sesión iniciada): se
+# toma de la hoja Originadores o del directorio de inmobiliarias.
+# EasyBroker: la llave de API de Acierta no tiene acceso a la bolsa MLS
+# (403), así que para EB-xxxx solo se usa lo registrado en la hoja.
+_NJ_MAPA = {"t": 0, "m": {}}
+_ORIG_AUTO_CACHE = {}
+_UA_NJ = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36", "Accept": "application/json, text/html"}
+
+
+def _nj_mapa():
+    """NJ-xxxx -> (url_fuente, agente) de la bolsa NeoJaus (caché de 6 h)."""
+    if _NJ_MAPA["m"] and time.time() - _NJ_MAPA["t"] < 6 * 3600:
+        return _NJ_MAPA["m"]
+    try:
+        datos = requests.get(_URL_BOLSA + "data.json", timeout=60).json()
+        _NJ_MAPA.update(t=time.time(), m={str(x.get("eb", "")).upper(): (x.get("url_fuente", ""), x.get("agente", "")) for x in datos if x.get("eb")})
+    except Exception as e:
+        print(f"[MAX-ORIG] Bolsa NeoJaus no disponible: {e}", flush=True)
+    return _NJ_MAPA["m"]
+
+
+def _orig_registrado(clave, agente=""):
+    try:
+        v = _orig_sheet().get_all_values()
+    except Exception:
+        return None
+    h = v[0] if v else ORIG_COLUMNAS
+    regs = [dict(zip(h, r)) for r in v[1:]]
+    r = next((x for x in reversed(regs) if x.get("CLAVE") == clave), None)
+    if not r and agente:
+        r = next((x for x in reversed(regs) if x.get("AGENTE_NEOJAUS") == agente and x.get("TELEFONO")), None) \
+            or next((x for x in reversed(regs) if x.get("AGENTE_NEOJAUS") == agente), None)
+    return r
+
+
+def _originador_auto(clave):
+    """{'inmobiliaria','asesor','asociacion','telefono','correo','fuente'} o {} si no se encontró."""
+    clave = str(clave or "").upper().strip()
+    if clave in _ORIG_AUTO_CACHE and time.time() - _ORIG_AUTO_CACHE[clave][0] < 6 * 3600:
+        return _ORIG_AUTO_CACHE[clave][1]
+    info = {}
+    url, agente = _nj_mapa().get(clave, ("", "")) if clave.startswith("NJ-") else ("", "")
+    r = _orig_registrado(clave, agente)
+    if r and r.get("CLAVE") == clave and (r.get("TELEFONO") or not clave.startswith("NJ-")):
+        info = {"inmobiliaria": r.get("INMOBILIARIA", ""), "asesor": r.get("ASESOR", ""), "telefono": r.get("TELEFONO", ""),
+                "asociacion": "", "correo": "", "fuente": "registrado"}
+    elif clave.startswith("NJ-") and url:
+        try:
+            h = requests.get(url, timeout=15, headers=_UA_NJ).text
+            puid = json.loads(re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', h, re.S).group(1))["props"]["pageProps"]["property"]["uid"]
+            d = requests.get(f"https://neojaus.com/api/v2/properties/{puid}/agent-process", timeout=15, headers=_UA_NJ).json().get("data") or {}
+            ag = (d.get("property") or {}).get("agent") or {}
+            nombre = ag.get("nickname") or " ".join(x for x in (ag.get("first_name"), ag.get("last_name")) if x)
+            info = {"inmobiliaria": (d.get("agency") or {}).get("name") or "", "asesor": nombre or "",
+                    "asociacion": (d.get("association") or {}).get("name") or "", "telefono": "", "correo": "",
+                    "fuente": "NeoJaus (automático)"}
+        except Exception as e:
+            print(f"[MAX-ORIG] No se pudo consultar NeoJaus para {clave}: {e}", flush=True)
+        if r and not info:
+            info = {"inmobiliaria": r.get("INMOBILIARIA", ""), "asesor": r.get("ASESOR", ""), "telefono": r.get("TELEFONO", ""),
+                    "asociacion": "", "correo": "", "fuente": "mismo asesor en NeoJaus"}
+        if info:
+            if not info.get("telefono") and r and r.get("TELEFONO"):
+                info["telefono"] = r.get("TELEFONO", "")
+            if not info.get("telefono"):
+                dct = _contacto_directorio(info.get("inmobiliaria"))
+                info["telefono"] = re.sub(r"\D", "", dct.get("telefono", ""))[-10:]
+                info["correo"] = dct.get("correo", "")
+                if dct:
+                    info["fuente"] += " · teléfono del directorio"
+            if info.get("asesor") or info.get("inmobiliaria"):
+                try:   # queda registrado para la próxima vez y para el portal
+                    if not (r and r.get("CLAVE") == clave):
+                        _orig_sheet().append_row([clave, agente, info.get("inmobiliaria", ""), info.get("asesor", ""),
+                                                  info.get("telefono", ""), info.get("asociacion", ""), "MAX automático", hora_gdl()])
+                except Exception:
+                    pass
+    if info:
+        _ORIG_AUTO_CACHE[clave] = (time.time(), info)
+        print(f"[MAX-ORIG] {clave}: {info.get('asesor')} · {info.get('inmobiliaria')} · tel {info.get('telefono') or '—'} ({info.get('fuente')})", flush=True)
+    return info
+
+
+def _texto_originadores(codigos):
+    """Bloque para el aviso al coach con el originador de cada clave."""
+    lineas = []
+    for c in [x.strip().upper() for x in codigos if x and x.strip()][:6]:
+        o = {}
+        try:
+            o = _originador_auto(c)
+        except Exception as e:
+            print(f"[MAX-ORIG] Error con {c}: {e}", flush=True)
+        if o and (o.get("asesor") or o.get("inmobiliaria")):
+            tel = o.get("telefono")
+            lineas.append(f"• {c}: {o.get('asesor') or 'asesor sin nombre'} · {o.get('inmobiliaria') or 's/inmobiliaria'}"
+                          + (f" · {o['asociacion']}" if o.get("asociacion") else "")
+                          + (f" · 📞 {tel} (wa.me/52{tel})" if tel else " · teléfono: búscalo en NeoJaus (botón WhatsApp de la ficha)"))
+        elif c.startswith("EB-"):
+            lineas.append(f"• {c}: búscalo en la Bolsa de tu EasyBroker y regístralo en el portal (Originadores) para que quede guardado.")
+        else:
+            lineas.append(f"• {c}: no encontré al originador; revisa la ficha en NeoJaus.")
+    return "\n".join(lineas)
+
+
+def _autoprueba_originador():
+    time.sleep(60)
+    for c in ("NJ-14A0A", "NJ-F09D"):
+        try:
+            print(f"[MAX-ORIG] Autoprueba {c}: {_originador_auto(c)}", flush=True)
+        except Exception as e:
+            print(f"[MAX-ORIG] Autoprueba {c} falló: {e}", flush=True)
+threading.Thread(target=_autoprueba_originador, daemon=True).start()
 
 
 if __name__ == "__main__":
