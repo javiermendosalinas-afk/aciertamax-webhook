@@ -461,6 +461,16 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
             nuevas_propiedades = "; ".join(
                 f"{p.get('codigo_eb','')}|{p.get('liga','')}" for p in propiedades)
             propiedades_actuales = registro_existente.get("PROPIEDADES", "")
+            # Solo cuenta como novedad una clave que el expediente aún no tenía: si es la
+            # misma propiedad (un reintento de WhatsApp o el cliente repitiendo), no se
+            # vuelve a avisar al coach ni a Javier.
+            _ya = {x.split("|")[0].strip().upper() for x in propiedades_actuales.split(";") if x.strip()}
+            propiedades = [p for p in propiedades if (p.get("codigo_eb") or "").strip().upper() not in _ya]
+            if not propiedades:
+                sh.update_cell(fila_existente, col["CHAT_COMPLETO"], _formatear_chat_para_vendedor(phone_cliente))
+                return {"creado": True, "folio_crm": registro_existente.get("FOLIO"), "vendedor": registro_existente.get("VENDEDOR"),
+                        "actualizado": False, "sin_novedad": True, "notificacion_enviada": False}
+            nuevas_propiedades = "; ".join(f"{p.get('codigo_eb','')}|{p.get('liga','')}" for p in propiedades)
             combinado = (propiedades_actuales + "; " + nuevas_propiedades).strip("; ")
             sh.update_cell(fila_existente, col["PROPIEDADES"], combinado)
             sh.update_cell(fila_existente, col["ULTIMA_ACCION"], hora_gdl())
