@@ -9856,8 +9856,10 @@ def _originador_auto(clave):
         except NameError:
             cap = None
         if cap and (cap.get("INMOBILIARIA") or cap.get("ASESOR")):
-            r = {"CLAVE": clave, "INMOBILIARIA": cap.get("INMOBILIARIA", ""), "ASESOR": cap.get("ASESOR", ""),
-                 "TELEFONO": re.sub(r"\D", "", cap.get("TELEFONO", ""))[-10:]}
+            _tel = re.sub(r"\D", "", cap.get("TELEFONO", ""))[-10:]
+            if not _tel:
+                _tel = re.sub(r"\D", "", _contacto_directorio(cap.get("INMOBILIARIA", "")).get("telefono", ""))[-10:]
+            r = {"CLAVE": clave, "INMOBILIARIA": cap.get("INMOBILIARIA", ""), "ASESOR": cap.get("ASESOR", ""), "TELEFONO": _tel}
     if r and r.get("CLAVE") == clave and (r.get("TELEFONO") or not clave.startswith("NJ-")):
         info = {"inmobiliaria": r.get("INMOBILIARIA", ""), "asesor": r.get("ASESOR", ""), "telefono": r.get("TELEFONO", ""),
                 "asociacion": "", "correo": "", "fuente": "registrado"}
@@ -10060,8 +10062,15 @@ def _lote_originadores(forzar_asesores=False):
         except Exception:
             eb_items = []
         orig_eb = {}
+        _tel_inmob = {}
         for c_, r_ in _captura_eb().items():
-            orig_eb[c_] = {"ASESOR": r_.get("ASESOR", ""), "INMOBILIARIA": r_.get("INMOBILIARIA", ""), "TELEFONO": r_.get("TELEFONO", "")}
+            tel_ = re.sub(r"\D", "", r_.get("TELEFONO", ""))[-10:]
+            inm_ = r_.get("INMOBILIARIA", "")
+            if not tel_ and inm_:
+                if inm_ not in _tel_inmob:
+                    _tel_inmob[inm_] = re.sub(r"\D", "", _contacto_directorio(inm_).get("telefono", ""))[-10:]
+                tel_ = _tel_inmob[inm_]
+            orig_eb[c_] = {"ASESOR": r_.get("ASESOR", ""), "INMOBILIARIA": inm_, "TELEFONO": tel_}
         for r in regs_orig:
             if str(r.get("CLAVE", "")).startswith("EB-"):
                 orig_eb[r["CLAVE"]] = r
