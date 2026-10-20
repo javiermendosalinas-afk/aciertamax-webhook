@@ -9987,7 +9987,7 @@ def _lote_originadores(forzar_asesores=False):
             regs_orig = []
         sh_a = _hoja_en_directorio(ASES_NJ_HOJA, ASES_NJ_COLS)
         conocidos = {} if forzar_asesores else _asesores_nj(fresco=True)
-        nuevos, fallas = [], 0
+        nuevos, fallas, pendientes_guardar = [], 0, []
         for agente, props in sorted(por_agente.items(), key=lambda kv: -len(kv[1])):
             if agente in conocidos and conocidos[agente].get("ASESOR"):
                 continue
@@ -10003,14 +10003,20 @@ def _lote_originadores(forzar_asesores=False):
             tel, correo, fuente = _telefono_originador(agente, info["inmobiliaria"], regs_orig)
             fila = [agente, info["asesor"], info["inmobiliaria"], info["asociacion"], tel, correo, fuente, str(len(props)), hora_gdl()]
             nuevos.append(fila)
+            pendientes_guardar.append(fila)
             conocidos[agente] = dict(zip(ASES_NJ_COLS, fila))
-            if len(nuevos) % 50 == 0:
+            if len(pendientes_guardar) >= 25 and not forzar_asesores:
+                # se guarda por partes: si el servidor se reinicia, el lote continúa donde se quedó
+                try:
+                    sh_a.append_rows(pendientes_guardar); pendientes_guardar = []
+                except Exception as e:
+                    print(f"[MAX-ORIG] No se pudo guardar el avance: {e}", flush=True)
                 print(f"[MAX-ORIG] Lote: {len(nuevos)} asesores consultados…", flush=True)
             time.sleep(1.2)
         if forzar_asesores:
             sh_a.clear(); sh_a.update("A1", [ASES_NJ_COLS] + nuevos)
-        elif nuevos:
-            sh_a.append_rows(nuevos)
+        elif pendientes_guardar:
+            sh_a.append_rows(pendientes_guardar)
         _ASES_NJ.update(t=time.time(), m=conocidos)
         print(f"[MAX-ORIG] Asesores NeoJaus: {len(conocidos)} en la pestaña ({len(nuevos)} nuevos, {fallas} sin respuesta)", flush=True)
         # 2) inventario completo con originador
@@ -10056,8 +10062,13 @@ def _lote_originadores(forzar_asesores=False):
 
 def _loop_lote_originadores():
     time.sleep(120)
-    if not _asesores_nj(fresco=True):
-        _lote_originadores()              # primera vez: arma todo
+    try:
+        _hay = _asesores_nj(fresco=True)
+        _inv = _hoja_en_directorio(INV_ORIG_HOJA, INV_ORIG_COLS).row_count
+    except Exception:
+        _hay, _inv = {}, 0
+    if len(_hay) < 450 or _inv < 1000:
+        _lote_originadores()              # primera vez (o lote incompleto): continúa y arma el inventario
     while True:
         try:
             ahora = hora_gdl()
