@@ -9850,6 +9850,14 @@ def _originador_auto(clave):
         _ORIG_AUTO_CACHE[clave] = (time.time(), info)
         return info
     r = _orig_registrado(clave, agente)
+    if not r and clave.startswith("EB-"):
+        try:
+            cap = _captura_eb().get(clave)
+        except NameError:
+            cap = None
+        if cap and (cap.get("INMOBILIARIA") or cap.get("ASESOR")):
+            r = {"CLAVE": clave, "INMOBILIARIA": cap.get("INMOBILIARIA", ""), "ASESOR": cap.get("ASESOR", ""),
+                 "TELEFONO": re.sub(r"\D", "", cap.get("TELEFONO", ""))[-10:]}
     if r and r.get("CLAVE") == clave and (r.get("TELEFONO") or not clave.startswith("NJ-")):
         info = {"inmobiliaria": r.get("INMOBILIARIA", ""), "asesor": r.get("ASESOR", ""), "telefono": r.get("TELEFONO", ""),
                 "asociacion": "", "correo": "", "fuente": "registrado"}
@@ -9928,6 +9936,21 @@ INV_ORIG_HOJA = "Inventario con originador"
 INV_ORIG_COLS = ["CLAVE", "FUENTE", "OPERACION", "TIPO", "TITULO", "MUNICIPIO", "COLONIA", "PRECIO", "ASESOR", "INMOBILIARIA",
                  "ASOCIACION", "TELEFONO", "LIGA_FICHA", "URL_ORIGEN"]
 _ASES_NJ = {"t": 0, "m": {}}
+CAPT_EB_HOJA = "Captura EasyBroker"
+CAPT_EB_COLS = ["CLAVE", "INMOBILIARIA", "ASESOR", "TELEFONO", "CORREO", "FECHA"]
+_CAPT_EB = {"t": 0, "m": {}}
+
+
+def _captura_eb():
+    """CLAVE EB -> originador capturado desde la Bolsa de EasyBroker (Claude en Chrome o a mano)."""
+    if _CAPT_EB["m"] and time.time() - _CAPT_EB["t"] < 1800:
+        return _CAPT_EB["m"]
+    try:
+        v = _hoja_en_directorio(CAPT_EB_HOJA, CAPT_EB_COLS).get_all_values()
+        _CAPT_EB.update(t=time.time(), m={str(r[0]).strip().upper(): dict(zip(CAPT_EB_COLS, r + [""] * 6)) for r in v[1:] if r and r[0]})
+    except Exception as e:
+        print(f"[MAX-ORIG] Pestaña de captura EB no disponible: {e}", flush=True)
+    return _CAPT_EB["m"]
 _LOTE_ORIG = {"corriendo": False, "ultimo_dia": ""}
 
 
@@ -10037,6 +10060,8 @@ def _lote_originadores(forzar_asesores=False):
         except Exception:
             eb_items = []
         orig_eb = {}
+        for c_, r_ in _captura_eb().items():
+            orig_eb[c_] = {"ASESOR": r_.get("ASESOR", ""), "INMOBILIARIA": r_.get("INMOBILIARIA", ""), "TELEFONO": r_.get("TELEFONO", "")}
         for r in regs_orig:
             if str(r.get("CLAVE", "")).startswith("EB-"):
                 orig_eb[r["CLAVE"]] = r
