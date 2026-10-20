@@ -9750,24 +9750,29 @@ def api_coach_alta_aprobar():
 
 
 
-# ---- DIAGNÓSTICO TEMPORAL 4: estructura de agent-process ----
+# ---- DIAGNÓSTICO TEMPORAL 5: de dónde sale contact_information ----
 def _diag_neojaus():
     time.sleep(20)
     UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36", "Accept": "application/json"}
     try:
-        for uid in ("528a029793c64343bc4ab966fffc369c",):
-            d = requests.get(f"https://neojaus.com/api/v2/properties/{uid}/agent-process", timeout=20, headers=UA).json()
-            def walk(o, p=""):
-                if isinstance(o, dict):
-                    for k, v in o.items(): walk(v, p + "." + k)
-                elif isinstance(o, list):
-                    for i, v in enumerate(o[:2]): walk(v, f"{p}[{i}]")
-                else:
-                    if not any(x in p for x in ("billing", "automations", "can_use", "talos", "owed", "pbx", "plan_", "max_crm")):
-                        print(f"[DIAG-NJ4] {p} = {str(o)[:100]}", flush=True)
-            walk(d)
+        h = requests.get("https://neojaus.com/propiedades/renta-nave-industrial-en-el-salto-7113705111", timeout=30, headers=UA).text
+        for s in re.findall(r'src="(/_next/static/chunks/[^"]+\.js)"', h):
+            if not any(x in s for x in ("1712", "%5Bid%5D", "7282", "9426", "1388", "3324")):
+                continue
+            js = requests.get("https://neojaus.com" + s, timeout=30, headers=UA).text
+            for m in re.finditer(r'.{0,200}contact_information.{0,120}', js):
+                print(f"[DIAG-NJ5] ci {s.split('/')[-1]}: {m.group(0)[:320]}", flush=True)
+            for m in re.finditer(r'JR\)\(\)\}(/v[0-9]/[^`]{0,80})`', js):
+                print(f"[DIAG-NJ5] api {s.split('/')[-1]}: {m.group(1)}", flush=True)
+        uid = "ea864ce350344ef5ac5b09891967f254"; puid = "528a029793c64343bc4ab966fffc369c"
+        for ruta in (f"/v1/agents/{uid}", f"/v2/agents/{uid}", f"/v1/agents/{uid}/public", f"/v2/agents/{uid}/public", f"/v1/users/{uid}", f"/v2/users/{uid}/profile", f"/v1/agents/{uid}/profile", f"/v2/properties/{puid}/contact", f"/v2/properties/{puid}/agent", f"/v1/properties/{puid}/agent-contact"):
+            try:
+                r = requests.get("https://neojaus.com/api" + ruta, timeout=15, headers=UA)
+                print(f"[DIAG-NJ5] {ruta} → {r.status_code} {r.text[:300]}", flush=True)
+            except Exception as e:
+                print(f"[DIAG-NJ5] {ruta} → error {e}", flush=True)
     except Exception as e:
-        print(f"[DIAG-NJ4] error: {e}", flush=True)
+        print(f"[DIAG-NJ5] error: {e}", flush=True)
 threading.Thread(target=_diag_neojaus, daemon=True).start()
 
 
