@@ -10213,7 +10213,8 @@ threading.Thread(target=_loop_lote_originadores, daemon=True).start()
 # VIGILANCIA DE LOS SITIOS (cada 6 horas; aviso por correo si alguno falla)
 # =====================================================================
 SITIOS_VIGILAR = ["acierta.pro", "inmobiliaria.pro", "losprofesionalesinmobiliarios.com", "inmobiliariogig.com",
-                  "gruposancarlos.pro", "bellavittoria.vip", "villadhara.com.mx", "torreeleve.com", "blockiteso.com"]
+                  "gruposancarlos.pro", "bellavittoria.vip", "villadhara.com.mx", "torreeleve.com", "blockiteso.com",
+                  "ikono-altadireccion.com", "verifica.casa"]
 _SITIOS_FALLA = {}
 
 
