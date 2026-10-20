@@ -9748,6 +9748,46 @@ def api_coach_alta_aprobar():
             f"<p>Acceso al portal: <b>{estado}</b>.</p></div>", 200, {"Content-Type": "text/html; charset=utf-8"})
 
 
+
+
+# ---- DIAGNÓSTICO TEMPORAL: dónde publica NeoJaus los datos del asesor ----
+def _diag_neojaus():
+    time.sleep(20)
+    import json as _j
+    url = "https://neojaus.com/propiedades/renta-nave-industrial-en-el-salto-7113705111"
+    try:
+        r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36"})
+        h = r.text
+        print(f"[DIAG-NJ] status={r.status_code} tamaño={len(h)}", flush=True)
+        for pat in [r"wa\.me/[0-9]+", r"tel:[+0-9]+", r"\+?52[ -]?\d{2}[ -]?\d{4}[ -]?\d{4}", r"https://[a-z0-9.-]*neojaus[a-z0-9./-]*api[a-z0-9./_-]*", r"api\.[a-z0-9.-]+\.(?:com|mx|io)[a-z0-9/_-]*"]:
+            print(f"[DIAG-NJ] patrón {pat}: {sorted(set(re.findall(pat, h)))[:8]}", flush=True)
+        m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', h, re.S)
+        if m:
+            d = _j.loads(m.group(1))
+            hall = []
+            def walk(o, p=""):
+                if isinstance(o, dict):
+                    for k, v in o.items(): walk(v, p + "." + k)
+                elif isinstance(o, list):
+                    for i, v in enumerate(o[:3]): walk(v, f"{p}[{i}]")
+                else:
+                    pl = p.lower()
+                    if any(w in pl for w in ("agent", "agency", "phone", "tel", "whats", "email", "compan", "inmobil", "broker", "owner", "user", "contact", "nombre", "first", "last", "asesor")):
+                        hall.append(f"{p}={str(o)[:90]}")
+            walk(d)
+            for x in hall[:60]:
+                print(f"[DIAG-NJ] {x}", flush=True)
+            print(f"[DIAG-NJ] claves pageProps: {list(d.get('props',{}).get('pageProps',{}).keys())[:40]}", flush=True)
+            print(f"[DIAG-NJ] buildId={d.get('buildId')} page={d.get('page')}", flush=True)
+        else:
+            print("[DIAG-NJ] sin __NEXT_DATA__", flush=True)
+        scripts = re.findall(r'src="(/_next/static/[^"]+\.js)"', h)
+        print(f"[DIAG-NJ] scripts: {scripts[:12]}", flush=True)
+    except Exception as e:
+        print(f"[DIAG-NJ] error: {e}", flush=True)
+threading.Thread(target=_diag_neojaus, daemon=True).start()
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
