@@ -9834,6 +9834,15 @@ def _originador_auto(clave):
         return _ORIG_AUTO_CACHE[clave][1]
     info = {}
     url, agente = _nj_mapa().get(clave, ("", "")) if clave.startswith("NJ-") else ("", "")
+    try:
+        _a = _asesores_nj().get(agente) if agente else None
+    except NameError:
+        _a = None
+    if _a and (_a.get("ASESOR") or _a.get("INMOBILIARIA")):
+        info = {"inmobiliaria": _a.get("INMOBILIARIA", ""), "asesor": _a.get("ASESOR", ""), "asociacion": _a.get("ASOCIACION", ""),
+                "telefono": _a.get("TELEFONO", ""), "correo": _a.get("CORREO", ""), "fuente": "pestaña Asesores NeoJaus"}
+        _ORIG_AUTO_CACHE[clave] = (time.time(), info)
+        return info
     r = _orig_registrado(clave, agente)
     if r and r.get("CLAVE") == clave and (r.get("TELEFONO") or not clave.startswith("NJ-")):
         info = {"inmobiliaria": r.get("INMOBILIARIA", ""), "asesor": r.get("ASESOR", ""), "telefono": r.get("TELEFONO", ""),
@@ -9894,6 +9903,173 @@ def _texto_originadores(codigos):
         else:
             lineas.append(f"• {c}: no encontré al originador; revisa la ficha en NeoJaus.")
     return "\n".join(lineas)
+
+
+
+
+# =====================================================================
+# INVENTARIO CON ORIGINADOR (hoja "Directorio_inmobiliarias_EasyBroker")
+# =====================================================================
+# Las 11,000+ propiedades de NeoJaus pertenecen a ~500 asesores: se consulta
+# cada asesor UNA vez (ficha pública + servicio agent-process, con pausa entre
+# consultas) y se guarda en la pestaña "Asesores NeoJaus". Con eso se arma la
+# pestaña "Inventario con originador" (todas las claves NJ y EB). Las EB solo
+# llevan originador si está registrado en la hoja Originadores (la API MLS de
+# EasyBroker no está habilitada para la llave de Acierta).
+ASES_NJ_HOJA = "Asesores NeoJaus"
+ASES_NJ_COLS = ["AGENTE_ID", "ASESOR", "INMOBILIARIA", "ASOCIACION", "TELEFONO", "CORREO", "FUENTE_TELEFONO", "PROPIEDADES", "ACTUALIZADO"]
+INV_ORIG_HOJA = "Inventario con originador"
+INV_ORIG_COLS = ["CLAVE", "FUENTE", "OPERACION", "TIPO", "TITULO", "MUNICIPIO", "COLONIA", "PRECIO", "ASESOR", "INMOBILIARIA",
+                 "ASOCIACION", "TELEFONO", "LIGA_FICHA", "URL_ORIGEN"]
+_ASES_NJ = {"t": 0, "m": {}}
+_LOTE_ORIG = {"corriendo": False, "ultimo_dia": ""}
+
+
+def _dir_libro():
+    return _orig_libro().open_by_key(DIRECTORIO_ID)
+
+
+def _hoja_en_directorio(titulo, cols, filas=3000):
+    libro = _dir_libro()
+    try:
+        return libro.worksheet(titulo)
+    except Exception:
+        sh = libro.add_worksheet(title=titulo, rows=filas, cols=len(cols))
+        sh.update("A1", [cols])
+        return sh
+
+
+def _asesores_nj(fresco=False):
+    if not fresco and _ASES_NJ["m"] and time.time() - _ASES_NJ["t"] < 3600:
+        return _ASES_NJ["m"]
+    try:
+        v = _hoja_en_directorio(ASES_NJ_HOJA, ASES_NJ_COLS).get_all_values()
+        _ASES_NJ.update(t=time.time(), m={r[0]: dict(zip(ASES_NJ_COLS, r + [""] * (len(ASES_NJ_COLS) - len(r)))) for r in v[1:] if r and r[0]})
+    except Exception as e:
+        print(f"[MAX-ORIG] Pestaña de asesores no disponible: {e}", flush=True)
+    return _ASES_NJ["m"]
+
+
+def _consultar_asesor_nj(url):
+    h = requests.get(url, timeout=15, headers=_UA_NJ).text
+    puid = json.loads(re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', h, re.S).group(1))["props"]["pageProps"]["property"]["uid"]
+    d = requests.get(f"https://neojaus.com/api/v2/properties/{puid}/agent-process", timeout=15, headers=_UA_NJ).json().get("data") or {}
+    ag = (d.get("property") or {}).get("agent") or {}
+    return {"asesor": ag.get("nickname") or " ".join(x for x in (ag.get("first_name"), ag.get("last_name")) if x) or "",
+            "inmobiliaria": (d.get("agency") or {}).get("name") or "", "asociacion": (d.get("association") or {}).get("name") or ""}
+
+
+def _telefono_originador(agente, inmobiliaria, regs_orig):
+    r = next((x for x in reversed(regs_orig) if agente and x.get("AGENTE_NEOJAUS") == agente and x.get("TELEFONO")), None)
+    if r:
+        return r.get("TELEFONO", ""), "", "hoja Originadores"
+    dct = _contacto_directorio(inmobiliaria)
+    tel = re.sub(r"\D", "", dct.get("telefono", ""))[-10:]
+    return tel, dct.get("correo", ""), ("directorio (inmobiliaria)" if tel else "")
+
+
+def _lote_originadores(forzar_asesores=False):
+    """1) Completa la pestaña de asesores (solo los que faltan, o todos si se fuerza).
+    2) Reconstruye la pestaña del inventario con originador."""
+    if _LOTE_ORIG["corriendo"]:
+        return
+    _LOTE_ORIG["corriendo"] = True
+    try:
+        datos = requests.get(_URL_BOLSA + "data.json", timeout=90).json()
+        por_agente = {}
+        for x in datos:
+            if x.get("agente") and x.get("url_fuente"):
+                por_agente.setdefault(x["agente"], []).append(x)
+        try:
+            vo = _orig_sheet().get_all_values()
+            regs_orig = [dict(zip(vo[0], r)) for r in vo[1:]] if vo else []
+        except Exception:
+            regs_orig = []
+        sh_a = _hoja_en_directorio(ASES_NJ_HOJA, ASES_NJ_COLS)
+        conocidos = {} if forzar_asesores else _asesores_nj(fresco=True)
+        nuevos, fallas = [], 0
+        for agente, props in sorted(por_agente.items(), key=lambda kv: -len(kv[1])):
+            if agente in conocidos and conocidos[agente].get("ASESOR"):
+                continue
+            info = None
+            for p in props[:3]:            # si una ficha falla, se intenta con otra del mismo asesor
+                try:
+                    info = _consultar_asesor_nj(p["url_fuente"]); break
+                except Exception:
+                    time.sleep(1)
+            if not info:
+                fallas += 1
+                continue
+            tel, correo, fuente = _telefono_originador(agente, info["inmobiliaria"], regs_orig)
+            fila = [agente, info["asesor"], info["inmobiliaria"], info["asociacion"], tel, correo, fuente, str(len(props)), hora_gdl()]
+            nuevos.append(fila)
+            conocidos[agente] = dict(zip(ASES_NJ_COLS, fila))
+            if len(nuevos) % 50 == 0:
+                print(f"[MAX-ORIG] Lote: {len(nuevos)} asesores consultados…", flush=True)
+            time.sleep(1.2)
+        if forzar_asesores:
+            sh_a.clear(); sh_a.update("A1", [ASES_NJ_COLS] + nuevos)
+        elif nuevos:
+            sh_a.append_rows(nuevos)
+        _ASES_NJ.update(t=time.time(), m=conocidos)
+        print(f"[MAX-ORIG] Asesores NeoJaus: {len(conocidos)} en la pestaña ({len(nuevos)} nuevos, {fallas} sin respuesta)", flush=True)
+        # 2) inventario completo con originador
+        filas = []
+        for x in datos:
+            a = conocidos.get(x.get("agente"), {})
+            filas.append([x.get("eb", ""), "NeoJaus", x.get("operacion", ""), x.get("tipo", ""), (x.get("titulo") or "")[:120],
+                          x.get("municipio", ""), x.get("colonia", ""), x.get("precio", ""), a.get("ASESOR", ""), a.get("INMOBILIARIA", ""),
+                          a.get("ASOCIACION", ""), a.get("TELEFONO", ""), x.get("liga", ""), x.get("url_fuente", "")])
+        try:
+            eb_items = requests.get(_URL_INV_SITIO + "data.json", timeout=90).json()
+        except Exception:
+            eb_items = []
+        orig_eb = {}
+        for r in regs_orig:
+            if str(r.get("CLAVE", "")).startswith("EB-"):
+                orig_eb[r["CLAVE"]] = r
+        for x in eb_items:
+            c = str(x.get("eb", ""))
+            if not c.startswith("EB-"):
+                continue
+            r = orig_eb.get(c, {})
+            filas.append([c, "EasyBroker", x.get("operacion", ""), x.get("tipo", ""), (x.get("titulo") or "")[:120], x.get("municipio", ""),
+                          x.get("colonia", ""), x.get("precio", ""), r.get("ASESOR", ""), r.get("INMOBILIARIA", ""), "", r.get("TELEFONO", ""),
+                          x.get("liga", ""), ""])
+        sh_i = _hoja_en_directorio(INV_ORIG_HOJA, INV_ORIG_COLS, filas=len(filas) + 10)
+        sh_i.clear()
+        if sh_i.row_count < len(filas) + 1:
+            sh_i.add_rows(len(filas) + 1 - sh_i.row_count)
+        todo = [INV_ORIG_COLS] + filas
+        for k in range(0, len(todo), 4000):
+            sh_i.update(f"A{k + 1}", todo[k:k + 4000], value_input_option="RAW")
+            time.sleep(2)
+        con = sum(1 for f in filas if f[8] or f[9])
+        print(f"[MAX-ORIG] Inventario con originador: {len(filas)} propiedades, {con} con originador "
+              f"({sum(1 for f in filas if f[1] == 'NeoJaus')} NeoJaus, {sum(1 for f in filas if f[1] == 'EasyBroker')} EasyBroker)", flush=True)
+    except Exception:
+        import traceback
+        print(f"[MAX-ORIG] Error en el lote de originadores:\n{traceback.format_exc()}", flush=True)
+    finally:
+        _LOTE_ORIG["corriendo"] = False
+
+
+def _loop_lote_originadores():
+    time.sleep(120)
+    if not _asesores_nj(fresco=True):
+        _lote_originadores()              # primera vez: arma todo
+    while True:
+        try:
+            ahora = hora_gdl()
+            if ahora[11:13] == "04" and _LOTE_ORIG["ultimo_dia"] != ahora[:10]:
+                _LOTE_ORIG["ultimo_dia"] = ahora[:10]
+                _lote_originadores()      # cada madrugada: asesores nuevos + inventario al día
+        except Exception as e:
+            print(f"[MAX-ORIG] Error en el programador del lote: {e}", flush=True)
+        time.sleep(900)
+
+
+threading.Thread(target=_loop_lote_originadores, daemon=True).start()
 
 
 def _autoprueba_originador():
