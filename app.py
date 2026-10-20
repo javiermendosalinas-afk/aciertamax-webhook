@@ -10141,6 +10141,60 @@ def _loop_lote_originadores():
 threading.Thread(target=_loop_lote_originadores, daemon=True).start()
 
 
+
+
+# =====================================================================
+# VIGILANCIA DE LOS SITIOS (cada 6 horas; aviso por correo si alguno falla)
+# =====================================================================
+SITIOS_VIGILAR = ["acierta.pro", "inmobiliaria.pro", "losprofesionalesinmobiliarios.com", "inmobiliariogig.com",
+                  "gruposancarlos.pro", "bellavittoria.vip", "villadhara.com.mx", "torreeleve.com", "blockiteso.com"]
+_SITIOS_FALLA = {}
+
+
+def _revisar_sitios():
+    resultados, fallas = [], []
+    for dom in SITIOS_VIGILAR:
+        for url in (f"https://{dom}/", f"https://www.{dom}/"):
+            try:
+                r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0 (vigilancia Acierta Max)"}, allow_redirects=True)
+                tit = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
+                tit = re.sub(r"\s+", " ", tit.group(1)).strip()[:70] if tit else ""
+                ok = r.status_code == 200 and len(r.text) > 500
+                resultados.append(f"{url} → {r.status_code} · {r.url} · «{tit}»")
+                if not ok:
+                    fallas.append(f"{url}: código {r.status_code}")
+            except Exception as e:
+                resultados.append(f"{url} → ERROR {type(e).__name__}: {str(e)[:90]}")
+                fallas.append(f"{url}: {type(e).__name__}")
+    for x in resultados:
+        print(f"[MAX-SITIOS] {x}", flush=True)
+    # solo se avisa de las fallas del dominio principal (sin www), y una vez al día por sitio
+    hoy = hora_gdl()[:10]
+    nuevas = [f_ for f_ in fallas if "://www." not in f_ and _SITIOS_FALLA.get(f_.split(":")[0] + f_.split(":")[1]) != hoy]
+    if nuevas:
+        for f_ in nuevas:
+            _SITIOS_FALLA[f_.split(":")[0] + f_.split(":")[1]] = hoy
+        try:
+            _coach_correo([GMAIL_USER, "javiermendosalinas@gmail.com"], "⚠️ Un sitio de Acierta Max no abre",
+                          "<p>La vigilancia automática detectó problemas:</p><ul>" + "".join(f"<li>{x}</li>" for x in nuevas) + "</ul>")
+        except Exception:
+            pass
+    return resultados
+
+
+def _loop_sitios():
+    time.sleep(45)
+    while True:
+        try:
+            _revisar_sitios()
+        except Exception as e:
+            print(f"[MAX-SITIOS] Error: {e}", flush=True)
+        time.sleep(6 * 3600)
+
+
+threading.Thread(target=_loop_sitios, daemon=True).start()
+
+
 def _autoprueba_originador():
     time.sleep(60)
     for c in ("NJ-14A0A", "NJ-F09D"):
