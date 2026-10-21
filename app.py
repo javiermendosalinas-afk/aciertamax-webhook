@@ -10326,6 +10326,8 @@ ACIERTA MAX · PROCESOS PARA EL COACH (coach = asesor inmobiliario independiente
 - Acierta Verifica: revisión física y documental, $45 por m², mínimo $3,500.
 - Comisiones: exclusiva Acierta 5% (vendedor 30%, originador 30%, Acierta 30%, IA 10%); compartida 2–2.5% (vendedor 30%,
   Acierta 50%, IA 20%). Bella Vittoria: Open House 31 de octubre, 10:00–14:00; corredores externos 4% IVA incluido.
+- Regla de las 20 horas: el coach debe contestarle a MAX en menos de 20 horas. WhatsApp solo permite que MAX le escriba
+  con todo el detalle si el coach le escribió en las últimas 24 horas; si no, solo llega un aviso corto (plantilla).
 - Comandos útiles con MAX: "cliente sí/no", "originador sí/no", fecha de la cita, compartir ubicación en la visita,
   "terminé la visita", "concluir" (cerrar el caso). Con varios clientes, se elige con el número de la lista.
 """
