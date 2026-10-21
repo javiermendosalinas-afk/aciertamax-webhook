@@ -9507,7 +9507,7 @@ def api_corredores_baja():
 # aceptado (Drive + WhatsApp); 6) contraseña. El acceso al portal se activa
 # solo cuando Javier lo aprueba con la liga que recibe por correo.
 import secrets as _secrets
-COACH_CONV_VERSION = "1.0 · 16-oct-2026"
+COACH_CONV_VERSION = "1.1 · 20-oct-2026"
 COACH_HOJA = "Coaches Acierta"
 COACH_COLS = ["ID", "FECHA ALTA", "NOMBRE", "WHATSAPP", "CORREO", "RFC", "REGIMEN", "CERTIFICACIONES", "ESTATUS",
               "CARPETA_DRIVE", "ACEPTO_FECHA", "ACEPTO_IP", "ACEPTO_NAVEGADOR", "CODIGO", "FIRMA_FECHA",
