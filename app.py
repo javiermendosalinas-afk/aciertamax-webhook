@@ -1194,6 +1194,9 @@ def crm_procesar_respuesta_vendedor(vendedor_phone, texto):
             except Exception:
                 pass
         consejo = (ia.get("respuesta") or "").strip()
+        _coach_memo_agregar(vendedor_phone, "coach", texto)
+        if consejo:
+            _coach_memo_agregar(vendedor_phone, "max", f"(sobre {registro.get('FOLIO')}) {consejo}")
         if cambios or consejo:
             wati_send_text(vendedor_phone, ((f"✅ Anotado: {', '.join(cambios)}.\n\n" if cambios else "") + consejo).strip())
         else:
@@ -10333,6 +10336,29 @@ ACIERTA MAX · PROCESOS PARA EL COACH (coach = asesor inmobiliario independiente
 """
 
 
+_COACH_MEMO = {}          # tel10 -> [(timestamp, "coach"|"max", texto)]
+COACH_MEMO_HORAS = 20
+COACH_MEMO_MAX = 8        # últimos 8 mensajes (unos 4 intercambios)
+
+
+def _coach_memo_agregar(phone, quien, texto):
+    k = _ultimos10(phone)
+    ahora = time.time()
+    lst = [x for x in _COACH_MEMO.get(k, []) if ahora - x[0] < COACH_MEMO_HORAS * 3600]
+    lst.append((ahora, quien, str(texto or "")[:700]))
+    _COACH_MEMO[k] = lst[-COACH_MEMO_MAX:]
+
+
+def _coach_memo_texto(phone):
+    k = _ultimos10(phone)
+    ahora = time.time()
+    lst = [x for x in _COACH_MEMO.get(k, []) if ahora - x[0] < COACH_MEMO_HORAS * 3600]
+    if not lst:
+        return ""
+    return "Conversación reciente con este coach (de la más antigua a la más nueva):\n" + "\n".join(
+        f"- {'Coach' if q == 'coach' else 'MAX'}: {txt}" for _, q, txt in lst) + "\n\n"
+
+
 def _claude_json(sistema, usuario, max_tokens=500):
     try:
         r = requests.post(ANTHROPIC_API, timeout=40, headers={
@@ -10387,7 +10413,9 @@ def _coach_asistente(vendedor_phone, texto):
                "\"limite\": número|null}}. Ejemplo: «deptos en venta de 2 a 4 millones, 3 recámaras, 2 km de Providencia» → "
                "operacion VENTA, tipo departamento, precio_min 2000000, precio_max 4000000, recamaras_min 3, colonia Providencia, radio_km 2.\n"
                + COACH_CONOCIMIENTO)
-    usuario = f"Clientes abiertos del coach: {lista}.\n\nEl coach escribió: «{texto.strip()[:1200]}»"
+    usuario = (_coach_memo_texto(vendedor_phone) + f"Clientes abiertos del coach: {lista}.\n\nEl coach escribió ahora: «{texto.strip()[:1200]}»\n"
+               "Usa la conversación reciente para entender a qué se refiere (por ejemplo, «¿y si es con Infonavit?» continúa el tema anterior).")
+    _coach_memo_agregar(vendedor_phone, "coach", texto)
     j = _claude_json(sistema, usuario, max_tokens=700)
     if isinstance(j, dict) and isinstance(j.get("busqueda"), dict):
         try:
@@ -10399,6 +10427,7 @@ def _coach_asistente(vendedor_phone, texto):
         resp = ("Aquí estoy para ayudarte 🙌 Dime qué necesitas: contactar a un cliente, hablar con el originador, armar una "
                 "oferta, captar una exclusiva, reunir documentos o una opinión de valor.")
     wati_send_text(vendedor_phone, resp, copiar=False)
+    _coach_memo_agregar(vendedor_phone, "max", resp)
     print(f"[MAX-COACHIA] Asistente para {vendedor_phone}: «{texto[:80]}»", flush=True)
     return True
 
@@ -10509,6 +10538,7 @@ def _coach_enviar_busqueda(vendedor_phone, fl):
                       + (f"\n   👤 {o}" if o else "") + f"\n   {p.get('Liga') or ''}")
     lineas.append("Si quieres la propuesta en PDF para tu cliente, ármala en acierta.pro/asesor.html con estas claves.")
     wati_send_text(vendedor_phone, "\n".join(lineas)[:4000], copiar=False)
+    _coach_memo_agregar(vendedor_phone, "max", f"Le mandé {min(lim, len(res))} fichas ({filtro}): " + ", ".join((p.get("codigo_eb") or "") for p, _ in res[:lim]))
     print(f"[MAX-COACHIA] Búsqueda para {vendedor_phone}: {fl} → {len(res)} resultados", flush=True)
     return True
 
