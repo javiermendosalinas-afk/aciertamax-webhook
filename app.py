@@ -10370,15 +10370,137 @@ def _coach_asistente(vendedor_phone, texto):
                "cuando ayude. No inventes datos de propiedades ni cifras que no estén aquí; si falta un dato, pídelo. Si piden "
                "una opinión de valor, pide colonia, m² de terreno y construcción, recámaras, baños, antigüedad y estado. Si piden "
                "un contrato, explica cuál aplica y qué documentos reunir, y que Javier lo revisa antes de firmar.\n"
-               "Responde SOLO con un JSON válido: {\"respuesta\": \"...\"}\n" + COACH_CONOCIMIENTO)
+               "Si el coach pide propiedades o fichas (por operación, tipo, precio, recámaras, colonia o distancia), llena "
+               "\"busqueda\" y deja \"respuesta\" vacía; si no, \"busqueda\" es null.\n"
+               "Responde SOLO con un JSON válido: {\"respuesta\": \"...\", \"busqueda\": null | {\"operacion\": \"VENTA\"|\"RENTA\"|null, "
+               "\"tipo\": \"departamento\"|\"casa\"|\"terreno\"|\"local\"|\"oficina\"|\"bodega\"|null, \"precio_min\": número en pesos|null, "
+               "\"precio_max\": número en pesos|null, \"recamaras_min\": número|null, \"colonia\": \"texto\"|null, \"radio_km\": número|null, "
+               "\"limite\": número|null}}. Ejemplo: «deptos en venta de 2 a 4 millones, 3 recámaras, 2 km de Providencia» → "
+               "operacion VENTA, tipo departamento, precio_min 2000000, precio_max 4000000, recamaras_min 3, colonia Providencia, radio_km 2.\n"
+               + COACH_CONOCIMIENTO)
     usuario = f"Clientes abiertos del coach: {lista}.\n\nEl coach escribió: «{texto.strip()[:1200]}»"
     j = _claude_json(sistema, usuario, max_tokens=700)
+    if isinstance(j, dict) and isinstance(j.get("busqueda"), dict):
+        try:
+            return _coach_enviar_busqueda(vendedor_phone, j["busqueda"])
+        except Exception as e:
+            print(f"[MAX-COACHIA] Error en búsqueda: {e}", flush=True)
     resp = (j or {}).get("respuesta") if isinstance(j, dict) else None
     if not resp:
         resp = ("Aquí estoy para ayudarte 🙌 Dime qué necesitas: contactar a un cliente, hablar con el originador, armar una "
                 "oferta, captar una exclusiva, reunir documentos o una opinión de valor.")
     wati_send_text(vendedor_phone, resp, copiar=False)
     print(f"[MAX-COACHIA] Asistente para {vendedor_phone}: «{texto[:80]}»", flush=True)
+    return True
+
+
+
+
+# =====================================================================
+# BÚSQUEDA DE FICHAS PARA COACHES ("mándame deptos en venta de 2 a 4 M,
+# 3 recámaras, a 2 km de Providencia")
+# =====================================================================
+def _norm_txt(s):
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode().lower()).strip()
+
+
+def _orig_rapido(clave):
+    """Originador solo de lo que ya está en memoria (sin consultas lentas)."""
+    try:
+        clave = clave.upper()
+        if clave.startswith("EB-"):
+            c = _captura_eb().get(clave)
+            if c and c.get("INMOBILIARIA"):
+                return f"{c.get('ASESOR') or ''} {c.get('INMOBILIARIA')}".strip()
+        url, agente = _nj_mapa().get(clave, ("", ""))
+        a = _asesores_nj().get(agente) if agente else None
+        if a and (a.get("ASESOR") or a.get("INMOBILIARIA")):
+            tel = a.get("TELEFONO") or ""
+            return f"{a.get('ASESOR', '')} · {a.get('INMOBILIARIA', '')}" + (f" · {tel}" if tel else "")
+    except Exception:
+        pass
+    return ""
+
+
+def _coach_buscar(fl):
+    """fl: operacion, tipo, precio_min, precio_max, recamaras_min, colonia, radio_km, limite."""
+    import math, statistics
+    op = _norm_txt(fl.get("operacion"))
+    tipo = _norm_txt(fl.get("tipo"))
+    pmin = float(fl.get("precio_min") or 0)
+    pmax = float(fl.get("precio_max") or 0)
+    rmin = int(fl.get("recamaras_min") or 0)
+    col = _norm_txt(fl.get("colonia"))
+    radio = float(fl.get("radio_km") or (2 if col else 0))
+    lim = max(1, min(int(fl.get("limite") or 8), 12))
+    centro, nota = None, ""
+    if col:
+        pts = [(float(p["lat"]), float(p["lon"])) for p in INVENTARIO_ZMG
+               if p.get("lat") and p.get("lon") and (col in _norm_txt(p.get("Colonia")) or col in _norm_txt(p.get("Título/Colonia")))]
+        if pts:
+            centro = (statistics.median(x for x, _ in pts), statistics.median(y for _, y in pts))
+        else:
+            nota = f"No ubiqué la colonia «{fl.get('colonia')}» en el inventario; busqué por nombre en los anuncios."
+
+    def dist(p):
+        la1, lo1 = map(math.radians, centro); la2, lo2 = math.radians(float(p["lat"])), math.radians(float(p["lon"]))
+        a = math.sin((la2 - la1) / 2) ** 2 + math.cos(la1) * math.cos(la2) * math.sin((lo2 - lo1) / 2) ** 2
+        return 6371 * 2 * math.asin(math.sqrt(a))
+
+    res = []
+    for p in INVENTARIO_ZMG:
+        if op and not _norm_txt(p.get("Operación")).startswith(op[:4]):
+            continue
+        tp = _norm_txt(p.get("Tipo"))
+        if tipo and not (tipo[:4] in tp or (tipo.startswith("depa") and "depart" in tp)):
+            continue
+        pr = p.get("Precio") or 0
+        if (pmin and pr < pmin) or (pmax and pr > pmax) or not pr:
+            continue
+        if rmin and (p.get("Recámaras") or 0) < rmin:
+            continue
+        d = None
+        if centro:
+            if not (p.get("lat") and p.get("lon")):
+                continue
+            d = dist(p)
+            if d > radio:
+                continue
+        elif col and not (col in _norm_txt(p.get("Colonia")) or col in _norm_txt(p.get("Título/Colonia"))):
+            continue
+        res.append((p, d))
+    res.sort(key=lambda x: (-(x[0].get("Score_Comercial") or 0), x[1] if x[1] is not None else 0))
+    return res, lim, nota
+
+
+def _coach_enviar_busqueda(vendedor_phone, fl):
+    res, lim, nota = _coach_buscar(fl)
+    partes = []
+    if fl.get("operacion"): partes.append(str(fl["operacion"]).lower())
+    if fl.get("tipo"): partes.append(str(fl["tipo"]).lower())
+    if fl.get("precio_min") or fl.get("precio_max"):
+        partes.append(f"${int(float(fl.get('precio_min') or 0)):,} a " + (f"${int(float(fl['precio_max'])):,}" if fl.get("precio_max") else "más"))
+    if fl.get("recamaras_min"): partes.append(f"{fl['recamaras_min']}+ rec.")
+    if fl.get("colonia"): partes.append(f"a {fl.get('radio_km') or 2} km de {fl['colonia']}")
+    filtro = " · ".join(partes)
+    if not res:
+        wati_send_text(vendedor_phone, f"No encontré propiedades con: {filtro}. {nota}\nPrueba ampliando el rango de precio o los kilómetros.", copiar=False)
+        return True
+    lineas = [f"🔎 Encontré {len(res)} propiedades ({filtro}). Te mando las {min(lim, len(res))} mejores:" + (f"\n_{nota}_" if nota else "")]
+    for k, (p, d) in enumerate(res[:lim], start=1):
+        clave = p.get("codigo_eb") or ""
+        datos = [f"${int(p['Precio']):,}"]
+        if p.get("Recámaras"): datos.append(f"{p['Recámaras']} rec.")
+        if p.get("m²"):
+            try: datos.append(f"{int(float(p['m²']))} m²")
+            except Exception: pass
+        if d is not None: datos.append(f"{d:.1f} km")
+        o = _orig_rapido(clave) if clave else ""
+        lineas.append(f"{k}. {(p.get('Título/Colonia') or p.get('Tipo') or '')[:70]}\n   {' · '.join(datos)} · {clave}"
+                      + (f"\n   👤 {o}" if o else "") + f"\n   {p.get('Liga') or ''}")
+    lineas.append("Si quieres la propuesta en PDF para tu cliente, ármala en acierta.pro/asesor.html con estas claves.")
+    wati_send_text(vendedor_phone, "\n".join(lineas)[:4000], copiar=False)
+    print(f"[MAX-COACHIA] Búsqueda para {vendedor_phone}: {fl} → {len(res)} resultados", flush=True)
     return True
 
 
