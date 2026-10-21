@@ -6616,8 +6616,15 @@ def webhook():
     # porque mover el pipeline de ventas real no debe depender de que un
     # LLM interprete bien un "sí"/"no" suelto.
     _tel_vendedores = {_ultimos10(v["phone"]) for v in VENDEDORES}
+    try:
+        _tel_vendedores |= set(_coaches_activos().keys())   # coaches dados de alta en acierta.pro
+    except Exception:
+        pass
     if _ultimos10(phone) in _tel_vendedores:
         try:
+            _nom_coach = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == _ultimos10(phone)), "")
+            if text and _curso_manejar(phone, text, _nom_coach):
+                return jsonify(ok=True, ruta="curso_coach")
             if crm_procesar_respuesta_vendedor(phone, text):
                 return jsonify(ok=True, ruta="crm_vendedor")
             if _reporte_lunes_manejar(phone, text):
@@ -10501,6 +10508,85 @@ def _coach_enviar_busqueda(vendedor_phone, fl):
     lineas.append("Si quieres la propuesta en PDF para tu cliente, ármala en acierta.pro/asesor.html con estas claves.")
     wati_send_text(vendedor_phone, "\n".join(lineas)[:4000], copiar=False)
     print(f"[MAX-COACHIA] Búsqueda para {vendedor_phone}: {fl} → {len(res)} resultados", flush=True)
+    return True
+
+
+
+
+# =====================================================================
+# CURSO COACH ACIERTA (10 lecciones tipo storyboard, una a la vez)
+# =====================================================================
+# El coach escribe "CURSO" y MAX le manda la Lección 1; con "OK" recibe la
+# siguiente. "LECCIÓN 6" va directo a una; "REPETIR" la vuelve a mandar.
+# El avance queda en la hoja "Curso Coaches" (sobrevive a reinicios).
+CURSO_HOJA = "Curso Coaches"
+CURSO_COLS = ["WHATSAPP", "NOMBRE", "LECCION", "FECHA_INICIO", "ULTIMA_LECCION_FECHA"]
+_CURSO_CACHE = {}
+
+
+def _curso_lecciones():
+    if "lec" not in _CURSO_CACHE:
+        _CURSO_CACHE["lec"] = json.load(open(os.path.join(os.path.dirname(__file__), "recursos", "curso_coach.json"), encoding="utf-8"))
+    return _CURSO_CACHE["lec"]
+
+
+def _curso_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, CURSO_HOJA, CURSO_COLS) if libro else None
+
+
+def _curso_estado(tel10):
+    if tel10 in _CURSO_CACHE:
+        return _CURSO_CACHE[tel10]
+    try:
+        for i, r in enumerate(_curso_hoja().get_all_values()[1:], start=2):
+            if r and r[0] == tel10:
+                _CURSO_CACHE[tel10] = (int(r[2] or 0), i)
+                return _CURSO_CACHE[tel10]
+    except Exception as e:
+        print(f"[MAX-CURSO] No se pudo leer el avance: {e}", flush=True)
+    return (0, None)
+
+
+def _curso_guardar(tel10, nombre, n):
+    leccion, fila = _curso_estado(tel10)
+    try:
+        sh = _curso_hoja()
+        if fila:
+            sh.update_cell(fila, 3, n); sh.update_cell(fila, 5, hora_gdl())
+        else:
+            sh.append_row([tel10, nombre, n, hora_gdl(), hora_gdl()])
+            fila = len(sh.get_all_values())
+    except Exception as e:
+        print(f"[MAX-CURSO] No se pudo guardar el avance: {e}", flush=True)
+    _CURSO_CACHE[tel10] = (n, fila)
+
+
+def _curso_manejar(phone, text, nombre=""):
+    """True si el mensaje era del curso y ya se respondió."""
+    t = _norm_txt(text).strip(" .!¡¿?👍")
+    tel10 = _ultimos10(phone)
+    lec = _curso_lecciones()
+    total = len(lec)
+    destino = None
+    if t in ("curso", "empezar curso", "iniciar curso", "curso max", "curso coach", "empezar el curso"):
+        destino = 1
+    else:
+        m = re.match(r"^leccion\s*(\d{1,2})$", t)
+        if m and 1 <= int(m.group(1)) <= total:
+            destino = int(m.group(1))
+        else:
+            actual, _ = _curso_estado(tel10)
+            if actual and t in ("repetir", "repite", "otra vez"):
+                destino = actual
+            elif actual and actual < total and t in ("ok", "okay", "oki", "okey", "listo", "lista", "continuar", "continua",
+                                                    "siguiente", "sigue", "dale", "ok gracias", "ok listo", "ok siguiente"):
+                destino = actual + 1
+    if not destino:
+        return False
+    wati_send_text(phone, lec[destino - 1]["texto"], copiar=False)
+    _curso_guardar(tel10, nombre, destino)
+    print(f"[MAX-CURSO] {nombre or tel10}: lección {destino} de {total}", flush=True)
     return True
 
 
