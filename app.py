@@ -9022,8 +9022,8 @@ def api_asesor_originadores():
     for it in items:
         eb, ag = str(it.get("eb") or "").upper(), str(it.get("agente") or "")
         r = next((x for x in reversed(regs) if x.get("CLAVE") == eb), None) or (next((x for x in reversed(regs) if ag and x.get("AGENTE_NEOJAUS") == ag), None))
-        if not r and eb.startswith("NJ-"):
-            o = _originador_auto(eb)
+        if not r:
+            o = _originador_auto(eb)          # NeoJaus, gemela en NeoJaus o captura de EasyBroker
             if o:
                 res[eb] = {"inmobiliaria": o.get("inmobiliaria", ""), "asesor": o.get("asesor", ""), "telefono": o.get("telefono", ""),
                            "notas": o.get("asociacion", ""), "correo": o.get("correo", ""), "fuente": o.get("fuente", "NeoJaus")}
