@@ -9339,9 +9339,36 @@ def _camp_corr_destinatarios(bajas):
     return salida
 
 
-def _camp_corr_revisar_respuestas_baja():
-    """Lee el buzón (solo lectura) y registra como baja a quien respondió BAJA."""
-    if time.time() - _CAMP_CORR["imap_t"] < 1800:
+def _camp_corr_revisar_rebotes(m, ya):
+    """Avisos de 'no entregado' (mailer-daemon): la dirección se marca como rebotada y sale de la campaña."""
+    nuevos = 0
+    try:
+        typ, data = m.search(None, '(SINCE "16-Oct-2026" FROM "mailer-daemon")')
+        ids = (data[0].split() if data and data[0] else [])[-1500:]
+        _, shb = _camp_corr_hojas()
+        filas = []
+        for num in ids:
+            typ, md = m.fetch(num, "(BODY.PEEK[HEADER.FIELDS (X-FAILED-RECIPIENTS)] BODY.PEEK[TEXT]<0.3000>)")
+            crudo = b"".join(p[1] for p in md if isinstance(p, tuple)).decode("utf-8", "ignore")
+            dirs = set(re.findall(r"X-Failed-Recipients:\s*([^\s,]+@[^\s,]+)", crudo, re.I))
+            if not dirs:
+                dirs = set(re.findall(r"(?:para|to|a)\s*<?([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,})>?", crudo[:1500], re.I))
+            for d in dirs:
+                d = d.strip("<>.;,").lower()
+                if d and d not in ya and _RE_CORREO.match(d) and not d.endswith(("googlemail.com", "google.com")) and d != GMAIL_USER.lower():
+                    filas.append([hora_gdl(), d, "rebotado (no existe o no acepta correo)"])
+                    ya.add(d); nuevos += 1
+        if filas and shb:
+            shb.append_rows(filas)
+        print(f"[MAX-CORREDORES] Rebotes revisados: {len(ids)} avisos, {nuevos} direcciones nuevas marcadas como rebotadas", flush=True)
+    except Exception as e:
+        print(f"[MAX-CORREDORES] No se pudieron revisar los rebotes: {e}", flush=True)
+    return nuevos
+
+
+def _camp_corr_revisar_respuestas_baja(forzar=False):
+    """Lee el buzón (solo lectura): registra como baja a quien respondió BAJA y quita las direcciones que rebotan."""
+    if not forzar and time.time() - _CAMP_CORR["imap_t"] < 1800:
         return
     _CAMP_CORR["imap_t"] = time.time()
     import imaplib, email as _email
@@ -9355,6 +9382,9 @@ def _camp_corr_revisar_respuestas_baja():
         nuevos = 0
         _, shb = _camp_corr_hojas()
         ya = {r[1].lower() for r in (shb.get_all_values()[1:] if shb else []) if len(r) > 1}
+        _camp_corr_revisar_rebotes(m, ya)
+        m.select("INBOX", readonly=True)
+        typ, data = m.search(None, '(SINCE "16-Oct-2026")')
         for num in (data[0].split() if data and data[0] else [])[-300:]:
             typ, md = m.fetch(num, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)] BODY.PEEK[TEXT]<0.400>)")
             crudo = b"".join(p[1] for p in md if isinstance(p, tuple)).decode("utf-8", "ignore")
@@ -9470,6 +9500,11 @@ def _camp_corr_paso():
 
 def _loop_camp_corredores():
     time.sleep(90)
+    try:
+        if GMAIL_USER and GMAIL_PASS:
+            _camp_corr_revisar_respuestas_baja(forzar=True)
+    except Exception as e:
+        print(f"[MAX-CORREDORES] Revisión inicial del buzón falló: {e}", flush=True)
     while True:
         try:
             _camp_corr_paso()
