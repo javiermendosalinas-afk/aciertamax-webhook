@@ -4220,7 +4220,13 @@ def _actualizar_inventario_desde_sitio(forzar=False):
             print(f"[MAX-INV] data.json trae solo {len(nuevas)} fichas: se conserva el inventario vigente", flush=True)
             return False
         de_bolsa = _ponderar_inventario_sitio(bolsa_items) if bolsa_items else []
-        INVENTARIO_ZMG[:] = nuevas + de_bolsa
+        try:
+            _nd = _no_disponibles()
+        except Exception:
+            _nd = set()
+        INVENTARIO_ZMG[:] = [p for p in nuevas + de_bolsa if (p.get("codigo_eb") or "").upper() not in _nd]
+        if _nd:
+            print(f"[MAX-INV] Se excluyen {len(nuevas) + len(de_bolsa) - len(INVENTARIO_ZMG)} propiedades reportadas como no disponibles", flush=True)
         _INV_SITIO_VERSION["actualizado"] = version
         print(f"[MAX-INV] Inventario unificado con acierta.pro: {len(nuevas)} propiedades "
               f"+ bolsa NeoJaus: {len(de_bolsa)} (versión {version})", flush=True)
@@ -6628,6 +6634,8 @@ def webhook():
             _nom_coach = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == _ultimos10(phone)), "")
             if text and _curso_manejar(phone, text, _nom_coach):
                 return jsonify(ok=True, ruta="curso_coach")
+            if text and _coach_reporta_no_disponible(phone, text):
+                return jsonify(ok=True, ruta="no_disponible")
             if crm_procesar_respuesta_vendedor(phone, text):
                 return jsonify(ok=True, ruta="crm_vendedor")
             if _reporte_lunes_manejar(phone, text):
@@ -10364,6 +10372,8 @@ ACIERTA MAX · PROCESOS PARA EL COACH (coach = asesor inmobiliario independiente
 - Acierta Verifica: revisión física y documental, $45 por m², mínimo $3,500.
 - Comisiones: exclusiva Acierta 5% (vendedor 30%, originador 30%, Acierta 30%, IA 10%); compartida 2–2.5% (vendedor 30%,
   Acierta 50%, IA 20%). Bella Vittoria: Open House 31 de octubre, 10:00–14:00; corredores externos 4% IVA incluido.
+- Propiedad que ya no está disponible: el coach escribe a MAX «EB-XXXX ya no está disponible» y MAX la quita del inventario
+  para todos. Siempre confirmar disponibilidad con el originador antes de agendar la visita.
 - Regla de las 20 horas: el coach debe contestarle a MAX en menos de 20 horas. WhatsApp solo permite que MAX le escriba
   con todo el detalle si el coach le escribió en las últimas 24 horas; si no, solo llega un aviso corto (plantilla).
 - Comandos útiles con MAX: "cliente sí/no", "originador sí/no", fecha de la cita, compartir ubicación en la visita,
@@ -10654,6 +10664,66 @@ def _curso_manejar(phone, text, nombre=""):
     wati_send_text(phone, lec[destino - 1]["texto"], copiar=False)
     _curso_guardar(tel10, nombre, destino)
     print(f"[MAX-CURSO] {nombre or tel10}: lección {destino} de {total}", flush=True)
+    return True
+
+
+
+
+# =====================================================================
+# PROPIEDADES NO DISPONIBLES (reportadas por los coaches)
+# =====================================================================
+# Muchas propiedades se venden o rentan y el originador nunca da de baja su
+# anuncio en EasyBroker o NeoJaus. Cuando un coach le dice a MAX "EB-XXXX ya no
+# está disponible", la clave se registra en la hoja "No disponibles" y sale de
+# inmediato del inventario que MAX ofrece (y de las siguientes cargas).
+ND_HOJA = "No disponibles"
+ND_COLS = ["CLAVE", "FECHA", "REPORTO", "NOTA"]
+_ND = {"t": 0, "s": set()}
+_RE_ND = re.compile(r"(?:ya\s+)?no\s+(?:est[aá]\s+|esta\s+)?disponible|ya\s+(?:se\s+)?(?:vendi[oó]|rent[oó])|vendida|rentada|ya\s+no\s+existe|fuera\s+de\s+mercado", re.I)
+
+
+def _nd_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, ND_HOJA, ND_COLS) if libro else None
+
+
+def _no_disponibles(fresco=False):
+    if not fresco and _ND["s"] and time.time() - _ND["t"] < 900:
+        return _ND["s"]
+    try:
+        sh = _nd_hoja()
+        _ND.update(t=time.time(), s={str(r[0]).strip().upper() for r in sh.get_all_values()[1:] if r and r[0]})
+    except Exception as e:
+        print(f"[MAX-INV] Hoja de no disponibles no accesible: {e}", flush=True)
+    return _ND["s"]
+
+
+def _marcar_no_disponible(claves, quien, nota=""):
+    nuevas = [c.upper() for c in claves if c and c.upper() not in _no_disponibles()]
+    if not nuevas:
+        return []
+    try:
+        _nd_hoja().append_rows([[c, hora_gdl(), quien, nota[:200]] for c in nuevas])
+    except Exception as e:
+        print(f"[MAX-INV] No se pudo registrar no disponible: {e}", flush=True)
+    _ND["s"].update(nuevas)
+    antes = len(INVENTARIO_ZMG)
+    INVENTARIO_ZMG[:] = [p for p in INVENTARIO_ZMG if (p.get("codigo_eb") or "").upper() not in _ND["s"]]
+    print(f"[MAX-INV] No disponibles: {nuevas} (reportó {quien}); salen {antes - len(INVENTARIO_ZMG)} del inventario", flush=True)
+    return nuevas
+
+
+def _coach_reporta_no_disponible(phone, texto):
+    """Si el coach reporta una clave como no disponible, se registra y se le confirma. True si lo atendió."""
+    claves = list(dict.fromkeys(re.findall(r"\b(?:EB|NJ)-[A-Z0-9]{3,8}\b", texto.upper())))
+    if not claves or not _RE_ND.search(texto):
+        return False
+    nombre = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == _ultimos10(phone)), _ultimos10(phone))
+    nuevas = _marcar_no_disponible(claves, nombre, texto)
+    ya = [c for c in claves if c not in nuevas]
+    wati_send_text(phone, "✅ Gracias. " + (f"Saqué {', '.join(nuevas)} del inventario: MAX ya no la ofrecerá a ningún cliente." if nuevas else "")
+                   + (f" {', '.join(ya)} ya estaba registrada como no disponible." if ya else "")
+                   + "\n💡 Si tu cliente buscaba algo así, pídeme opciones parecidas (por ejemplo: «mándame deptos en venta de 3 a 4 millones a 2 km de la misma colonia»).", copiar=False)
     return True
 
 
