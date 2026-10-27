@@ -6636,6 +6636,19 @@ def webhook():
                 threading.Thread(target=_retro_registrar, args=(phone, text), daemon=True).start()
             if text and _curso_manejar(phone, text, _nom_coach):
                 return jsonify(ok=True, ruta="curso_coach")
+            # MODO PRÁCTICA: mientras dure, todo va al coach (nada toca expedientes reales)
+            _tp = _norm_txt(text).strip(" .!¡¿?")
+            if _tp in ("practica", "practicar", "quiero practicar", "modo practica"):
+                _PRACTICA[_ultimos10(phone)] = time.time()
+            if _ultimos10(phone) in _PRACTICA:
+                if time.time() - _PRACTICA[_ultimos10(phone)] > 45 * 60:
+                    _PRACTICA.pop(_ultimos10(phone), None)
+                else:
+                    _PRACTICA[_ultimos10(phone)] = time.time()
+                    _coach_asistente(phone, text)
+                    if _tp in ("fin", "terminar", "salir", "fin de la practica", "termine"):
+                        _PRACTICA.pop(_ultimos10(phone), None)
+                    return jsonify(ok=True, ruta="practica")
             if text and _coach_reporta_no_disponible(phone, text):
                 return jsonify(ok=True, ruta="no_disponible")
             if crm_procesar_respuesta_vendedor(phone, text):
@@ -10383,6 +10396,7 @@ ACIERTA MAX · PROCESOS PARA EL COACH (coach = asesor inmobiliario independiente
 """
 
 
+_PRACTICA = {}            # tel10 -> último mensaje en modo práctica (se cierra con «fin» o tras 45 min)
 _COACH_MEMO = {}          # tel10 -> [(timestamp, "coach"|"max", texto)]
 COACH_MEMO_HORAS = 20
 COACH_MEMO_MAX = 8        # últimos 8 mensajes (unos 4 intercambios)
