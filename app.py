@@ -6632,6 +6632,8 @@ def webhook():
     if _ultimos10(phone) in _tel_vendedores:
         try:
             _nom_coach = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == _ultimos10(phone)), "")
+            if text:
+                threading.Thread(target=_retro_registrar, args=(phone, text), daemon=True).start()
             if text and _curso_manejar(phone, text, _nom_coach):
                 return jsonify(ok=True, ruta="curso_coach")
             if text and _coach_reporta_no_disponible(phone, text):
@@ -10450,6 +10452,11 @@ def _coach_asistente(vendedor_phone, texto):
                "cuando ayude. No inventes datos de propiedades ni cifras que no estén aquí; si falta un dato, pídelo. Si piden "
                "una opinión de valor, pide colonia, m² de terreno y construcción, recámaras, baños, antigüedad y estado. Si piden "
                "un contrato, explica cuál aplica y qué documentos reunir, y que Javier lo revisa antes de firmar.\n"
+               "MODO PRÁCTICA: si el coach escribe «práctica» o pide practicar, ofrécele escenarios (1. primera llamada con un cliente, "
+               "2. cliente con objeción de precio, 3. contactar a un originador, 4. cierre y apartado, 5. captar una exclusiva). Luego "
+               "juega el papel del cliente u originador de forma realista, UNA réplica a la vez, esperando su respuesta. Cuando el coach "
+               "escriba «fin» o tras 5 o 6 intercambios, da retroalimentación: qué hizo bien, qué mejorar y una frase modelo. "
+               "Usa la conversación reciente para seguir el ejercicio.\n"
                "Si el coach pide propiedades o fichas (por operación, tipo, precio, recámaras, colonia o distancia), llena "
                "\"busqueda\" y deja \"respuesta\" vacía; si no, \"busqueda\" es null.\n"
                "Responde SOLO con un JSON válido: {\"respuesta\": \"...\", \"busqueda\": null | {\"operacion\": \"VENTA\"|\"RENTA\"|null, "
@@ -10725,6 +10732,91 @@ def _coach_reporta_no_disponible(phone, texto):
                    + (f" {', '.join(ya)} ya estaba registrada como no disponible." if ya else "")
                    + "\n💡 Si tu cliente buscaba algo así, pídeme opciones parecidas (por ejemplo: «mándame deptos en venta de 3 a 4 millones a 2 km de la misma colonia»).", copiar=False)
     return True
+
+
+
+
+# =====================================================================
+# CHECK-IN DE MAX CON LOS COACHES + RETROALIMENTACIÓN PARA JAVIER
+# =====================================================================
+# Con la variable COACH_CHECKIN=<id> (por ejemplo 2026-10-26), MAX le escribe
+# UNA vez a cada coach (no a Javier) para preguntarle cómo va. Durante las
+# 72 horas siguientes, todo lo que los coaches le escriban a MAX se guarda en
+# la hoja "Retro coaches" y se le reenvía a Javier.
+RETRO_HOJA = "Retro coaches"
+RETRO_COLS = ["FECHA", "COACH", "WHATSAPP", "MENSAJE"]
+_RETRO = {"desde": 0}
+
+COACH_CHECKIN_TEXTO = (
+    "Hola, {nombre} 👋 Soy MAX, tu coach. Quiero saber cómo vas y escucharte:\n\n"
+    "1️⃣ ¿Cómo te ha ido con tus clientes estas semanas? ¿Qué te ha funcionado y qué has aprendido?\n"
+    "2️⃣ Sé que a veces cuesta encontrar al *originador* en NeoJaus o EasyBroker. ¿Cómo te ha ido con eso? "
+    "Ahora te mando sus datos y un mensaje listo para enviarle; cuéntame si te ha servido.\n"
+    "3️⃣ ¿Ya pudiste entrar a acierta.pro (tu portal), inmobiliaria.pro y losprofesionalesinmobiliarios.com? ¿Algo se te complica?\n"
+    "4️⃣ Si una propiedad ya no está disponible, escríbeme «EB-XXXX ya no está disponible» y la saco del inventario para todos.\n\n"
+    "🎯 *¿Practicamos?* Escribe *PRÁCTICA* y yo hago de cliente o de originador para que ensayes una llamada, una objeción o un cierre, "
+    "las veces que quieras, hasta que te sientas con total seguridad.\n\n"
+    "Contéstame aquí mismo, con tus palabras (o dictando con el micrófono del teclado). Lo que me cuentes nos ayuda a mejorar a todos. 🙌"
+)
+
+
+def _retro_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, RETRO_HOJA, RETRO_COLS) if libro else None
+
+
+def _retro_registrar(phone, texto):
+    """Durante la ventana del check-in: guarda el mensaje del coach y se lo reenvía a Javier."""
+    if not _RETRO["desde"] or time.time() - _RETRO["desde"] > 72 * 3600:
+        return
+    tel10 = _ultimos10(phone)
+    if tel10 == _ultimos10(JAVIER_PHONE):
+        return
+    nombre = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == tel10), tel10)
+    try:
+        _retro_hoja().append_row([hora_gdl(), nombre, tel10, texto[:1500]])
+    except Exception as e:
+        print(f"[MAX-RETRO] No se pudo guardar: {e}", flush=True)
+    try:
+        notificar_interno(JAVIER_PERSONAL, f"💬 RETRO de {nombre}:\n«{texto[:900]}»",
+                          resumen_para_plantilla=f"Retro de {nombre}: {texto[:150]}", template_name="seguimiento_lead")
+    except Exception:
+        pass
+
+
+def _checkin_coaches():
+    cid = os.environ.get("COACH_CHECKIN", "").strip()
+    if not cid:
+        return
+    time.sleep(100)
+    try:
+        sh = _retro_hoja()
+        filas = sh.get_all_values()
+        marca = f"CHECK-IN {cid}"
+        enviado = next((r for r in filas[1:] if len(r) > 3 and r[1] == marca), None)
+        if enviado:
+            try:   # sigue abierta la ventana de 72 h desde el envío
+                _RETRO["desde"] = time.mktime(time.strptime(enviado[0][:16], "%Y-%m-%d %H:%M"))
+            except Exception:
+                _RETRO["desde"] = time.time()
+            return
+        hora = int(hora_gdl()[11:13])
+        if not (9 <= hora < 20):
+            print("[MAX-RETRO] Fuera de horario: el check-in espera al siguiente arranque en horario.", flush=True)
+            return
+        for v in VENDEDORES[1:]:
+            txt = COACH_CHECKIN_TEXTO.format(nombre=v["nombre"].split()[0])
+            notificar_interno(v["phone"], txt, resumen_para_plantilla=f"{v['nombre'].split()[0]}, soy MAX: ¿cómo vas con tus clientes? Cuéntame tus experiencias y aprendizajes.",
+                              template_name="seguimiento_lead")
+            time.sleep(3)
+        sh.append_row([hora_gdl(), marca, "", "Mensaje de check-in enviado a los coaches"])
+        _RETRO["desde"] = time.time()
+        print(f"[MAX-RETRO] Check-in {cid} enviado a {len(VENDEDORES) - 1} coaches", flush=True)
+    except Exception as e:
+        print(f"[MAX-RETRO] Error en el check-in: {e}", flush=True)
+
+
+threading.Thread(target=_checkin_coaches, daemon=True).start()
 
 
 def _autoprueba_originador():
