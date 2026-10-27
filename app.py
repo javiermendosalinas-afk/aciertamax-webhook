@@ -11064,6 +11064,24 @@ def _oh_armar_lista_whatsapp():
 threading.Thread(target=_oh_armar_lista_whatsapp, daemon=True).start()
 
 
+
+
+def _diag_dns_sitios():
+    """Revisión de DNS (vía Google DNS) de los sitios sin certificado: A, AAAA, CNAME, CAA."""
+    time.sleep(40)
+    for dom in ("villadhara.com.mx", "www.villadhara.com.mx", "losprofesionalesinmobiliarios.com", "www.losprofesionalesinmobiliarios.com", "ikono-altadireccion.com"):
+        for tipo in ("A", "AAAA", "CNAME", "CAA", "NS"):
+            try:
+                j = requests.get("https://dns.google/resolve", params={"name": dom, "type": tipo}, timeout=15).json()
+                resp = [a.get("data") for a in j.get("Answer", [])]
+                print(f"[MAX-DNS] {dom} {tipo}: {resp or '—'} (status {j.get('Status')})", flush=True)
+            except Exception as e:
+                print(f"[MAX-DNS] {dom} {tipo}: error {e}", flush=True)
+
+
+threading.Thread(target=_diag_dns_sitios, daemon=True).start()
+
+
 def _autoprueba_originador():
     time.sleep(60)
     for c in ("NJ-14A0A", "NJ-F09D"):
