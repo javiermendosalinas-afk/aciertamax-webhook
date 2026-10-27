@@ -11025,6 +11025,45 @@ def _loop_oh():
 threading.Thread(target=_loop_oh, daemon=True).start()
 
 
+
+
+def _oh_armar_lista_whatsapp():
+    """Pestaña 'Envío OH Clientes' para enviar desde números personales con Claude en Chrome."""
+    if os.environ.get("OH_LISTA", "0") != "1":
+        return
+    time.sleep(120)
+    try:
+        libro, _ = _sheets_client()
+        filas = libro.worksheet("Bitácora Contactos").get_all_values()
+        h = filas[0] if filas else []
+        destinos = set(_oh_destinatarios())
+        vistos, salida = set(), []
+        for r in filas[1:]:
+            if len(r) < 2:
+                continue
+            t10 = _ultimos10(r[1])
+            if t10 not in destinos or t10 in vistos:
+                continue
+            vistos.add(t10)
+            d = dict(zip(h, r))
+            primer = (d.get("PRIMER MENSAJE") or (r[2] if len(r) > 2 else ""))[:120]
+            nombre = (d.get("NOMBRE") or d.get("NOMBRE CLIENTE") or "").strip()
+            salida.append([t10, nombre, (r[0] if r else "")[:10], primer, "33 2577 3277" if len(salida) % 2 == 0 else "33 4444 1444", "", "", "", ""])
+        cols = ["WHATSAPP", "NOMBRE", "PRIMER CONTACTO", "QUÉ PREGUNTÓ", "ENVIAR DESDE", "RONDA 1 (26-27 OCT)", "RONDA 2 (MIÉ 28)", "RONDA 3 (VIE 30)", "RESPONDIÓ / BAJA"]
+        try:
+            sh = libro.worksheet("Envío OH Clientes")
+            sh.clear()
+        except Exception:
+            sh = libro.add_worksheet(title="Envío OH Clientes", rows=len(salida) + 10, cols=len(cols))
+        sh.update("A1", [cols] + salida)
+        print(f"[MAX-OH] Pestaña 'Envío OH Clientes' lista: {len(salida)} clientes (sin bajas ni coaches)", flush=True)
+    except Exception as e:
+        print(f"[MAX-OH] No se pudo armar la lista: {e}", flush=True)
+
+
+threading.Thread(target=_oh_armar_lista_whatsapp, daemon=True).start()
+
+
 def _autoprueba_originador():
     time.sleep(60)
     for c in ("NJ-14A0A", "NJ-F09D"):
