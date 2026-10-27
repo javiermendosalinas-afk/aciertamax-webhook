@@ -10497,8 +10497,13 @@ def _coach_asistente(vendedor_phone, texto):
             print(f"[MAX-COACHIA] Error en búsqueda: {e}", flush=True)
     resp = (j or {}).get("respuesta") if isinstance(j, dict) else None
     if not resp:
-        resp = ("Aquí estoy para ayudarte 🙌 Dime qué necesitas: contactar a un cliente, hablar con el originador, armar una "
-                "oferta, captar una exclusiva, reunir documentos o una opinión de valor.")
+        if j is None:   # el modelo no respondió (crédito o falla temporal): decirlo con honestidad
+            resp = ("⚠️ Tengo una falla técnica temporal y no puedo pensar bien mi respuesta en este momento. "
+                    "Ya avisé a Javier. Intenta de nuevo en unos minutos, por favor 🙏")
+            threading.Thread(target=_revisar_api_anthropic, daemon=True).start()
+        else:
+            resp = ("Aquí estoy para ayudarte 🙌 Dime qué necesitas: contactar a un cliente, hablar con el originador, armar una "
+                    "oferta, captar una exclusiva, reunir documentos o una opinión de valor.")
     wati_send_text(vendedor_phone, resp, copiar=False)
     _coach_memo_agregar(vendedor_phone, "max", resp)
     print(f"[MAX-COACHIA] Asistente para {vendedor_phone}: «{texto[:80]}»", flush=True)
@@ -10839,6 +10844,61 @@ def _checkin_coaches():
 
 
 threading.Thread(target=_checkin_coaches, daemon=True).start()
+
+
+
+
+# =====================================================================
+# SALUD DE LA API DE ANTHROPIC (crédito): aviso inmediato a Javier
+# =====================================================================
+_API_SALUD = {"ok": True, "ultimo_aviso": 0, "error": ""}
+
+
+def _revisar_api_anthropic():
+    try:
+        r = requests.post(ANTHROPIC_API, timeout=30, headers={
+            "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+            json={"model": CLAUDE_MODEL, "max_tokens": 1, "messages": [{"role": "user", "content": "ok"}]})
+        if r.status_code == 200:
+            if not _API_SALUD["ok"]:
+                print("[MAX-API] La API de Anthropic volvió a funcionar.", flush=True)
+                try:
+                    notificar_interno(JAVIER_PERSONAL, "✅ La inteligencia de MAX volvió a funcionar. Ya atiende normalmente.",
+                                      resumen_para_plantilla="La inteligencia de MAX volvió a funcionar.", template_name="seguimiento_lead")
+                except Exception:
+                    pass
+            _API_SALUD.update(ok=True, error="")
+            return True
+        txt = r.text[:300]
+        _API_SALUD.update(ok=False, error=txt)
+        print(f"[MAX-API] Falla de la API: {r.status_code} {txt}", flush=True)
+        if time.time() - _API_SALUD["ultimo_aviso"] > 3 * 3600:
+            _API_SALUD["ultimo_aviso"] = time.time()
+            motivo = "se quedó SIN CRÉDITO" if "credit balance" in txt.lower() else f"está fallando (código {r.status_code})"
+            aviso = (f"🚨 URGENTE: la API de Anthropic que usa MAX {motivo}. MAX no puede responder con inteligencia a clientes ni a coaches. "
+                     "Recarga crédito en console.anthropic.com → Plans & Billing.")
+            try:
+                notificar_interno(JAVIER_PERSONAL, aviso, resumen_para_plantilla=aviso[:200], template_name="seguimiento_lead")
+            except Exception:
+                pass
+            try:
+                _coach_correo([GMAIL_USER, "javiermendosalinas@gmail.com"], "🚨 MAX sin inteligencia: revisar crédito de Anthropic", f"<p>{aviso}</p><p>Detalle: {txt}</p>")
+            except Exception:
+                pass
+        return False
+    except Exception as e:
+        print(f"[MAX-API] No se pudo revisar la API: {e}", flush=True)
+        return None
+
+
+def _loop_api_salud():
+    time.sleep(30)
+    while True:
+        _revisar_api_anthropic()
+        time.sleep(600)
+
+
+threading.Thread(target=_loop_api_salud, daemon=True).start()
 
 
 def _autoprueba_originador():
