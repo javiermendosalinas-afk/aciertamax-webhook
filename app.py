@@ -6343,6 +6343,15 @@ def webhook():
         return jsonify(ok=True)
     phone = data.get("waId") or ""
     text = (data.get("text") or "").strip()
+    if not text:   # respuesta con botón de plantilla ("Quiero visitar", "BAJA")
+        for _k in ("buttonReply", "interactiveButtonReply", "listReply"):
+            _b = data.get(_k) or {}
+            _bt = (_b.get("text") or _b.get("title") or _b.get("payload") or "") if isinstance(_b, dict) else ""
+            if _bt:
+                text = str(_bt).strip()
+                if text.lower().startswith("quiero visitar"):
+                    text = "BELLAVITTORIA · Quiero visitar el Open House del sábado 31"
+                break
     if not phone:
         return jsonify(ok=True)
     if text and _camino_verificacion_entrante(phone, text):
@@ -6771,6 +6780,10 @@ def webhook():
                         _resp_alta = _coach_firmar(phone, _m_alta.group(1))
                         wati_send_text(phone, _resp_alta, copiar=False)
                         continue
+                    try:
+                        _oh_registrar_respuesta(phone)
+                    except Exception:
+                        pass
                     _reenviar_a_javier(phone, cliente=texto)
                     historial = get_history(phone)
                     # BITÁCORA UNIVERSAL: registra TODO contacto desde su
@@ -10899,6 +10912,117 @@ def _loop_api_salud():
 
 
 threading.Thread(target=_loop_api_salud, daemon=True).start()
+
+
+
+
+# =====================================================================
+# CAMPAÑA OPEN HOUSE A LA BASE DE CLIENTES DE MAX (plantilla de Marketing)
+# =====================================================================
+# Plantilla de Marketing aprobada en WATI (OH_PLANTILLA, sin variables, con
+# botones "Quiero visitar" y "BAJA"). Rondas: OH_RONDAS. Excluye a quien pidió
+# BAJA (hoja Consentimientos), a los coaches y a Javier. Las rondas siguientes
+# solo van a quien no respondió. Registro en la hoja "Campaña OH Clientes".
+OH_PLANTILLA = os.environ.get("OH_PLANTILLA", "open_house_bella_vittoria")
+OH_RONDAS = [r.strip() for r in os.environ.get("OH_RONDAS", "2026-10-26,2026-10-28,2026-10-30").split(",") if r.strip()]
+OH_HOJA = "Campaña OH Clientes"
+OH_COLS = ["FECHA Y HORA", "RONDA", "WHATSAPP", "ESTADO"]
+_OH = {"enviados": set(), "respondio": set(), "plantilla_ok": None, "aviso_plantilla": 0}
+
+
+def _oh_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, OH_HOJA, OH_COLS) if libro else None
+
+
+def _oh_registrar_respuesta(phone):
+    """Un cliente que recibió la campaña escribió: ya no recibe las siguientes rondas."""
+    t10 = _ultimos10(phone)
+    if t10 in _OH["enviados"] and t10 not in _OH["respondio"]:
+        _OH["respondio"].add(t10)
+        try:
+            _oh_hoja().append_row([hora_gdl(), "-", t10, "RESPONDIO"])
+        except Exception:
+            pass
+
+
+def _oh_destinatarios():
+    libro, _ = _sheets_client()
+    tels = []
+    try:
+        for r in libro.worksheet("Bitácora Contactos").get_all_values()[1:]:
+            if len(r) > 1 and r[1]:
+                t10 = _ultimos10(r[1])
+                if len(t10) == 10 and t10 not in tels:
+                    tels.append(t10)
+    except Exception as e:
+        print(f"[MAX-OH] Bitácora no disponible: {e}", flush=True)
+    bajas = set()
+    try:
+        for r in _get_o_crear_hoja(libro, HOJA_CONSENT, COLS_CONSENT).get_all_values()[1:]:
+            if len(r) > 2 and r[2] == "BAJA":
+                bajas.add(_ultimos10(r[1]))
+    except Exception:
+        pass
+    internos = {_ultimos10(v["phone"]) for v in VENDEDORES} | {_ultimos10(JAVIER_PERSONAL)}
+    try:
+        internos |= set(_coaches_activos().keys())
+    except Exception:
+        pass
+    return [t for t in tels if t not in bajas and t not in internos]
+
+
+def _oh_paso():
+    ahora = hora_gdl(); hoy, hora = ahora[:10], int(ahora[11:13])
+    activas = [i for i, r in enumerate(OH_RONDAS) if r <= hoy]
+    if not activas or not (10 <= hora < 19):
+        return
+    ronda = OH_RONDAS[activas[-1]]
+    sh = _oh_hoja()
+    log = sh.get_all_values()[1:]
+    _OH["enviados"] |= {r[2] for r in log if len(r) > 3 and r[3] == "ENVIADO"}
+    _OH["respondio"] |= {r[2] for r in log if len(r) > 3 and r[3] == "RESPONDIO"}
+    ya = {r[2] for r in log if len(r) > 3 and r[1] == ronda and r[3] == "ENVIADO"}
+    pendientes = [t for t in _oh_destinatarios() if t not in ya and t not in _OH["respondio"]]
+    if not pendientes:
+        return
+    enviados = fallas = 0
+    for t10 in pendientes[:150]:          # tandas de 150 cada 10 minutos
+        ok = wati_send_template_message("521" + t10, OH_PLANTILLA, [])
+        if ok:
+            sh.append_row([hora_gdl(), ronda, t10, "ENVIADO"])
+        if ok:
+            enviados += 1; _OH["enviados"].add(t10); fallas = 0
+        else:
+            fallas += 1
+            if fallas >= 5:   # casi seguro: la plantilla aún no está aprobada
+                if time.time() - _OH["aviso_plantilla"] > 6 * 3600:
+                    _OH["aviso_plantilla"] = time.time()
+                    try:
+                        notificar_interno(JAVIER_PERSONAL, f"⚠️ La campaña del Open House no puede enviar la plantilla «{OH_PLANTILLA}». "
+                                          "Revisa en WATI que esté aprobada por Meta con ese nombre exacto.",
+                                          resumen_para_plantilla=f"Campaña OH: plantilla {OH_PLANTILLA} no disponible", template_name="seguimiento_lead")
+                    except Exception:
+                        pass
+                # se borran los 5 errores para reintentar cuando quede aprobada
+                print(f"[MAX-OH] La plantilla {OH_PLANTILLA} falla: pauso y reintento después.", flush=True)
+                break
+        time.sleep(2.5)
+    print(f"[MAX-OH] Ronda {ronda}: {enviados} enviados en esta tanda, {max(0, len(pendientes) - enviados)} pendientes", flush=True)
+
+
+def _loop_oh():
+    time.sleep(150)
+    while True:
+        try:
+            if os.environ.get("OH_ACTIVA", "0") == "1":
+                _oh_paso()
+        except Exception as e:
+            print(f"[MAX-OH] Error: {e}", flush=True)
+        time.sleep(600)
+
+
+threading.Thread(target=_loop_oh, daemon=True).start()
 
 
 def _autoprueba_originador():
