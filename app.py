@@ -6634,6 +6634,13 @@ def webhook():
             _nom_coach = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == _ultimos10(phone)), "")
             if text:
                 threading.Thread(target=_retro_registrar, args=(phone, text), daemon=True).start()
+                # Si el check-in le llegó en versión corta, al responder recibe las preguntas completas (una vez)
+                _t10 = _ultimos10(phone)
+                if (_RETRO["desde"] and time.time() - _RETRO["desde"] < 72 * 3600 and _t10 not in _CHECKIN_COMPLETO
+                        and _t10 != _ultimos10(JAVIER_PHONE)):
+                    _CHECKIN_COMPLETO.add(_t10)
+                    wati_send_text(phone, COACH_CHECKIN_TEXTO.format(nombre=(_nom_coach or "coach").split()[0]), copiar=False)
+                    return jsonify(ok=True, ruta="checkin_completo")
             if text and _curso_manejar(phone, text, _nom_coach):
                 return jsonify(ok=True, ruta="curso_coach")
             # MODO PRÁCTICA: mientras dure, todo va al coach (nada toca expedientes reales)
@@ -10760,6 +10767,7 @@ def _coach_reporta_no_disponible(phone, texto):
 RETRO_HOJA = "Retro coaches"
 RETRO_COLS = ["FECHA", "COACH", "WHATSAPP", "MENSAJE"]
 _RETRO = {"desde": 0}
+_CHECKIN_COMPLETO = set()   # coaches que ya recibieron las preguntas completas del check-in
 
 COACH_CHECKIN_TEXTO = (
     "Hola, {nombre} 👋 Soy MAX, tu coach. Quiero saber cómo vas y escucharte:\n\n"
