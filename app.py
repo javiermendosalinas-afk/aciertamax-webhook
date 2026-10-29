@@ -10302,7 +10302,7 @@ threading.Thread(target=_loop_lote_originadores, daemon=True).start()
 # =====================================================================
 SITIOS_VIGILAR = ["acierta.pro", "inmobiliaria.pro", "losprofesionalesinmobiliarios.com", "inmobiliariogig.com",
                   "gruposancarlos.pro", "bellavittoria.vip", "villadhara.com.mx", "torreeleve.com", "blockiteso.com",
-                  "ikono-altadireccion.com", "verifica.casa"]
+                  "ikono-altadireccion.com", "verifica.casa", "aciertamax.com"]
 _SITIOS_FALLA = {}
 _SITIOS_CAIDOS = set()
 
@@ -11064,6 +11064,24 @@ def _oh_armar_lista_whatsapp():
 threading.Thread(target=_oh_armar_lista_whatsapp, daemon=True).start()
 
 
+
+
+def _diag_aciertamax():
+    """Revisión puntual de aciertamax.com (sitio de EasyBroker de Acierta) y de una ficha."""
+    time.sleep(35)
+    for url in ("https://www.aciertamax.com/", "https://aciertamax.com/",
+                "https://www.aciertamax.com/property/preventa-eleva-gonzaga-jardines-de-guadalupe-zapopan-guadalajara-jalisco",
+                "https://www.aciertamax.com/properties"):
+        try:
+            t0 = time.time()
+            r = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36"})
+            tit = re.search(r"<title[^>]*>(.*?)</title>", r.text, re.S | re.I)
+            print(f"[MAX-ACIERTAMAX] {url} → {r.status_code} en {time.time()-t0:.1f}s · final {r.url} · «{(tit.group(1).strip()[:80] if tit else '')}» · {len(r.text)} bytes", flush=True)
+        except Exception as e:
+            print(f"[MAX-ACIERTAMAX] {url} → ERROR {type(e).__name__}: {str(e)[:120]}", flush=True)
+
+
+threading.Thread(target=_diag_aciertamax, daemon=True).start()
 
 
 def _diag_dns_sitios():
