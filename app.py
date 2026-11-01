@@ -532,7 +532,8 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
             # No debería pasar (registrar_lead ya asigna a todo contacto),
             # pero si por alguna razón no hay uno guardado, se asigna aquí
             # como respaldo en vez de fallar.
-            vendedor = _siguiente_vendedor()
+            vendedor = (_vendedor_por_preferencias(_contexto_de_propiedades(propiedades))
+                        if os.environ.get("REPARTO_PREFERENCIAS", "1") != "0" else _siguiente_vendedor())
             memoria_guardar(phone_cliente, VENDEDOR_ASIGNADO=vendedor["nombre"],
                             VENDEDOR_ASIGNADO_PHONE=vendedor["phone"])
         n = len(sh.get_all_values())
@@ -2311,7 +2312,7 @@ def seguimiento_registrar_vendedor(phone, nombre, folio, vendedor_asignado=None)
     asignado con el cuestionario de seguimiento ENRIQUECIDO con perfil
     de credito y ROI, y manda copia informativa a Javier."""
     # Determinar vendedor en turno
-    v = vendedor_asignado or _siguiente_vendedor()
+    v = vendedor_asignado or (_vendedor_por_preferencias({}) if os.environ.get("REPARTO_PREFERENCIAS", "1") != "0" else _siguiente_vendedor())
     nombre_v = v["nombre"] if isinstance(v, dict) else v
     phone_v  = v["phone"]  if isinstance(v, dict) else JAVIER_PHONE
 
@@ -6687,6 +6688,8 @@ def webhook():
                     _CHECKIN_COMPLETO.add(_t10)
                     wati_send_text(phone, COACH_CHECKIN_TEXTO.format(nombre=(_nom_coach or "coach").split()[0]), copiar=False)
                     return jsonify(ok=True, ruta="checkin_completo")
+            if text and _coach_cambia_disponibilidad(phone, text):
+                return jsonify(ok=True, ruta="disponibilidad")
             if text and _curso_manejar(phone, text, _nom_coach):
                 return jsonify(ok=True, ruta="curso_coach")
             # MODO PRÁCTICA: mientras dure, todo va al coach (nada toca expedientes reales)
@@ -6944,7 +6947,7 @@ def webhook():
                                 _resumen_hist.append(f"{_rol}: {str(_txt)[:120]}")
                         _resumen = "\n".join(_resumen_hist) if _resumen_hist else "Sin historial previo"
                         # Avisar al vendedor en turno + copia a Javier
-                        _v_ast = _siguiente_vendedor()
+                        _v_ast = _vendedor_por_preferencias({}) if os.environ.get("REPARTO_PREFERENCIAS", "1") != "0" else _siguiente_vendedor()
                         wati_send_to_vendedor(_v_ast["phone"],
                                 f"*[SOLICITUD DE ASESOR — te toco]*\n"
                                 f"Cliente: {phone}\n"
@@ -11135,6 +11138,275 @@ def _diag_dns_sitios():
 
 
 threading.Thread(target=_diag_dns_sitios, daemon=True).start()
+
+
+
+
+# =====================================================================
+# PREFERENCIAS DE ATENCIÓN DE LOS COACHES Y REPARTO AUTOMÁTICO
+# =====================================================================
+# Cada coach define una vez (en acierta.pro/coach-preferencias.html con su liga
+# personal): días y horario, operaciones y montos que atiende, y su zona dibujada
+# en el mapa. Con "disponible"/"no disponible" enciende o apaga la entrega al
+# momento. Un cliente se reparte por turnos entre los coaches que cumplen TODO
+# (disponible, en horario, monto y zona); si nadie cumple, es de Javier.
+PREFS_HOJA = "Preferencias coaches"
+PREFS_COLS = ["WHATSAPP", "NOMBRE", "DISPONIBLE", "DIAS", "HORA_INI", "HORA_FIN", "ATIENDE_VENTA", "VENTA_MIN", "VENTA_MAX",
+              "ATIENDE_RENTA", "RENTA_MIN", "RENTA_MAX", "ZONAS", "ACTUALIZADO"]
+_PREFS = {"t": 0, "m": {}}
+DIAS_SEMANA = ["lun", "mar", "mie", "jue", "vie", "sab", "dom"]
+
+
+def _prefs_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, PREFS_HOJA, PREFS_COLS) if libro else None
+
+
+def _prefs_todas(fresco=False):
+    if not fresco and _PREFS["m"] and time.time() - _PREFS["t"] < 120:
+        return _PREFS["m"]
+    m = {}
+    try:
+        for i, r in enumerate(_prefs_hoja().get_all_values()[1:], start=2):
+            if r and r[0]:
+                d = dict(zip(PREFS_COLS, r + [""] * (len(PREFS_COLS) - len(r))))
+                d["_fila"] = i
+                m[_ultimos10(r[0])] = d
+        _PREFS.update(t=time.time(), m=m)
+    except Exception as e:
+        print(f"[MAX-PREFS] No se pudieron leer las preferencias: {e}", flush=True)
+    return _PREFS["m"]
+
+
+def _prefs_guardar(tel10, nombre, cambios):
+    sh = _prefs_hoja()
+    actual = _prefs_todas(fresco=True).get(tel10)
+    fila = [actual.get(c, "") if actual else "" for c in PREFS_COLS]
+    fila[0], fila[1] = tel10, nombre
+    for k, v in cambios.items():
+        fila[PREFS_COLS.index(k)] = v
+    fila[PREFS_COLS.index("ACTUALIZADO")] = hora_gdl()
+    if actual:
+        sh.update(f"A{actual['_fila']}", [fila])
+    else:
+        if not fila[PREFS_COLS.index("DISPONIBLE")]:
+            fila[PREFS_COLS.index("DISPONIBLE")] = "Sí"
+        sh.append_row(fila)
+    _PREFS["t"] = 0
+
+
+def _coach_token_prefs(tel10):
+    return hmac.new(_asesor_llave(), ("coachprefs:" + tel10).encode(), hashlib.sha256).hexdigest()[:20]
+
+
+def _coach_liga_prefs(tel10):
+    return f"https://acierta.pro/coach-preferencias.html?w={tel10}&t={_coach_token_prefs(tel10)}"
+
+
+def _coaches_red():
+    """{tel10: nombre} de todos los coaches (sin Javier)."""
+    red = {_ultimos10(v["phone"]): v["nombre"] for v in VENDEDORES[1:]}
+    try:
+        red.update({k: v["nombre"] for k, v in _coaches_activos().items()})
+    except Exception:
+        pass
+    red.pop(_ultimos10(JAVIER_PHONE), None)
+    return red
+
+
+def _num(x):
+    try:
+        return float(str(x).replace(",", "").replace("$", "").strip() or 0)
+    except Exception:
+        return 0.0
+
+
+def _en_horario(p):
+    if (p.get("DISPONIBLE") or "").strip().lower().startswith("no"):
+        return False
+    dias = [d.strip() for d in (p.get("DIAS") or "").split(",") if d.strip()]
+    if not dias:
+        return False
+    ahora = hora_gdl()
+    try:
+        import datetime as _dt
+        dia = DIAS_SEMANA[_dt.date(int(ahora[:4]), int(ahora[5:7]), int(ahora[8:10])).weekday()]
+    except Exception:
+        return False
+    if dia not in dias:
+        return False
+    hm = int(ahora[11:13]) * 60 + int(ahora[14:16])
+    def mins(s, defecto):
+        try:
+            h, mm = (s or defecto).split(":"); return int(h) * 60 + int(mm)
+        except Exception:
+            return None
+    ini, fin = mins(p.get("HORA_INI"), "09:00"), mins(p.get("HORA_FIN"), "19:00")
+    return ini is not None and fin is not None and ini <= hm < fin
+
+
+def _punto_en_poligono(lat, lon, poli):
+    dentro, j = False, len(poli) - 1
+    for i in range(len(poli)):
+        yi, xi = poli[i][0], poli[i][1]; yj, xj = poli[j][0], poli[j][1]
+        if ((xi > lon) != (xj > lon)) and (lat < (yj - yi) * (lon - xi) / ((xj - xi) or 1e-12) + yi):
+            dentro = not dentro
+        j = i
+    return dentro
+
+
+def _cumple(p, ctx):
+    """¿El coach con preferencias p puede atender este cliente ahora?"""
+    if not _en_horario(p):
+        return False
+    op = (ctx.get("operacion") or "").upper()
+    precio = ctx.get("precio") or 0
+    if op.startswith("RENTA"):
+        if not (p.get("ATIENDE_RENTA") or "").lower().startswith("s"):
+            return False
+        lo, hi = _num(p.get("RENTA_MIN")), _num(p.get("RENTA_MAX"))
+    else:
+        if not (p.get("ATIENDE_VENTA") or "").lower().startswith("s"):
+            return False
+        lo, hi = _num(p.get("VENTA_MIN")), _num(p.get("VENTA_MAX"))
+    if precio and ((lo and precio < lo) or (hi and precio > hi)):
+        return False
+    lat, lon = ctx.get("lat"), ctx.get("lon")
+    if lat and lon:
+        try:
+            zonas = json.loads(p.get("ZONAS") or "[]")
+        except Exception:
+            zonas = []
+        if not zonas or not any(_punto_en_poligono(float(lat), float(lon), z) for z in zonas if len(z) >= 3):
+            return False
+    return True
+
+
+def _contexto_de_propiedades(propiedades):
+    """Toma la primera propiedad con datos para decidir monto, operación y ubicación."""
+    for pr in propiedades or []:
+        c = (pr.get("codigo_eb") or "").upper()
+        p = next((x for x in INVENTARIO_ZMG if (x.get("codigo_eb") or "").upper() == c), None) if c else None
+        if p:
+            return {"operacion": p.get("Operación", ""), "precio": p.get("Precio") or 0, "lat": p.get("lat"), "lon": p.get("lon"), "clave": c}
+        if pr.get("precio") or pr.get("operacion"):
+            return {"operacion": pr.get("operacion", ""), "precio": pr.get("precio") or 0, "lat": pr.get("lat"), "lon": pr.get("lon"), "clave": c}
+    return {}
+
+
+def _vendedor_por_preferencias(ctx):
+    """Coach elegible por turnos, o Javier si nadie cumple."""
+    javier = VENDEDORES[0]
+    prefs = _prefs_todas()
+    red = _coaches_red()
+    elegibles = [t for t in red if t in prefs and _cumple(prefs[t], ctx)]
+    if not elegibles:
+        print(f"[MAX-REPARTO] Nadie cumple {ctx}: el cliente es de Javier", flush=True)
+        return javier
+    ultimo = ""
+    try:
+        valores = _crm_sheet().get_all_values()
+        iv = CRM_COLUMNAS.index("VENDEDOR")
+        nombres_eleg = {red[t] for t in elegibles}
+        for fila in reversed(valores[1:]):
+            if iv < len(fila) and fila[iv].strip() in nombres_eleg:
+                ultimo = fila[iv].strip(); break
+    except Exception:
+        pass
+    orden = sorted(elegibles, key=lambda t: red[t])
+    nombres = [red[t] for t in orden]
+    sig = orden[(nombres.index(ultimo) + 1) % len(orden)] if ultimo in nombres else orden[0]
+    v = next((x for x in VENDEDORES if _ultimos10(x["phone"]) == sig), None) or {"nombre": red[sig], "phone": "521" + sig}
+    print(f"[MAX-REPARTO] {ctx.get('clave') or ''} {ctx.get('operacion')} ${ctx.get('precio')}: {len(elegibles)} elegibles → {v['nombre']}", flush=True)
+    return v
+
+
+def _coach_cambia_disponibilidad(phone, texto):
+    t = _norm_txt(texto).strip(" .!¡¿?")
+    if t not in ("disponible", "no disponible", "ya estoy disponible", "estoy disponible", "no estoy disponible", "preferencias", "mis preferencias"):
+        return False
+    tel10 = _ultimos10(phone)
+    nombre = _coaches_red().get(tel10) or next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == tel10), tel10)
+    if t.startswith("preferencias") or t == "mis preferencias":
+        wati_send_text(phone, f"📋 PREFERENCIAS DE ATENCIÓN · Aquí puedes revisarlas o cambiarlas: {_coach_liga_prefs(tel10)}", copiar=False)
+        return True
+    disp = "No" if t.startswith("no") else "Sí"
+    _prefs_guardar(tel10, nombre, {"DISPONIBLE": disp})
+    p = _prefs_todas(fresco=True).get(tel10, {})
+    faltan = not (p.get("DIAS") and (p.get("ATIENDE_VENTA") or p.get("ATIENDE_RENTA")))
+    wati_send_text(phone, ("✅ Listo, estás DISPONIBLE: te llegarán clientes dentro de tu horario, montos y zona." if disp == "Sí"
+                           else "⏸️ Listo, quedaste NO DISPONIBLE: no te llegarán clientes hasta que me escribas «disponible».")
+                   + (f"\n\nOjo: aún no tienes tus preferencias completas, y sin ellas no te puedo asignar clientes. Llénalas aquí: {_coach_liga_prefs(tel10)}" if faltan and disp == "Sí" else ""),
+                   copiar=False)
+    print(f"[MAX-PREFS] {nombre}: {disp}", flush=True)
+    return True
+
+
+def _enviar_liga_prefs_coaches():
+    """Una sola vez (COACH_PREFS_ENVIO=<id>): manda la liga de preferencias a los coaches que no las tienen."""
+    cid = os.environ.get("COACH_PREFS_ENVIO", "").strip()
+    if not cid:
+        return
+    time.sleep(130)
+    try:
+        sh = _prefs_hoja()
+        if any(len(r) > 1 and r[0] == f"ENVIO-{cid}" for r in sh.get_all_values()):
+            return
+        prefs = _prefs_todas(fresco=True)
+        enviados = 0
+        for tel10, nombre in _coaches_red().items():
+            if tel10 in prefs and prefs[tel10].get("DIAS"):
+                continue
+            txt = (f"📋 PREFERENCIAS DE ATENCIÓN · Hola, {nombre.split()[0]} 👋 A partir de ahora tú decides qué clientes atiendes. "
+                   "En un minuto, indica tus días y horario, los montos de venta y renta que atiendes, y dibuja tu zona en el mapa:\n"
+                   f"{_coach_liga_prefs(tel10)}\n\n"
+                   "Te llegará UN solo mensaje por cliente, solo de los que cumplan lo que elijas. "
+                   "En cualquier momento escríbeme «disponible» o «no disponible», o «preferencias» para cambiarlas.")
+            notificar_interno("521" + tel10, txt, resumen_para_plantilla=f"{nombre.split()[0]}: elige tu horario, montos y zona para recibir clientes: {_coach_liga_prefs(tel10)}",
+                              template_name="seguimiento_lead")
+            enviados += 1
+            time.sleep(3)
+        sh.append_row([f"ENVIO-{cid}", "Envío de la liga de preferencias", "", "", "", "", "", "", "", "", "", "", "", hora_gdl()])
+        print(f"[MAX-PREFS] Liga de preferencias enviada a {enviados} coaches", flush=True)
+    except Exception as e:
+        print(f"[MAX-PREFS] Error enviando la liga: {e}", flush=True)
+
+
+threading.Thread(target=_enviar_liga_prefs_coaches, daemon=True).start()
+
+
+@app.route("/api/coach/prefs", methods=["GET", "POST", "OPTIONS"])
+def api_coach_prefs():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    d = (_asesor_json(200_000) or {}) if request.method == "POST" else request.args
+    tel10 = _ultimos10(str(d.get("w") or ""))
+    if len(tel10) != 10 or not hmac.compare_digest(str(d.get("t") or ""), _coach_token_prefs(tel10)):
+        return _camino_resp({"ok": False, "error": "Liga no válida. Pídele a MAX tu liga escribiendo «preferencias»."}, 403)
+    nombre = _coaches_red().get(tel10) or next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == tel10), "")
+    if request.method == "GET":
+        p = _prefs_todas(fresco=True).get(tel10, {})
+        return _camino_resp({"ok": True, "nombre": nombre, "prefs": {k: v for k, v in p.items() if not k.startswith("_")}})
+    dias = [x for x in (d.get("dias") or []) if x in DIAS_SEMANA]
+    zonas = d.get("zonas") or []
+    try:
+        zonas = [[[round(float(a), 6), round(float(b), 6)] for a, b in z] for z in zonas if isinstance(z, list) and len(z) >= 3][:10]
+    except Exception:
+        return _camino_resp({"ok": False, "error": "La zona dibujada no es válida."}, 400)
+    if not dias or not (d.get("atiende_venta") or d.get("atiende_renta")) or not zonas:
+        return _camino_resp({"ok": False, "error": "Elige al menos un día, una operación (venta o renta) y dibuja tu zona."}, 400)
+    _prefs_guardar(tel10, nombre, {
+        "DIAS": ",".join(dias), "HORA_INI": str(d.get("hora_ini") or "09:00")[:5], "HORA_FIN": str(d.get("hora_fin") or "19:00")[:5],
+        "ATIENDE_VENTA": "Sí" if d.get("atiende_venta") else "No", "VENTA_MIN": str(int(_num(d.get("venta_min")))), "VENTA_MAX": str(int(_num(d.get("venta_max")))),
+        "ATIENDE_RENTA": "Sí" if d.get("atiende_renta") else "No", "RENTA_MIN": str(int(_num(d.get("renta_min")))), "RENTA_MAX": str(int(_num(d.get("renta_max")))),
+        "ZONAS": json.dumps(zonas)})
+    print(f"[MAX-PREFS] Preferencias guardadas: {nombre} ({tel10}), {len(zonas)} zonas", flush=True)
+    try:
+        wati_send_text("521" + tel10, "✅ Guardé tus preferencias de atención. Te llegarán solo los clientes que cumplan lo que elegiste. "
+                       "Escríbeme «no disponible» cuando no quieras recibir, y «disponible» para volver.", copiar=False)
+    except Exception:
+        pass
+    return _camino_resp({"ok": True})
 
 
 def _autoprueba_originador():
