@@ -620,7 +620,8 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
         # plantilla (el contenido no encaja). Se manda tal cual, sabiendo
         # que puede no llegar si el ticket sigue cerrado.
         # Un lead web todavía no tiene chat: no se manda un "chat completo" vacío.
-        ok_chat = True if perfil_web else wati_send_text(vendedor["phone"], f"💬 CHAT COMPLETO — {folio_crm}\n\n{chat_completo}")
+        _un_msg = os.environ.get("COACH_UN_MENSAJE", "1") != "0" and _ultimos10(vendedor["phone"]) != _ultimos10(JAVIER_PHONE)
+        ok_chat = True if (perfil_web or _un_msg) else wati_send_text(vendedor["phone"], f"💬 CHAT COMPLETO — {folio_crm}\n\n{chat_completo}")
         if not (ok_msg and ok_chat):
             print(f"[MAX-CRM-ALERTA] Envío a {vendedor['nombre']} ({vendedor['phone']}) "
                   f"falló (ok_msg={ok_msg}, ok_chat={ok_chat}).", flush=True)
@@ -1953,10 +1954,38 @@ def notificar_interno(phone, texto_completo, resumen_para_plantilla, template_na
     seguimiento pasa template_name='seguimiento_lead'.
     `resumen_para_plantilla` debe ser una sola línea corta con lo
     esencial, porque ambas plantillas tienen un solo parámetro de texto libre."""
+    # Política (oct-2026): a cada coach solo le llega UN mensaje por cliente (el aviso de
+    # cliente nuevo). Cualquier otro aviso automático para un coach se le manda a Javier.
+    _redir = _redirigir_aviso_coach(phone, texto_completo)
+    if _redir is not None:
+        phone, texto_completo, resumen_para_plantilla = _redir
     ok = wati_send_text(phone, texto_completo)
     if not ok:
         ok = wati_send_template_message(phone, template_name, [resumen_para_plantilla])
     return ok
+
+
+AVISOS_PERMITIDOS_COACH = ("LEAD INICIAL", "NUEVO CLIENTE ASIGNADO", "PREFERENCIAS DE ATENCIÓN", "Tu acceso como Coach",
+                           "Bienvenido a la red", "Coach Acierta")
+
+
+def _redirigir_aviso_coach(phone, texto):
+    """None si el aviso puede ir al coach; si no, (teléfono de Javier, texto etiquetado, resumen)."""
+    if os.environ.get("COACH_UN_MENSAJE", "1") == "0":
+        return None
+    t10 = _ultimos10(phone)
+    if t10 in (_ultimos10(JAVIER_PHONE), _ultimos10(JAVIER_PERSONAL)):
+        return None
+    coaches = {_ultimos10(v["phone"]): v["nombre"] for v in VENDEDORES}
+    try:
+        coaches.update({k: v["nombre"] for k, v in _coaches_activos().items()})
+    except Exception:
+        pass
+    if t10 not in coaches or any(k in (texto or "") for k in AVISOS_PERMITIDOS_COACH):
+        return None
+    nombre = coaches[t10]
+    return (JAVIER_PHONE, f"📨 Aviso para {nombre} (por política, solo te llega a ti):\n\n{texto}",
+            f"Aviso para {nombre}: {(texto or '')[:150]}")
 
 
 
@@ -2013,6 +2042,13 @@ def emails_vendedores():
     }
 
 def wati_send_to_vendedor(phone, text):
+    _redir = _redirigir_aviso_coach(phone, text)
+    if _redir is not None:
+        phone, text = _redir[0], _redir[1]
+    return _wati_send_to_vendedor_real(phone, text)
+
+
+def _wati_send_to_vendedor_real(phone, text):
     """Envia mensaje a un vendedor (numero externo).
     Intenta sendSessionMessage primero; si falla por ventana cerrada,
     usa sendTemplateMessage con plantilla de texto libre.
@@ -4224,7 +4260,8 @@ def _actualizar_inventario_desde_sitio(forzar=False):
             _nd = _no_disponibles()
         except Exception:
             _nd = set()
-        INVENTARIO_ZMG[:] = [p for p in nuevas + de_bolsa if (p.get("codigo_eb") or "").upper() not in _nd]
+        INVENTARIO_ZMG[:] = [p for p in nuevas + de_bolsa if (p.get("codigo_eb") or "").upper() not in _nd
+                             and not (str(p.get("Operación", "")).upper().startswith("RENTA") and 0 < (p.get("Precio") or 0) < 11000)]
         if _nd:
             print(f"[MAX-INV] Se excluyen {len(nuevas) + len(de_bolsa) - len(INVENTARIO_ZMG)} propiedades reportadas como no disponibles", flush=True)
         _INV_SITIO_VERSION["actualizado"] = version
