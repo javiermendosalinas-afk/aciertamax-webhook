@@ -1966,7 +1966,7 @@ def notificar_interno(phone, texto_completo, resumen_para_plantilla, template_na
     return ok
 
 
-AVISOS_PERMITIDOS_COACH = ("LEAD INICIAL", "NUEVO CLIENTE ASIGNADO", "PREFERENCIAS DE ATENCIÓN", "Tu acceso como Coach",
+AVISOS_PERMITIDOS_COACH = ("LEAD INICIAL", "NUEVO CLIENTE ASIGNADO", "PREFERENCIAS DE ATENCIÓN", "TABLERO DIARIO", "Tu acceso como Coach",
                            "Bienvenido a la red", "Coach Acierta")
 
 
@@ -11323,6 +11323,12 @@ def _vendedor_por_preferencias(ctx):
 
 def _coach_cambia_disponibilidad(phone, texto):
     t = _norm_txt(texto).strip(" .!¡¿?")
+    if t in ("tablero", "mi tablero", "como voy"):
+        tel10 = _ultimos10(phone)
+        nombre = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == tel10), None) or _coaches_red().get(tel10, "")
+        mes, m = _tablero_equipo()
+        wati_send_text(phone, _texto_tablero(_tablero_de(nombre, mes, m)) + f"\n\nTu tablero gráfico: {_liga_tablero_coach(tel10)}", copiar=False)
+        return True
     if t not in ("disponible", "no disponible", "ya estoy disponible", "estoy disponible", "no estoy disponible", "preferencias", "mis preferencias"):
         return False
     tel10 = _ultimos10(phone)
@@ -11447,6 +11453,141 @@ def _tablero_resumen():
 
 
 threading.Thread(target=_tablero_resumen, daemon=True).start()
+
+
+
+
+# =====================================================================
+# TABLERO DIARIO DE CADA COACH (mes en curso, contra el promedio del equipo)
+# =====================================================================
+# Métricas del mes: recibidos, llamados (contacto con el cliente), en seguimiento
+# (abiertos y ya contactados), citas, visitas y cierres (hoja "Operaciones cerradas").
+# Cada mañana, lunes a sábado a las 8:30, MAX manda a cada coach su resumen y la
+# liga a su tablero gráfico; a Javier, el resumen del equipo.
+OPS_HOJA = "Operaciones cerradas"
+OPS_COLS = ["FECHA", "MES", "VENDEDOR", "PROPIEDAD", "TIPO", "VALOR", "INGRESO_ACIERTA", "PARTE_VENDEDOR"]
+
+
+def _tablero_equipo(mes=None):
+    """{nombre: métricas} del mes para todos los vendedores con clientes o en la red."""
+    mes = mes or hora_gdl()[:7]
+    filas = _crm_sheet().get_all_values()
+    h = filas[0]; ix = {c: h.index(c) for c in h}
+    g = lambda r, c: (r[ix[c]].strip() if c in ix and ix[c] < len(r) else "")
+    si = lambda v: v.lower().startswith("s")
+    nombres = {v["nombre"] for v in VENDEDORES}
+    try:
+        nombres |= {v["nombre"] for v in _coaches_activos().values()}
+    except Exception:
+        pass
+    alias = {"Javier": "Javier Mendoza"}
+    m = {n: {"recibidos": 0, "llamados": 0, "seguimiento": 0, "citas": 0, "visitas": 0, "cierres": 0, "ingreso": 0} for n in nombres}
+    for r in filas[1:]:
+        if not g(r, "FOLIO") or not g(r, "CREADO").startswith(mes):
+            continue
+        n = alias.get(g(r, "VENDEDOR"), g(r, "VENDEDOR")) or "Sin asignar"
+        d = m.setdefault(n, {"recibidos": 0, "llamados": 0, "seguimiento": 0, "citas": 0, "visitas": 0, "cierres": 0, "ingreso": 0})
+        d["recibidos"] += 1
+        contacto = si(g(r, "CONTACTO_CLIENTE"))
+        d["llamados"] += contacto
+        d["seguimiento"] += (contacto and not si(g(r, "CONCLUIDO")))
+        d["citas"] += bool(g(r, "FECHA_HORA_CITA"))
+        d["visitas"] += bool(g(r, "VISITA_RESULTADO"))
+    try:
+        libro, _ = _sheets_client()
+        for r in _get_o_crear_hoja(libro, OPS_HOJA, OPS_COLS).get_all_values()[1:]:
+            if len(r) > 6 and r[1] == mes:
+                n = alias.get(r[2], r[2])
+                d = m.setdefault(n, {"recibidos": 0, "llamados": 0, "seguimiento": 0, "citas": 0, "visitas": 0, "cierres": 0, "ingreso": 0})
+                d["cierres"] += 1
+                try:
+                    d["ingreso"] += float(str(r[6]).replace(",", "").replace("$", "") or 0)
+                except Exception:
+                    pass
+    except Exception as e:
+        print(f"[MAX-TABLERO] Operaciones cerradas no disponibles: {e}", flush=True)
+    m.pop("Sin asignar", None)
+    return mes, m
+
+
+def _tablero_de(nombre, mes, m):
+    """Métricas del coach + promedio del equipo + lugar (1 = mejor) por métrica."""
+    yo = m.get(nombre, {k: 0 for k in ("recibidos", "llamados", "seguimiento", "citas", "visitas", "cierres", "ingreso")})
+    metr = ["recibidos", "llamados", "seguimiento", "citas", "visitas", "cierres"]
+    n = max(1, len(m))
+    prom = {k: round(sum(v[k] for v in m.values()) / n, 1) for k in metr}
+    lugar = {k: 1 + sum(1 for v in m.values() if v[k] > yo[k]) for k in metr}
+    tasa = round(100 * yo["llamados"] / yo["recibidos"]) if yo["recibidos"] else 0
+    tasa_eq = round(100 * sum(v["llamados"] for v in m.values()) / max(1, sum(v["recibidos"] for v in m.values())))
+    return {"nombre": nombre, "mes": mes, "yo": yo, "promedio": prom, "lugar": lugar, "equipo": n, "tasa_llamado": tasa, "tasa_llamado_equipo": tasa_eq}
+
+
+def _liga_tablero_coach(tel10):
+    return f"https://acierta.pro/coach-tablero.html?w={tel10}&t={_coach_token_prefs(tel10)}"
+
+
+@app.route("/api/coach/tablero", methods=["GET", "OPTIONS"])
+def api_coach_tablero():
+    if request.method == "OPTIONS":
+        return _camino_resp({}, 204)
+    tel10 = _ultimos10(str(request.args.get("w") or ""))
+    if len(tel10) != 10 or not hmac.compare_digest(str(request.args.get("t") or ""), _coach_token_prefs(tel10)):
+        return _camino_resp({"ok": False, "error": "Liga no válida. Pídele a MAX tu tablero escribiendo «tablero»."}, 403)
+    nombre = next((v["nombre"] for v in VENDEDORES if _ultimos10(v["phone"]) == tel10), None) or _coaches_red().get(tel10, "")
+    mes, m = _tablero_equipo()
+    return _camino_resp({"ok": True, **_tablero_de(nombre, mes, m)})
+
+
+def _texto_tablero(t):
+    y, p, l = t["yo"], t["promedio"], t["lugar"]
+    return (f"📊 TABLERO DIARIO · {t['nombre'].split()[0]}, así vas en el mes:\n"
+            f"• Clientes recibidos: {y['recibidos']} (equipo: {p['recibidos']})\n"
+            f"• Llamados: {y['llamados']} · {t['tasa_llamado']}% (equipo: {t['tasa_llamado_equipo']}%)\n"
+            f"• En seguimiento: {y['seguimiento']} · Citas: {y['citas']} · Visitas: {y['visitas']}\n"
+            f"• Cierres: {y['cierres']}\n"
+            f"Tu lugar en llamados: {l['llamados']} de {t['equipo']}.\n"
+            "Recuerda: llamar en la primera hora es lo que más cierra. Cuéntame con tus palabras cómo va cada cliente.")
+
+
+def _enviar_tableros_diarios():
+    mes, m = _tablero_equipo()
+    red = {_ultimos10(v["phone"]): v["nombre"] for v in VENDEDORES[1:]}
+    try:
+        red.update({k: v["nombre"] for k, v in _coaches_activos().items()})
+    except Exception:
+        pass
+    red.pop(_ultimos10(JAVIER_PHONE), None)
+    for tel10, nombre in red.items():
+        t = _tablero_de(nombre, mes, m)
+        txt = _texto_tablero(t) + f"\n\nTu tablero gráfico: {_liga_tablero_coach(tel10)}"
+        notificar_interno("521" + tel10, txt, resumen_para_plantilla=f"Tablero diario {nombre.split()[0]}: {t['yo']['recibidos']} recibidos, {t['yo']['llamados']} llamados, {t['yo']['cierres']} cierres. {_liga_tablero_coach(tel10)}",
+                          template_name="seguimiento_lead")
+        time.sleep(2)
+    lineas = [f"📊 TABLERO DEL EQUIPO · {mes}"]
+    for n, v in sorted(m.items(), key=lambda x: -x[1]["recibidos"]):
+        tasa = round(100 * v["llamados"] / v["recibidos"]) if v["recibidos"] else 0
+        lineas.append(f"• {n}: {v['recibidos']} recibidos · {v['llamados']} llamados ({tasa}%) · {v['citas']} citas · {v['cierres']} cierres")
+    notificar_interno(JAVIER_PERSONAL, "\n".join(lineas), resumen_para_plantilla=f"Tablero del equipo {mes}", template_name="seguimiento_lead")
+    print(f"[MAX-TABLERO] Tableros diarios enviados ({len(red)} coaches + Javier)", flush=True)
+
+
+def _loop_tableros():
+    enviado = ""
+    while True:
+        try:
+            ahora = hora_gdl(); hoy = ahora[:10]
+            import datetime as _dt
+            dow = _dt.date(int(hoy[:4]), int(hoy[5:7]), int(hoy[8:10])).weekday()   # 0 = lunes
+            if (os.environ.get("TABLERO_DIARIO", "1") == "1" and dow <= 5 and ahora[11:16] >= "08:30"
+                    and ahora[11:13] < "11" and enviado != hoy):
+                enviado = hoy
+                _enviar_tableros_diarios()
+        except Exception as e:
+            print(f"[MAX-TABLERO] Error en el envío diario: {e}", flush=True)
+        time.sleep(300)
+
+
+threading.Thread(target=_loop_tableros, daemon=True).start()
 
 
 def _autoprueba_originador():
