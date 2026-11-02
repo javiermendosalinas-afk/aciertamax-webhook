@@ -11409,6 +11409,46 @@ def api_coach_prefs():
     return _camino_resp({"ok": True})
 
 
+
+
+def _tablero_resumen():
+    """Conteos del embudo por vendedor y por mes (sin datos personales), para el tablero de indicadores."""
+    if os.environ.get("TABLERO_LOG", "0") != "1":
+        return
+    time.sleep(60)
+    try:
+        filas = _crm_sheet().get_all_values()
+        h = filas[0]; idx = {c: h.index(c) for c in h}
+        g = lambda r, c: (r[idx[c]].strip() if c in idx and idx[c] < len(r) else "")
+        si = lambda v: v.lower().startswith("s")
+        res, claves = {}, {}
+        for r in filas[1:]:
+            if not g(r, "FOLIO"):
+                continue
+            vend = g(r, "VENDEDOR") or "Sin asignar"
+            mes = (g(r, "CREADO") or "")[:7] or "sin-fecha"
+            k = (vend, mes)
+            d = res.setdefault(k, {"clientes": 0, "contactados": 0, "con_originador": 0, "citas": 0, "visitas": 0, "operaciones": 0, "concluidos": 0})
+            d["clientes"] += 1
+            d["contactados"] += si(g(r, "CONTACTO_CLIENTE"))
+            d["con_originador"] += si(g(r, "CONTACTO_ORIGINADOR"))
+            d["citas"] += bool(g(r, "FECHA_HORA_CITA"))
+            d["visitas"] += bool(g(r, "VISITA_RESULTADO"))
+            d["operaciones"] += bool(g(r, "OPERACION"))
+            d["concluidos"] += si(g(r, "CONCLUIDO"))
+            for c in re.findall(r"(?:EB|NJ)-[A-Z0-9]{3,8}", g(r, "PROPIEDADES").upper()):
+                claves[c] = claves.get(c, 0) + 1
+        filas_out = [dict(vendedor=k[0], mes=k[1], **v) for k, v in sorted(res.items())]
+        print("[MAX-TABLERO] EMBUDO " + json.dumps(filas_out, ensure_ascii=False), flush=True)
+        top = sorted(claves.items(), key=lambda x: -x[1])[:25]
+        print("[MAX-TABLERO] CLAVES " + json.dumps(top), flush=True)
+    except Exception as e:
+        print(f"[MAX-TABLERO] Error: {e}", flush=True)
+
+
+threading.Thread(target=_tablero_resumen, daemon=True).start()
+
+
 def _autoprueba_originador():
     time.sleep(60)
     for c in ("NJ-14A0A", "NJ-F09D"):
