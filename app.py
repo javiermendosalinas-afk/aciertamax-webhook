@@ -9148,10 +9148,46 @@ def api_asesor_originador_guardar():
     return _camino_resp({"ok": True, "inmobiliaria": fila[2], "telefono": tel, "del_directorio": bool(dct)})
 
 
+PROP_HOJA = "Propuestas PDF"
+PROP_COLS = ["ID", "FECHA", "ARCHIVO", "DATOS"]
+
+
+def _propuesta_guardar(pid, archivo, datos):
+    """Guarda los datos de la propuesta (no el PDF) para regenerarla aunque MAX se reinicie."""
+    try:
+        libro, _ = _sheets_client()
+        _get_o_crear_hoja(libro, PROP_HOJA, PROP_COLS).append_row(
+            [pid, hora_gdl(), archivo, json.dumps(datos, ensure_ascii=False, default=str)[:49000]])
+    except Exception as e:
+        print(f"[MAX-ASESOR] No se pudo guardar la propuesta {pid}: {e}", flush=True)
+
+
+def _propuesta_regenerar(pid):
+    try:
+        import propuesta as _propmod
+        libro, _ = _sheets_client()
+        sh = _get_o_crear_hoja(libro, PROP_HOJA, PROP_COLS)
+        celda = sh.find(pid, in_column=1)
+        if not celda:
+            return None
+        fila = sh.row_values(celda.row)
+        datos = json.loads(fila[3])
+        pdf = _propmod.generar_pdf(datos, detalle_fn=_detalle_con_respaldo)
+        item = (pdf, fila[2] or "Propuesta_Acierta_Max.pdf", time.time())
+        _PROPUESTAS_PDF[pid] = item
+        print(f"[MAX-ASESOR] Propuesta {pid} regenerada desde la hoja", flush=True)
+        return item
+    except Exception as e:
+        print(f"[MAX-ASESOR] No se pudo regenerar la propuesta {pid}: {e}", flush=True)
+        return None
+
+
 @app.route("/api/asesor/pdf/<pid>", methods=["GET"])
 def api_asesor_pdf(pid):
-    item = _PROPUESTAS_PDF.get(pid)
-    if not item or time.time() - item[2] > 30 * 86400:
+    if not re.fullmatch(r"[0-9a-f]{28}", pid or ""):
+        return "Liga no válida.", 404
+    item = _PROPUESTAS_PDF.get(pid) or _propuesta_regenerar(pid)
+    if not item:
         return "Esta propuesta ya no está disponible. Pídele a tu coach que te la reenvíe.", 404
     resp = app.response_class(item[0], mimetype="application/pdf")
     resp.headers["Content-Disposition"] = f'inline; filename="{item[1]}"'
@@ -9299,6 +9335,7 @@ def api_asesor_propuesta():
         if not liga:
             pid = hashlib.sha256(os.urandom(24)).hexdigest()[:28]
             _PROPUESTAS_PDF[pid] = (pdf, archivo, time.time())
+            _propuesta_guardar(pid, archivo, datos)
             liga = f"{request.host_url.rstrip('/').replace('http://', 'https://')}/api/asesor/pdf/{pid}"
         claves = ", ".join(p["eb"] for p in props)
         try:
@@ -9325,6 +9362,7 @@ def api_asesor_propuesta():
     if not liga:
         pid = hashlib.sha256(os.urandom(24)).hexdigest()[:28]
         _PROPUESTAS_PDF[pid] = (pdf, archivo, time.time())
+        _propuesta_guardar(pid, archivo, datos)
         liga = f"{request.host_url.rstrip('/').replace('http://', 'https://')}/api/asesor/pdf/{pid}"
     primer = nombre.split()[0]
     n = len(props)
