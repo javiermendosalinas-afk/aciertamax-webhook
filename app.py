@@ -9197,13 +9197,13 @@ def api_asesor_propuesta():
     a = _asesor_de_token(d.get("token"))
     if not a:
         return _camino_resp({"ok": False, "error": "Tu sesión venció. Vuelve a entrar."}, 401)
-    modo = d.get("modo") if d.get("modo") in ("vista", "enviar", "registrar") else "vista"
+    modo = d.get("modo") if d.get("modo") in ("vista", "enviar", "registrar", "liga") else "vista"
     cli = d.get("cliente") or {}
     nombre = _camino_limpiar(cli.get("nombre"), 80)
     tel = _camino_tel(cli.get("whatsapp"))
     if len(nombre) < 2:
         return _camino_resp({"ok": False, "error": "Escribe el nombre del cliente."}, 400)
-    if modo in ("enviar", "registrar") and not tel:
+    if modo in ("enviar", "registrar", "liga") and not tel:
         return _camino_resp({"ok": False, "error": "Falta el WhatsApp del cliente."}, 400)
     if not _camino_limite("asesorpdf:" + a["usuario"], 40, 3600):
         return _camino_resp({"ok": False, "error": "Demasiadas propuestas en poco tiempo. Espera un momento."}, 429)
@@ -9287,6 +9287,32 @@ def api_asesor_propuesta():
         if faltan:
             resp.headers["X-Propiedades-Omitidas"] = ",".join(faltan)
         return resp
+
+    # --- LIGA: el coach la manda desde su propio WhatsApp (sin adjuntar el PDF) ---
+    if modo == "liga":
+        liga = ""
+        try:
+            if GOOGLE_CREDS_JSON:
+                liga = _drive_subir_pdf_publico(pdf, archivo, datos["cliente"]["folio"], nombre)
+        except Exception as e:
+            print(f"[MAX-ASESOR] No se pudo subir a Drive ({e}); se usa liga de respaldo", flush=True)
+        if not liga:
+            pid = hashlib.sha256(os.urandom(24)).hexdigest()[:28]
+            _PROPUESTAS_PDF[pid] = (pdf, archivo, time.time())
+            liga = f"{request.host_url.rstrip('/').replace('http://', 'https://')}/api/asesor/pdf/{pid}"
+        claves = ", ".join(p["eb"] for p in props)
+        try:
+            _actividad_sheet().append_row([hora_gdl(), a["telefono"], "propuesta", datos["cliente"]["folio"] or "",
+                                           f"{nombre} ({tel}) · {claves} · liga enviada desde el WhatsApp del coach: {liga}"[:500]])
+        except Exception:
+            pass
+        try:
+            notificar_interno(JAVIER_PHONE, f"📄 PROPUESTA (liga desde el WhatsApp del coach)\nCoach: {a['nombre']}\nCliente: {nombre} ({tel})\nPropiedades: {claves}\nPDF: {liga}",
+                              resumen_para_plantilla=f"Propuesta de {a['nombre']} para {nombre}: {liga}")
+        except Exception:
+            pass
+        print(f"[MAX-ASESOR] Liga de propuesta para {nombre} ({claves}) de {a['nombre']}: {liga}", flush=True)
+        return _camino_resp({"ok": True, "liga": liga})
 
     # --- ENVIAR ---
     folio = datos["cliente"]["folio"]
