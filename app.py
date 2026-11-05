@@ -640,6 +640,8 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
         if propiedades and not perfil_web:
             threading.Thread(target=_propuesta_automatica, args=(phone_cliente, nombre_cliente, propiedades, vendedor, folio_crm),
                              daemon=True).start()
+            threading.Thread(target=_consultar_originador, args=(phone_cliente, nombre_cliente, propiedades, vendedor, folio_crm),
+                             daemon=True).start()
         return {"creado": True, "folio_crm": folio_crm, "vendedor": vendedor["nombre"],
                 "vendedor_phone": vendedor["phone"],
                 "carpeta_cliente": carpeta_url, "notificacion_enviada": bool(ok_msg and ok_chat)}
@@ -6674,6 +6676,11 @@ def webhook():
     # parser determinístico aparte (crm_procesar_respuesta_vendedor),
     # porque mover el pipeline de ventas real no debe depender de que un
     # LLM interprete bien un "sí"/"no" suelto.
+    try:
+        if text and _ultimos10(phone) not in {_ultimos10(v["phone"]) for v in VENDEDORES} and _originador_responde(phone, text):
+            return jsonify(ok=True, ruta="originador")
+    except Exception as e:
+        print(f"[MAX-ORIGCONS] Error atendiendo al originador: {e}", flush=True)
     _tel_vendedores = {_ultimos10(v["phone"]) for v in VENDEDORES}
     try:
         _tel_vendedores |= set(_coaches_activos().keys())   # coaches dados de alta en acierta.pro
@@ -11779,6 +11786,136 @@ def _propuesta_automatica(phone, nombre, propiedades, vendedor, folio):
         print(f"[MAX-AUTOPROP] Carta para {_ultimos10(phone)} con {base['eb']} + {len(alts)} alternativas · entregada={ok}", flush=True)
     except Exception as e:
         print(f"[MAX-AUTOPROP] Error: {e}", flush=True)
+
+
+
+
+# =====================================================================
+# ETAPA 1 · CONSULTA AUTOMÁTICA AL ORIGINADOR
+# =====================================================================
+# Al llegar un cliente nuevo por una propiedad con originador conocido, MAX le
+# escribe (plantilla "consulta_disponibilidad", Utility) en nombre del coach:
+# disponibilidad, comisión, condiciones y horarios para mostrarla. Su respuesta
+# se interpreta y queda en la hoja "Consultas originador"; el coach y Javier
+# reciben el resumen. Si ya no está disponible, sale del inventario y el cliente
+# recibe el aviso con sus alternativas. MAX nunca negocia la comisión.
+CONS_HOJA = "Consultas originador"
+CONS_COLS = ["FECHA", "FOLIO", "CLAVE", "ORIGINADOR", "TEL_ORIGINADOR", "CLIENTE", "TEL_CLIENTE", "COACH", "TEL_COACH",
+             "ESTADO", "DISPONIBLE", "COMISION", "CONDICIONES", "HORARIOS", "ULTIMA"]
+_CONS = {"t": 0, "m": {}}
+
+
+def _cons_hoja():
+    libro, _ = _sheets_client()
+    return _get_o_crear_hoja(libro, CONS_HOJA, CONS_COLS) if libro else None
+
+
+def _cons_activas(fresco=False):
+    """{tel10 originador: fila dict} de consultas abiertas en los últimos 10 días."""
+    if not fresco and time.time() - _CONS["t"] < 60:
+        return _CONS["m"]
+    m = {}
+    try:
+        filas = _cons_hoja().get_all_values()
+        lim = time.strftime("%Y-%m-%d", time.gmtime(time.time() - 10 * 86400))
+        for i, r in enumerate(filas[1:], start=2):
+            d = dict(zip(CONS_COLS, r + [""] * (len(CONS_COLS) - len(r)))); d["_fila"] = i
+            if d["TEL_ORIGINADOR"] and d["FECHA"][:10] >= lim and d["ESTADO"] in ("ENVIADA", "EN CURSO"):
+                m[_ultimos10(d["TEL_ORIGINADOR"])] = d
+        _CONS.update(t=time.time(), m=m)
+    except Exception as e:
+        print(f"[MAX-ORIGCONS] No se pudieron leer las consultas: {e}", flush=True)
+    return _CONS["m"]
+
+
+def _consultar_originador(phone_cliente, nombre_cliente, propiedades, vendedor, folio):
+    if os.environ.get("CONSULTA_ORIGINADOR", "1") != "1":
+        return
+    time.sleep(20)
+    try:
+        for pr in (propiedades or [])[:1]:
+            clave = (pr.get("codigo_eb") or "").upper()
+            if not clave:
+                continue
+            o = _originador_auto(clave) or {}
+            tel = re.sub(r"\D", "", o.get("telefono") or "")[-10:]
+            if len(tel) != 10 or tel in {_ultimos10(v["phone"]) for v in VENDEDORES}:
+                print(f"[MAX-ORIGCONS] {clave}: sin teléfono de originador; el coach lo contacta", flush=True)
+                continue
+            if tel in _cons_activas(fresco=True):
+                print(f"[MAX-ORIGCONS] {clave}: ya hay una consulta abierta con {tel}", flush=True)
+                continue
+            asesor = (o.get("asesor") or "").strip()
+            saludo = asesor.split()[0] if asesor and not any(w in asesor.lower() for w in ("inmobiliaria", "grupo", "real estate", "bienes")) else "colega"
+            base = _prop_de_inventario(clave, "") or {}
+            desc = f"{clave}" + (f" ({(base.get('titulo') or '')[:60]})" if base.get("titulo") else "")
+            coach = (vendedor or {}).get("nombre", "Javier Mendoza")
+            ok = wati_send_template_message("521" + tel, "consulta_disponibilidad", [saludo, coach, desc])
+            _cons_hoja().append_row([hora_gdl(), folio or "", clave, f"{asesor} · {o.get('inmobiliaria', '')}".strip(" ·"), tel,
+                                     nombre_cliente or "", _ultimos10(phone_cliente), coach, _ultimos10((vendedor or {}).get("phone", "")),
+                                     "ENVIADA" if ok else "ERROR PLANTILLA", "", "", "", "", hora_gdl()])
+            _CONS["t"] = 0
+            if ok:
+                aviso = (f"📨 CONSULTA AL ORIGINADOR — {folio}\nMAX le escribió a {asesor or 'el originador'} ({o.get('inmobiliaria', '')}) "
+                         f"por {clave}: disponibilidad, comisión, condiciones y horarios. Te aviso cuando conteste.")
+                if vendedor and _ultimos10(vendedor.get("phone", "")) != _ultimos10(JAVIER_PHONE):
+                    wati_send_text(vendedor["phone"], aviso)
+                notificar_interno(JAVIER_PHONE, aviso, resumen_para_plantilla=f"Consulta al originador de {clave} ({folio})")
+            else:
+                print(f"[MAX-ORIGCONS] La plantilla consulta_disponibilidad no salió (¿aún no aprobada?) para {clave}", flush=True)
+            print(f"[MAX-ORIGCONS] {clave} → {tel} ({asesor}) · enviada={ok}", flush=True)
+    except Exception as e:
+        print(f"[MAX-ORIGCONS] Error: {e}", flush=True)
+
+
+def _originador_responde(phone, texto):
+    """Si quien escribe es un originador con consulta abierta, se atiende aquí. True si lo atendió."""
+    tel10 = _ultimos10(phone)
+    c = _cons_activas().get(tel10)
+    if not c or not (texto or "").strip():
+        return False
+    sistema = ("Eres MAX, asistente de Acierta Max. Un asesor inmobiliario (el originador de una propiedad) responde a nuestra "
+               "consulta. Extrae lo que dijo. Responde SOLO con JSON válido: {\"disponible\": \"si\"|\"no\"|null, "
+               "\"comision\": \"texto\"|null, \"condiciones\": \"texto\"|null, \"horarios\": \"texto\"|null, "
+               "\"respuesta\": \"mensaje breve, cordial y profesional para el originador, en español de México\"}. "
+               "En \"respuesta\": agradece; si falta algún dato (disponibilidad, comisión, condiciones u horarios), pídelo en una sola "
+               "pregunta; si ya están todos, di que el coach lo contactará para confirmar la cita. NUNCA negocies ni aceptes la comisión: "
+               "solo tomas nota. Si dice que no está disponible, agradece y despídete.")
+    previo = f"Datos ya registrados: disponible={c['DISPONIBLE'] or '?'}, comisión={c['COMISION'] or '?'}, condiciones={c['CONDICIONES'] or '?'}, horarios={c['HORARIOS'] or '?'}."
+    j = _claude_json(sistema, f"Propiedad {c['CLAVE']}. {previo}\nEl originador escribió: «{texto.strip()[:1200]}»", max_tokens=400) or {}
+    cambios = {}
+    for k, col in (("disponible", "DISPONIBLE"), ("comision", "COMISION"), ("condiciones", "CONDICIONES"), ("horarios", "HORARIOS")):
+        v = j.get(k)
+        if v not in (None, "", "null"):
+            cambios[col] = "Sí" if (k == "disponible" and str(v).lower().startswith("s")) else ("No" if k == "disponible" else str(v)[:300])
+    completo = all((cambios.get(k) or c.get(k)) for k in ("DISPONIBLE", "COMISION", "HORARIOS"))
+    estado = "NO DISPONIBLE" if cambios.get("DISPONIBLE") == "No" else ("RESPONDIDA" if completo else "EN CURSO")
+    try:
+        sh = _cons_hoja(); fila = c["_fila"]
+        for col, v in list(cambios.items()) + [("ESTADO", estado), ("ULTIMA", hora_gdl())]:
+            sh.update_cell(fila, CONS_COLS.index(col) + 1, v)
+        _CONS["t"] = 0
+    except Exception as e:
+        print(f"[MAX-ORIGCONS] No se pudo actualizar la consulta: {e}", flush=True)
+    if j.get("respuesta"):
+        wati_send_text(phone, j["respuesta"])
+    d = {k: (cambios.get(k) or c.get(k) or "—") for k in ("DISPONIBLE", "COMISION", "CONDICIONES", "HORARIOS")}
+    resumen = (f"🏠 RESPUESTA DEL ORIGINADOR — {c['FOLIO']} · {c['CLAVE']}\n{c['ORIGINADOR']} ({tel10}) escribió: «{texto.strip()[:300]}»\n\n"
+               f"• Disponible: {d['DISPONIBLE']}\n• Comisión compartida: {d['COMISION']}\n• Condiciones: {d['CONDICIONES']}\n• Horarios: {d['HORARIOS']}\n"
+               f"Cliente: {c['CLIENTE']} ({c['TEL_CLIENTE']})")
+    if c.get("TEL_COACH") and c["TEL_COACH"] != _ultimos10(JAVIER_PHONE):
+        wati_send_text("521" + c["TEL_COACH"], resumen + "\n\n👉 Confirma la cita con el cliente y el originador.")
+    notificar_interno(JAVIER_PHONE, resumen, resumen_para_plantilla=f"Originador de {c['CLAVE']}: disponible {d['DISPONIBLE']}")
+    if estado == "NO DISPONIBLE":
+        try:
+            _marcar_no_disponible([c["CLAVE"]], f"originador {c['ORIGINADOR']}", texto)
+            if c.get("TEL_CLIENTE"):
+                wati_send_text("521" + c["TEL_CLIENTE"], f"Te aviso que la propiedad {c['CLAVE']} ya no está disponible 🙏 "
+                               "Las demás opciones de tu propuesta siguen en pie: dime cuál te gustaría visitar y lo coordinamos.")
+        except Exception:
+            pass
+    print(f"[MAX-ORIGCONS] Respuesta de {tel10} por {c['CLAVE']}: {estado} {cambios}", flush=True)
+    return True
 
 
 def _autoprueba_originador():
