@@ -637,6 +637,9 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
                         f"Cliente: {nombre_cliente} | WA: {phone_cliente} | "
                         f"{('Web: ' + perfil_web.get('resumen', '')[:120]) if perfil_web else 'Ficha: ' + _resumen_propiedades_para_plantilla(propiedades)} | "
                         f"Folio: {folio_crm}"))
+        if propiedades and not perfil_web:
+            threading.Thread(target=_propuesta_automatica, args=(phone_cliente, nombre_cliente, propiedades, vendedor, folio_crm),
+                             daemon=True).start()
         return {"creado": True, "folio_crm": folio_crm, "vendedor": vendedor["nombre"],
                 "vendedor_phone": vendedor["phone"],
                 "carpeta_cliente": carpeta_url, "notificacion_enviada": bool(ok_msg and ok_chat)}
@@ -11652,6 +11655,130 @@ def _loop_tableros():
 
 
 threading.Thread(target=_loop_tableros, daemon=True).start()
+
+
+
+
+# =====================================================================
+# CARTA PROPUESTA AUTOMÁTICA (cliente que llega con una ficha)
+# =====================================================================
+# Cuando un cliente nuevo le escribe a MAX por una propiedad, MAX le arma en
+# segundo plano una carta propuesta en PDF con esa propiedad y hasta 7
+# alternativas parecidas (misma operación y tipo, recámaras iguales o una más,
+# precio ±15%, con foto, a menos de 5 km), con la nota de confirmar
+# disponibilidad. Va directo al cliente, con copia al coach asignado y a Javier.
+def _grupo_tipo(t):
+    t = _norm_txt(t)
+    for k, g in (("depart", "depto"), ("loft", "depto"), ("casa", "casa"), ("terreno", "terreno"), ("local", "local"),
+                 ("oficina", "oficina"), ("bodega", "bodega"), ("nave", "bodega")):
+        if k in t:
+            return g
+    return t or "otro"
+
+
+def _km(la1, lo1, la2, lo2):
+    import math
+    p = math.pi / 180
+    a = math.sin((la2 - la1) * p / 2) ** 2 + math.cos(la1 * p) * math.cos(la2 * p) * math.sin((lo2 - lo1) * p / 2) ** 2
+    return 12742 * math.asin(math.sqrt(a))
+
+
+def _alternativas_similares(base, n=7):
+    try:
+        lat0, lon0 = float(base["lat"]), float(base["lon"]); precio = float(base["precio"])
+    except Exception:
+        return []
+    op = (base.get("operacion") or "").upper()[:5]
+    g = _grupo_tipo(base.get("tipo"))
+    rec = base.get("recamaras") or 0
+    cands, vistos = [], set()
+    for p in INVENTARIO_ZMG:
+        c = (p.get("codigo_eb") or "").upper()
+        if not c or c == base["eb"] or not p.get("Foto") or not p.get("lat") or not p.get("lon"):
+            continue
+        if (p.get("Operación") or "").upper()[:5] != op or _grupo_tipo(p.get("Tipo")) != g:
+            continue
+        pr = p.get("Precio") or 0
+        if not (0.85 * precio <= pr <= 1.15 * precio):
+            continue
+        r = p.get("Recámaras") or 0
+        if rec and not (rec <= r <= rec + 1):
+            continue
+        try:
+            d = _km(lat0, lon0, float(p["lat"]), float(p["lon"]))
+        except Exception:
+            continue
+        if d > 5:
+            continue
+        huella = (round(pr, -3), round(float(p.get("m²") or 0)), (p.get("Colonia") or "").lower())
+        if huella in vistos:          # la misma propiedad publicada por dos asesores
+            continue
+        vistos.add(huella)
+        cands.append((d, -(p.get("Score_Comercial") or 0), c, p))
+    cands.sort(key=lambda x: (x[0] > 3, x[0], x[1]))     # primero las de menos de 3 km
+    out = []
+    for d, _, c, p in cands[:n]:
+        b = _prop_de_inventario(c, p.get("Operación", ""))
+        if not b:
+            continue
+        dif = round(100 * ((p.get("Precio") or 0) - precio) / precio)
+        b["resumen"] = ""
+        b["ventajas"] = [("A unos pasos de la propiedad que te interesó" if d < 0.15 else f"A {d:.1f} km de la propiedad que te interesó"),
+                         ("Mismo precio" if dif == 0 else f"{abs(dif)}% {'menos' if dif < 0 else 'más'} que la que te interesó")]
+        out.append(b)
+    return out
+
+
+def _propuesta_automatica(phone, nombre, propiedades, vendedor, folio):
+    if os.environ.get("PROPUESTA_AUTO", "1") != "1":
+        return
+    try:
+        base = None
+        for pr in propiedades or []:
+            b = _prop_de_inventario(pr.get("codigo_eb"), "")
+            if b and b.get("lat") and b.get("lon") and b.get("precio"):
+                base = b; break
+        if not base:
+            return
+        alts = _alternativas_similares(base)
+        if len(alts) < 2:
+            print(f"[MAX-AUTOPROP] {base['eb']}: solo {len(alts)} alternativas a 5 km; no se envía carta", flush=True)
+            return
+        base["resumen"] = ""; base["ventajas"] = ["La propiedad que te interesó"]
+        import propuesta as _propmod
+        primer = (nombre or "").split()[0] if nombre and not nombre.lower().startswith(("cliente", "sin nombre")) else ""
+        tel_coach = _formato_tel_humano(_ultimos10(vendedor.get("phone", ""))) if vendedor else ""
+        datos = {"cliente": {"nombre": nombre if primer else "", "folio": folio or ""},
+                 "coach": {"nombre": (vendedor or {}).get("nombre", "Acierta Max"), "telefono": tel_coach,
+                           "cargo": "Director General" if (vendedor or {}).get("nombre", "").startswith("Javier") else "Coach inmobiliario"},
+                 "trato": "tu", "genero": "", "inversion": False, "vio_en_sitio": True,
+                 "criterios": (f"Opciones parecidas a {base['eb']}: {base.get('tipo') or 'misma tipología'}"
+                               + (f", {base['recamaras']} recámaras o más" if base.get("recamaras") else "")
+                               + f", precio de ±15% sobre ${float(base['precio']):,.0f} y a menos de 5 km."),
+                 "nota": ("Estas opciones están sujetas a confirmar su disponibilidad y precio vigente con el propietario o su asesor. "
+                          "Tu coach de Acierta Max te ayuda a confirmarlo y a agendar tus visitas."),
+                 "propiedades": [base] + alts}
+        pdf = _propmod.generar_pdf(datos, detalle_fn=_detalle_con_respaldo)
+        archivo = f"Propuesta_Acierta_Max_{primer or 'opciones'}.pdf"
+        pid = hashlib.sha256(os.urandom(24)).hexdigest()[:28]
+        _PROPUESTAS_PDF[pid] = (pdf, archivo, time.time())
+        _propuesta_guardar(pid, archivo, datos)
+        liga = f"https://aciertamax-webhook.onrender.com/api/asesor/pdf/{pid}"
+        caption = (f"{'Hola ' + primer + ', a' if primer else 'A'}demás de la propiedad que te interesó, te preparé "
+                   f"{len(alts)} opciones parecidas muy cerca, con fotos, mapa y comparativo. 🏡\n"
+                   "Están sujetas a confirmar disponibilidad. ¿Cuál te gustaría visitar? Tu coach te contactará para agendar.")
+        ok = wati_send_file(phone, pdf, archivo, caption)
+        if not ok:
+            ok = wati_send_text(phone, caption + f"\n\nAquí está tu propuesta: {liga}")
+        claves = ", ".join(p["eb"] for p in [base] + alts)
+        if vendedor and _ultimos10(vendedor.get("phone", "")) != _ultimos10(JAVIER_PHONE):
+            wati_send_file(vendedor["phone"], pdf, archivo, f"Copia de la carta automática que MAX le envió a {nombre or 'tu cliente'} ({folio}): {claves}")
+        notificar_interno(JAVIER_PHONE, f"📄 CARTA AUTOMÁTICA — {folio}\nCliente: {nombre} ({_ultimos10(phone)})\nCoach: {(vendedor or {}).get('nombre', '')}\n"
+                                        f"Propiedades: {claves}\nEntregada: {'✅' if ok else '❌'}\nPDF: {liga}",
+                          resumen_para_plantilla=f"Carta automática para {nombre}: {liga}")
+        print(f"[MAX-AUTOPROP] Carta para {_ultimos10(phone)} con {base['eb']} + {len(alts)} alternativas · entregada={ok}", flush=True)
+    except Exception as e:
+        print(f"[MAX-AUTOPROP] Error: {e}", flush=True)
 
 
 def _autoprueba_originador():
