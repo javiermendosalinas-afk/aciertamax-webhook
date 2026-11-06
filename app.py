@@ -4274,6 +4274,10 @@ def _actualizar_inventario_desde_sitio(forzar=False):
             _nd = set()
         INVENTARIO_ZMG[:] = [p for p in nuevas + de_bolsa if (p.get("codigo_eb") or "").upper() not in _nd
                              and not (str(p.get("Operación", "")).upper().startswith("RENTA") and 0 < (p.get("Precio") or 0) < 11000)]
+        try:
+            import gc; gc.collect()
+        except Exception:
+            pass
         if _nd:
             print(f"[MAX-INV] Se excluyen {len(nuevas) + len(de_bolsa) - len(INVENTARIO_ZMG)} propiedades reportadas como no disponibles", flush=True)
         _INV_SITIO_VERSION["actualizado"] = version
@@ -8981,7 +8985,31 @@ def api_asesor_propiedad():
     return _camino_resp({"ok": True, "propiedad": p})
 
 
-_PROPUESTAS_PDF = {}   # id -> (bytes, nombre_archivo, ts) respaldo si Drive no está disponible
+class _CachePDF(dict):
+    """Caché pequeña de PDFs en memoria: máximo 8 y por 2 horas (después se regeneran desde la hoja)."""
+    MAX, TTL = 8, 2 * 3600
+
+    def __setitem__(self, k, v):
+        ahora = time.time()
+        for kk in [kk for kk, vv in list(self.items()) if ahora - vv[2] > self.TTL]:
+            super().pop(kk, None)
+        while len(self) >= self.MAX:
+            super().pop(min(self, key=lambda kk: self[kk][2]), None)
+        super().__setitem__(k, v)
+        try:
+            import gc; gc.collect()
+        except Exception:
+            pass
+
+    def get(self, k, d=None):
+        v = super().get(k)
+        if v and time.time() - v[2] > self.TTL:
+            super().pop(k, None)
+            return d
+        return v if v else d
+
+
+_PROPUESTAS_PDF = _CachePDF()   # id -> (bytes, nombre_archivo, ts); las ligas se regeneran desde la hoja "Propuestas PDF"
 
 
 # ------------------------------------------------------------------
