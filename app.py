@@ -4064,9 +4064,8 @@ def responder_campana(phone, texto, campana):
     if not ok_img:
         wati_send_text(phone, campana["caption"])
     wati_send_text(phone, campana["cuerpo"])
-    if campana is CAMPANAS.get("bellavittoria") and hora_gdl()[:10] <= "2026-10-31":
-        wati_send_text(phone, "🌼 *Open House de Día de Muertos* · sábado 31 de octubre, 10:00 a 14:00, en Cobre 4232, Lomas de la Victoria. "
-                              "🎁 Si apartas ese día, te regalamos un *calentador solar*. Detalles: acierta.pro/open-house.html")
+    if campana is CAMPANAS.get("bellavittoria") and hora_gdl()[:10] <= "2026-12-31":
+        wati_send_text(phone, PROMO_BV_NAVIDAD)
     wati_send_text(phone, campana["seguimiento"])
     for nombre_c, c in CAMPANAS.items():
         if c is campana:
@@ -5980,7 +5979,19 @@ def _oh_registros():
         return []
 
 
+PROMO_BV_NAVIDAD = ("🎄 *Promoción navideña Bella Vittoria:* aparta tu departamento antes del 31 de diciembre y llévate *gratis un calentador solar de agua* "
+                    "(uno por departamento). Detalles: bellavittoria.vip")
+
+
 def _oh_entrante(phone, text):
+    # El Open House fue el 31-oct-2026. Desde el 1-nov: si alguien lo menciona, se le informa
+    # y se le ofrece la promoción vigente; lo demás (incluido "Bella Vittoria") va al flujo normal.
+    if hora_gdl()[:10] > "2026-10-31":
+        if re.search(r"open\s*house|d[ií]a de muertos", text or "", re.I):
+            wati_send_text(phone, "El Open House de Día de Muertos ya concluyó, ¡gracias por tu interés! 🙌\n\n" + PROMO_BV_NAVIDAD +
+                           "\n\n¿Te gustaría agendar una visita a Bella Vittoria esta semana?", copiar=False)
+            return True
+        return False
     t = (text or "").strip()
     t10 = _ultimos10(phone)
     if hora_gdl()[:10] > OH_FECHA:
@@ -10554,7 +10565,7 @@ ACIERTA MAX · PROCESOS PARA EL COACH (coach = asesor inmobiliario independiente
   renta), aval o póliza jurídica, referencias.
 - Acierta Verifica: revisión física y documental, $45 por m², mínimo $3,500.
 - Comisiones: exclusiva Acierta 5% (vendedor 30%, originador 30%, Acierta 30%, IA 10%); compartida 2–2.5% (vendedor 30%,
-  Acierta 50%, IA 20%). Bella Vittoria: Open House 31 de octubre, 10:00–14:00; corredores externos 4% IVA incluido.
+  Acierta 50%, IA 20%). Bella Vittoria: promoción navideña, calentador solar gratis al apartar antes del 31 de diciembre de 2026.
 - Propiedad que ya no está disponible: el coach escribe a MAX «EB-XXXX ya no está disponible» y MAX la quita del inventario
   para todos. Siempre confirmar disponibilidad con el originador antes de agendar la visita.
 - Regla de las 20 horas: el coach debe contestarle a MAX en menos de 20 horas. WhatsApp solo permite que MAX le escriba
