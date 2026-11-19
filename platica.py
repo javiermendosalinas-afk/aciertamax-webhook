@@ -66,7 +66,7 @@ Lo que necesitas saber (en este orden aproximado, saltando lo que ya sepas):
 7. Cómo la imagina: recámaras, baños, estacionamientos, jardín o patio, niveles, coto o seguridad, amueblado; qué es indispensable, qué es deseable y qué no quiere.
 8. Decisión: quién más decide o tiene que ver la propiedad; si necesita vender o terminar una renta antes.
 
-BUSCAR: en CADA turno en que ya conozcas operación, tipo, zona o municipio y presupuesto, llena el campo "buscar" (con recámaras si ya las sabes); el sistema decide si muestra opciones nuevas. No esperes a saber recámaras ni nada más. Si el cliente menciona una propiedad concreta ("vi una casa en Ciudad Granja de 5.6 millones"), entiende que quiere comprar y búscala con esa zona y ese precio. Si el presupuesto está en dólares, en "buscar" usa su equivalente aproximado en pesos. En "buscar" pon solo el presupuesto de ESA operación: si pasa de rentar a comprar (o al revés) y no te ha dado presupuesto para la nueva, deja precio_max en null; si dice que no importa el precio, también null. "precio_min" solo si el cliente pide un mínimo. Si pide una sola planta o un piso, pon "un_nivel": true. Si dice "cerca de X" o "alrededor de X", pon X en colonias (el sistema incluye lo cercano). Después de mostrar opciones sigue perfilando. En tu "respuesta" de ese turno di que en pantalla aparecen opciones reales del inventario; NO describas ninguna porque todavía no las conoces. En los turnos siguientes solo habla de las opciones que aparecen en el bloque OPCIONES MOSTRADAS, con sus datos tal cual; si falta un dato (por ejemplo si aceptan mascotas), di que lo confirma el coach con el propietario. Pregunta cuáles le interesan para el recorrido y anótalas en "elegidas" con su clave.
+BUSCAR: en CADA turno en que ya conozcas operación, tipo, zona o municipio y presupuesto, llena el campo "buscar" (con recámaras si ya las sabes); el sistema decide si muestra opciones nuevas. No esperes a saber recámaras ni nada más. Si el cliente menciona una propiedad concreta ("vi una casa en Ciudad Granja de 5.6 millones"), entiende que quiere comprar y búscala con esa zona y ese precio. Si el presupuesto está en dólares, en "buscar" usa su equivalente aproximado en pesos. En "buscar" pon solo el presupuesto de ESA operación: si pasa de rentar a comprar (o al revés) y no te ha dado presupuesto para la nueva, deja precio_max en null; si dice que no importa el precio, también null. "precio_min" solo si el cliente pide un mínimo. Si pide una sola planta o un piso, pon "un_nivel": true. Si dice "cerca de X" o "alrededor de X", pon X en colonias (el sistema incluye lo cercano). Si pide ver más opciones de la misma búsqueda, repite "buscar" igual con "pagina": 2, 3... Después de mostrar opciones sigue perfilando. En tu "respuesta" de ese turno di que en pantalla aparecen opciones reales del inventario; NO describas ninguna porque todavía no las conoces. En los turnos siguientes solo habla de las opciones que aparecen en el bloque OPCIONES MOSTRADAS, con sus datos tal cual; si falta un dato (por ejemplo si aceptan mascotas), di que lo confirma el coach con el propietario. Pregunta cuáles le interesan para el recorrido y anótalas en "elegidas" con su clave.
 
 REGLAS:
 - Nunca inventes propiedades, precios, colonias, amenidades, plusvalías, tasas ni cifras de mercado.
@@ -98,7 +98,7 @@ Responde SIEMPRE y SOLO con un JSON válido, sin texto antes ni después:
  "elegidas": [],
  "pedir_contacto": false}
 En "perfil" pon SOLO lo que el cliente dijo (texto breve, sus palabras); deja null lo que no sepas. "buscar", cuando toque, es un objeto:
-{"operacion": "VENTA" o "RENTA", "tipo": "casa"|"departamento"|"terreno"|"local"|null, "municipio": "Guadalajara"|"Zapopan"|"Tlaquepaque"|"Tonalá"|"Tlajomulco"|null, "colonias": ["..."] o [], "precio_min": número o null, "precio_max": número o null, "recamaras_min": número o null, "un_nivel": true o false}.
+{"operacion": "VENTA" o "RENTA", "tipo": "casa"|"departamento"|"terreno"|"local"|null, "municipio": "Guadalajara"|"Zapopan"|"Tlaquepaque"|"Tonalá"|"Tlajomulco"|null, "colonias": ["..."] o [], "precio_min": número o null, "precio_max": número o null, "recamaras_min": número o null, "un_nivel": true o false, "pagina": número o null}.
 "elegidas": claves (EB-XXXX o NJ-XXXX) de las opciones mostradas que el cliente eligió."""
 
 
@@ -215,8 +215,8 @@ def registrar(app, g):
     _VARIOS_NIVELES = re.compile(r"\b([2-9]|dos|tres|cuatro)\s*(niveles|plantas|pisos)\b|\bduplex\b|\bdúplex\b", re.I)
 
     def _buscar(f, cupo=6):
-        """Devuelve (opciones, total). Primero lo que está en las colonias pedidas; si hay pocas,
-        completa con lo más cercano (hasta 5 km) en vez de abrir a toda la ciudad."""
+        """Devuelve (opciones, total). Zona = lo que está en las colonias pedidas más todo lo que queda
+        a 2 km de ellas (4 km si hay muy poco), nunca toda la ciudad. "pagina" pide las siguientes 6."""
         inv = g.get("INVENTARIO_ZMG") or []
         op = (f.get("operacion") or "").upper()
         tipo = (f.get("tipo") or "").lower()
@@ -246,31 +246,36 @@ def registrar(app, g):
                 continue
             base.append(p)
         orden = lambda p: -(p.get("Score_Comercial") or 0)
+        pagina = max(int(_num(f.get("pagina")) or 1), 1)
         if cols:
             txt = lambda p: ((p.get("Título/Colonia") or "") + " " + (p.get("Colonia") or "")).lower()
             exactas = sorted([p for p in base if any(c in txt(p) for c in cols)], key=orden)
-            res = exactas[:cupo]
-            if len(res) < cupo:
-                # Centro de la zona pedida = promedio de las propiedades de esas colonias (de todo el inventario).
-                pts = [_coord(p) for p in inv if any(c in txt(p) for c in cols)]
-                pts = [x for x in pts if x]
-                if pts:
-                    centro = (sum(x[0] for x in pts) / len(pts), sum(x[1] for x in pts) / len(pts))
-                    ya = {id(p) for p in res}
+            # Centro de la zona: propiedades cuya COLONIA coincide (el título a veces menciona zonas vecinas).
+            pts = [_coord(p) for p in inv if any(c in (p.get("Colonia") or "").lower() for c in cols)]
+            pts = [x for x in pts if x] or [x for x in (_coord(p) for p in inv if any(c in txt(p) for c in cols)) if x]
+            zona = list(exactas)
+            if pts:
+                centro = (sum(x[0] for x in pts) / len(pts), sum(x[1] for x in pts) / len(pts))
+                ya = {id(p) for p in zona}
+                for radio in (2.0, 4.0):
                     cerca = []
                     for p in base:
                         c = _coord(p)
                         if id(p) not in ya and c:
                             d = _km(c, centro)
-                            if d <= 5:
+                            if d <= radio:
                                 cerca.append((d, p))
                     cerca.sort(key=lambda t: t[0])
-                    res += [p for _, p in cerca[:cupo - len(res)]]
-            total = len(exactas)
+                    zona += [p for _, p in cerca]
+                    ya |= {id(p) for _, p in cerca}
+                    if len(zona) >= cupo:
+                        break
+            total = len(zona)
+            res = zona[(pagina - 1) * cupo:pagina * cupo]
         else:
-            res = sorted([p for p in base if not muni or muni[:6] in (p.get("Municipio") or "").lower()], key=orden)
-            total = len(res)
-            res = res[:cupo]
+            todos = sorted([p for p in base if not muni or muni[:6] in (p.get("Municipio") or "").lower()], key=orden)
+            total = len(todos)
+            res = todos[(pagina - 1) * cupo:pagina * cupo]
         out = []
         for p in res:
             c = p.get("codigo_eb") or ""
@@ -283,15 +288,15 @@ def registrar(app, g):
                                  if c else (p.get("Liga") or ""))})
         return out, total
 
-    def _bloque_opciones(ops):
+    def _bloque_opciones(ops, total=0):
         if not ops:
             return ""
         lineas = [f"- {o['clave']}: {o['titulo']} · {o['colonia'] or o['municipio']} · {o['precio_txt']}"
                   + (f" · {o['recamaras']} rec." if o.get("recamaras") else "")
                   + (f" · {o['banos']} baños" if o.get("banos") else "")
                   + (f" · {int(o['m2'])} m²" if o.get("m2") else "") for o in ops]
-        return ("OPCIONES MOSTRADAS EN PANTALLA (las mejores del inventario para lo que pidió; si quiere más, "
-                "pide otra búsqueda con otros criterios o di que el coach busca con colegas):\n" + "\n".join(lineas))
+        return ("OPCIONES MOSTRADAS EN PANTALLA (de " + str(total) + " que hay en el inventario para lo que pidió; "
+                "si quiere más, pide la siguiente página o que afine criterios):\n" + "\n".join(lineas))
 
     @app.route("/api/platica/turno", methods=["POST", "OPTIONS"])
     def api_platica_turno():
@@ -348,7 +353,7 @@ def registrar(app, g):
         contexto = ("PERFIL QUE YA TIENES: " + json.dumps({k: v for k, v in s["perfil"].items() if v}, ensure_ascii=False)
                     + ("\nPREGUNTAS QUE YA HICISTE (no las repitas; si no te contestaron, pasa a otro tema): "
                        + " | ".join(preguntas[-6:]) if preguntas else "")
-                    + "\n" + _bloque_opciones(s["opciones"]))
+                    + "\n" + _bloque_opciones(s["opciones"], s.get("total", 0)))
         try:
             out = _claude(msgs, SISTEMA + "\n\n" + contexto)
         except Exception as e:
@@ -382,6 +387,7 @@ def registrar(app, g):
                 nuevas = []          # mismas opciones que ya están en pantalla: no se repiten
             elif nuevas:
                 s["opciones"] = nuevas
+                s["total"] = total
                 if relajada:
                     nota = ("I didn't find an exact match, so on screen you'll see the closest ones; your coach can also search our partner agencies."
                             if ingles else
@@ -391,6 +397,18 @@ def registrar(app, g):
                 else:
                     nota = ("On screen you'll see real options from our inventory." if ingles
                             else "En pantalla te dejo opciones reales de nuestro inventario.")
+                if total > len(nuevas):
+                    op_url = (f.get("operacion") or "").upper()
+                    mapa = "https://acierta.pro/mapa.html" + (f"?op={op_url}" if op_url in ("VENTA", "RENTA") else "")
+                    s["mapa"] = mapa
+                    pag = max(int(_num(f.get("pagina")) or 1), 1)
+                    desde, hasta = (pag - 1) * 6 + 1, (pag - 1) * 6 + len(nuevas)
+                    rango_en = f"{len(nuevas)}" if pag == 1 else f"{desde} to {hasta}"
+                    rango_es = f"{len(nuevas)}" if pag == 1 else f"de la {desde} a la {hasta}"
+                    nota = (nota + " " if nota else "") + (
+                        f"There are {total} in that area; I'm showing {rango_en}. Ask me for more, or see them all on the map."
+                        if ingles else
+                        f"En esa zona hay {total}; te muestro {rango_es}. Pídeme más o míralas todas en el mapa.")
                 if nota:
                     corte = respuesta.rfind("¿") if not ingles else -1
                     if ingles:
@@ -416,7 +434,8 @@ def registrar(app, g):
                 s["elegidas"].append(c)
         s["msgs"].append({"role": "assistant", "content": respuesta})
         s["t"] = time.time()
-        return _resp({"ok": True, "respuesta": respuesta, "opciones": nuevas, "total_coincidencias": total,
+        mapa_url = s.pop("mapa", "") if nuevas else ""
+        return _resp({"ok": True, "respuesta": respuesta, "opciones": nuevas, "total_coincidencias": total, "mapa": mapa_url,
                       "elegidas": s["elegidas"], "pedir_contacto": pedir,
                       "perfil": s["perfil"]})
 
