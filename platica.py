@@ -65,13 +65,15 @@ Lo que necesitas saber (en este orden aproximado, saltando lo que ya sepas):
 7. Cómo la imagina: recámaras, baños, estacionamientos, jardín o patio, niveles, coto o seguridad, amueblado; qué es indispensable, qué es deseable y qué no quiere.
 8. Decisión: quién más decide o tiene que ver la propiedad; si necesita vender o terminar una renta antes.
 
-BUSCAR: en cuanto sepas operación, tipo, zona o municipio y presupuesto, pide buscar opciones (campo "buscar") EN ESE MISMO TURNO; no esperes a saber recámaras ni nada más (si ya las sabes, inclúyelas). Si el cliente menciona una propiedad concreta (zona y precio), búscala también. Si el cliente pide opciones y aún falta un dato de esos cuatro, pregúntalo en una frase y busca en cuanto lo tengas. Después de mostrar opciones puedes seguir perfilando. En tu "respuesta" de ese turno di que en pantalla aparecen opciones reales del inventario; NO describas ninguna porque todavía no las conoces. En los turnos siguientes solo habla de las opciones que aparecen en el bloque OPCIONES MOSTRADAS, con sus datos tal cual; si falta un dato (por ejemplo si aceptan mascotas), di que lo confirma el coach con el propietario. Pregunta cuáles le interesan para el recorrido y anótalas en "elegidas" con su clave.
+BUSCAR: en CADA turno en que ya conozcas operación, tipo, zona o municipio y presupuesto, llena el campo "buscar" (con recámaras si ya las sabes); el sistema decide si muestra opciones nuevas. No esperes a saber recámaras ni nada más. Si el cliente menciona una propiedad concreta ("vi una casa en Ciudad Granja de 5.6 millones"), entiende que quiere comprar y búscala con esa zona y ese precio. Si el presupuesto está en dólares, en "buscar" usa su equivalente aproximado en pesos. Después de mostrar opciones sigue perfilando. En tu "respuesta" de ese turno di que en pantalla aparecen opciones reales del inventario; NO describas ninguna porque todavía no las conoces. En los turnos siguientes solo habla de las opciones que aparecen en el bloque OPCIONES MOSTRADAS, con sus datos tal cual; si falta un dato (por ejemplo si aceptan mascotas), di que lo confirma el coach con el propietario. Pregunta cuáles le interesan para el recorrido y anótalas en "elegidas" con su clave.
 
 REGLAS:
 - Nunca inventes propiedades, precios, colonias, amenidades, plusvalías, tasas ni cifras de mercado.
 - No prometas disponibilidad: el coach la confirma con cada propietario.
 - Cuando el cliente ya eligió (o quiere que le manden su resumen), pide su nombre y su WhatsApp a 10 dígitos para enviarle a él y a su coach la transcripción completa de esta plática (campo "pedir_contacto": true). Explica que en un día hábil le reportamos con el recorrido de las propiedades elegidas, una vez confirmada la disponibilidad con cada propietario.
 - No pidas documentos, CURP, RFC ni datos bancarios, y nunca des cuentas para depósitos: un apartado siempre es por contrato con el coach.
+- COMISIONES (datos reales de Acierta Max): al comprador o al inquilino Acierta Max no le cobra comisión; la paga el propietario. Al propietario que vende, la comisión estándar es 5% + IVA del precio de venta, y si renta, un mes de renta; se formaliza con contrato registrado ante PROFECO y el coach le explica las condiciones. No ofrezcas descuentos ni digas nada más sobre costos.
+- Nunca digas "sin costo", "gratis" o "sin compromiso" de ningún servicio, salvo lo de la comisión de arriba.
 - No afirmes cosas del mercado que no sabes ("esa zona tiene mucha demanda", "hay muy buenas opciones en ese rango", plusvalías, rendimientos). Solo habla del inventario cuando ya aparezca en pantalla.
 - No prometas tiempos que no controlas ("hoy mismo te llama"). Los coaches atienden de 9:00 a 19:00; di que el coach te contacta en su horario y que en un día hábil te reportamos el recorrido.
 - Datos personales: di que se usan solo para atender su búsqueda conforme al aviso de privacidad y que puede pedir que lo dejemos de contactar cuando quiera. No hagas promesas absolutas.
@@ -280,7 +282,13 @@ def registrar(app, g):
                 msgs.append(dict(m))
         if msgs and msgs[0]["role"] != "user":
             msgs = msgs[1:]
+        preguntas = []
+        for m in s["msgs"][-9:]:
+            if m["role"] == "assistant":
+                preguntas += [q.strip() + "?" for q in re.findall(r"[^.!?¿]*¿([^?]+)\?", m["content"])]
         contexto = ("PERFIL QUE YA TIENES: " + json.dumps({k: v for k, v in s["perfil"].items() if v}, ensure_ascii=False)
+                    + ("\nPREGUNTAS QUE YA HICISTE (no las repitas; si no te contestaron, pasa a otro tema): "
+                       + " | ".join(preguntas[-6:]) if preguntas else "")
                     + "\n" + _bloque_opciones(s["opciones"]))
         try:
             out = _claude(msgs, SISTEMA + "\n\n" + contexto)
@@ -295,7 +303,9 @@ def registrar(app, g):
         nuevas = []
         total = 0
         pedir = bool(out.get("pedir_contacto"))
-        if isinstance(out.get("buscar"), dict):
+        criterio = json.dumps(out.get("buscar"), sort_keys=True, ensure_ascii=False) if isinstance(out.get("buscar"), dict) else ""
+        if criterio and criterio != s.get("ultimo_criterio"):
+            s["ultimo_criterio"] = criterio
             ingles = str(s["perfil"].get("idioma") or "").lower().startswith(("en", "ingl"))
             f = dict(out["buscar"])
             nuevas, total = _buscar(f)
@@ -311,15 +321,32 @@ def registrar(app, g):
                     if nuevas:
                         relajada = True
                         break
-            if nuevas:
+            if nuevas and [o["clave"] for o in nuevas] == [o["clave"] for o in s["opciones"]]:
+                nuevas = []          # mismas opciones que ya están en pantalla: no se repiten
+            elif nuevas:
                 s["opciones"] = nuevas
                 if relajada:
-                    respuesta += (" I didn't find an exact match, so these are the closest ones; your coach can also search our partner agencies."
-                                  if ingles else
-                                  " No encontré algo exacto, así que te muestro lo más cercano; tu coach también lo busca con inmobiliarias colegas.")
+                    nota = ("I didn't find an exact match, so on screen you'll see the closest ones; your coach can also search our partner agencies."
+                            if ingles else
+                            "No encontré algo exacto, así que en pantalla te dejo lo más cercano; tu coach también lo busca con inmobiliarias colegas.")
+                elif "pantalla" in respuesta.lower() or "screen" in respuesta.lower():
+                    nota = ""
+                else:
+                    nota = ("On screen you'll see real options from our inventory." if ingles
+                            else "En pantalla te dejo opciones reales de nuestro inventario.")
+                if nota:
+                    corte = respuesta.rfind("¿") if not ingles else -1
+                    if ingles:
+                        k = respuesta.rfind(". ")
+                        corte = k + 2 if k > 0 and respuesta.rstrip().endswith("?") else -1
+                    respuesta = (respuesta[:corte].rstrip() + " " + nota + " " + respuesta[corte:]) if corte > 0 else (respuesta + " " + nota)
             else:
-                # Sin resultados: se reemplaza la respuesta (el modelo pudo anunciar opciones que no existen).
-                respuesta = ("Right now I don't have a published listing that fits this. Your coach can search it with our partner agencies "
+                # Sin resultados: se quitan las frases que anuncian opciones (no existen) y se explica el siguiente paso.
+                frases = re.split(r"(?<=[.!?])\s+", respuesta)
+                frases = [x for x in frases if not re.search(r"pantalla|screen|opciones|options|listing", x, re.I)
+                          and not x.rstrip().endswith("?")]
+                respuesta = " ".join(frases).strip()
+                respuesta = (respuesta + " " if respuesta else "") + ("Right now I don't have a published listing that fits this. Your coach can search it with our partner agencies "
                              "and report back. Can I have your name and 10-digit WhatsApp to send you this summary?"
                              if ingles else
                              "Ahorita no tengo publicado en mi inventario algo que cumpla con esto. Tu coach lo busca con nuestra red de "
