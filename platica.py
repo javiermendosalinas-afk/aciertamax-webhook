@@ -225,6 +225,7 @@ def registrar(app, g):
         pmin, pmax, rec = _num(f.get("precio_min")), _num(f.get("precio_max")), _num(f.get("recamaras_min"))
         un_nivel = bool(f.get("un_nivel"))
         base = []
+        vistos = set()
         for p in inv:
             if p.get("Revisar") or not p.get("Foto"):
                 continue
@@ -244,6 +245,12 @@ def registrar(app, g):
                 continue
             if un_nivel and _VARIOS_NIVELES.search(p.get("Título/Colonia") or ""):
                 continue
+            # La misma casa llega de varias fuentes: se muestra una sola vez.
+            firma = ((p.get("Colonia") or "").strip().lower(), round(float(precio or 0)), p.get("Recámaras") or 0,
+                     round(float(p.get("m²") or 0)))
+            if firma in vistos:
+                continue
+            vistos.add(firma)
             base.append(p)
         orden = lambda p: -(p.get("Score_Comercial") or 0)
         pagina = max(int(_num(f.get("pagina")) or 1), 1)
@@ -370,6 +377,10 @@ def registrar(app, g):
         criterio = json.dumps(out.get("buscar"), sort_keys=True, ensure_ascii=False) if isinstance(out.get("buscar"), dict) else ""
         if criterio and criterio != s.get("ultimo_criterio"):
             s["ultimo_criterio"] = criterio
+            sin_pag = json.dumps({k: v for k, v in out["buscar"].items() if k != "pagina"}, sort_keys=True, ensure_ascii=False)
+            if sin_pag != s.get("ultimo_base"):
+                out["buscar"]["pagina"] = 1      # criterios nuevos: se empieza desde la primera página
+            s["ultimo_base"] = sin_pag
             ingles = str(s["perfil"].get("idioma") or "").lower().startswith(("en", "ingl"))
             f = dict(out["buscar"])
             nuevas, total = _buscar(f)
@@ -410,11 +421,15 @@ def registrar(app, g):
                         if ingles else
                         f"En esa zona hay {total}; te muestro {rango_es}. Pídeme más o míralas todas en el mapa.")
                 if nota:
-                    corte = respuesta.rfind("¿") if not ingles else -1
-                    if ingles:
-                        k = respuesta.rfind(". ")
-                        corte = k + 2 if k > 0 and respuesta.rstrip().endswith("?") else -1
-                    respuesta = (respuesta[:corte].rstrip() + " " + nota + " " + respuesta[corte:]) if corte > 0 else (respuesta + " " + nota)
+                    frases = re.split(r"(?<=[.!?])\s+", respuesta.strip())
+                    k = max((n for n, x in enumerate(frases) if "?" in x), default=-1)
+                    if k > 0:
+                        frases.insert(k, nota)
+                    elif k == 0:
+                        frases.append(nota)  # la respuesta es solo la pregunta: la nota va al final
+                    else:
+                        frases.append(nota)
+                    respuesta = " ".join(frases)
             else:
                 # Sin resultados: se quitan las frases que anuncian opciones (no existen) y se explica el siguiente paso.
                 frases = re.split(r"(?<=[.!?])\s+", respuesta)
