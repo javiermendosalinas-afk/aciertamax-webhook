@@ -247,7 +247,7 @@ def registrar(app, g):
                 continue
             # La misma casa llega de varias fuentes: se muestra una sola vez.
             firma = ((p.get("Colonia") or "").strip().lower(), round(float(precio or 0)), p.get("Recámaras") or 0,
-                     round(float(p.get("m²") or 0)))
+                     p.get("Baños") or 0)
             if firma in vistos:
                 continue
             vistos.add(firma)
