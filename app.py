@@ -11975,6 +11975,14 @@ def _autoprueba_originador():
 threading.Thread(target=_autoprueba_originador, daemon=True).start()
 
 
+# PLATICA CON MAX (voz y chat) y corrección de la memoria — ver platica.py (19-nov-2026)
+try:
+    import platica as _platica
+    _platica.registrar(app, globals())
+except Exception as _e_platica:
+    print(f"[MAX-PLATICA] No se pudo cargar el módulo: {_e_platica}", flush=True)
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
