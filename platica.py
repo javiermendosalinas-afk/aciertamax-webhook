@@ -167,7 +167,7 @@ def registrar(app, g):
 
     _corregir_memoria(g)
 
-    def _claude(msgs, sistema, max_tokens=700):
+    def _claude(msgs, sistema, max_tokens=1200):
         r = requests.post(g["ANTHROPIC_API"], timeout=45, headers={
             "x-api-key": g["ANTHROPIC_API_KEY"], "anthropic-version": "2023-06-01", "content-type": "application/json"},
             json={"model": g.get("CLAUDE_MODEL") or "claude-sonnet-4-6", "max_tokens": max_tokens,
@@ -177,7 +177,25 @@ def registrar(app, g):
         txt = "".join(b.get("text", "") for b in r.json().get("content", []) if b.get("type") == "text").strip()
         txt = re.sub(r"^\x60{3}(?:json)?|\x60{3}$", "", txt.strip(), flags=re.M).strip()
         i, j = txt.find("{"), txt.rfind("}")
-        return json.loads(txt[i:j + 1]) if i >= 0 and j > i else {"respuesta": txt}
+        if i < 0 or j <= i:
+            return {"respuesta": txt}
+        try:
+            return json.loads(txt[i:j + 1])
+        except ValueError:
+            # JSON mal formado (comillas sin escapar, respuesta cortada): se rescata lo esencial.
+            print(f"[MAX-PLATICA] JSON del modelo inválido; se rescata la respuesta: {txt[:160]!r}", flush=True)
+            m = re.search(r'"respuesta"\s*:\s*"(.*?)"\s*,\s*"(?:perfil|buscar|elegidas|pedir_contacto)"', txt, re.S)
+            rescate = {"respuesta": (m.group(1) if m else "").replace('\\"', '"').replace("\\n", " ")}
+            m2 = re.search(r'"buscar"\s*:\s*(\{[^{}]*\})', txt)
+            if m2:
+                try:
+                    rescate["buscar"] = json.loads(m2.group(1))
+                except ValueError:
+                    pass
+            rescate["pedir_contacto"] = bool(re.search(r'"pedir_contacto"\s*:\s*true', txt))
+            if not rescate["respuesta"]:
+                raise
+            return rescate
 
     def _buscar(f):
         inv = g.get("INVENTARIO_ZMG") or []
