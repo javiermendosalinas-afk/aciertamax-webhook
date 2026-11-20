@@ -169,6 +169,7 @@ def registrar(app, g):
         print(f"[MAX-PLATICA] No se pudieron ampliar los orígenes del camino: {e}", flush=True)
 
     _corregir_memoria(g)
+    _persistencia(g)
 
     def _claude(msgs, sistema, max_tokens=1200):
         r = requests.post(g["ANTHROPIC_API"], timeout=45, headers={
@@ -714,3 +715,63 @@ def _corregir_memoria(g):
 
     g["memoria_guardar"] = memoria_guardar
     print("[MAX-MEM] memoria_guardar corregido (filas ancladas a la columna A)", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Estado en disco: si el proceso se reinicia (reinicio preventivo de gunicorn o
+# falta de memoria), los códigos de verificación de WhatsApp y las pláticas en
+# curso no se pierden. 19-nov-2026: un reinicio a media verificación hizo que
+# el cliente recibiera "Ese código ya no es válido o venció".
+# ---------------------------------------------------------------------------
+ESTADO_ARCHIVO = os.environ.get("MAX_ESTADO_ARCHIVO", "/tmp/max_platica_estado.json")
+
+
+def _persistencia(g):
+    ahora = time.time()
+    try:
+        with open(ESTADO_ARCHIVO, encoding="utf-8") as fh:
+            datos = json.load(fh)
+    except (OSError, ValueError):
+        datos = {}
+    try:
+        with g["_CAMINO_LOCK"]:
+            for tel, ent in (datos.get("verif") or {}).items():
+                if ent.get("expira", 0) > ahora and tel not in g["_CAMINO_VERIF"]:
+                    g["_CAMINO_VERIF"][tel] = ent
+            for tel, ts in (datos.get("verificados") or {}).items():
+                if ahora - ts <= 1800 and tel not in g["_CAMINO_VERIFICADOS"]:
+                    g["_CAMINO_VERIFICADOS"][tel] = ts
+        with _LOCK:
+            for k, ses in (datos.get("sesiones") or {}).items():
+                if ahora - ses.get("t", 0) <= 6 * 3600 and k not in _SESIONES:
+                    _SESIONES[k] = ses
+        if datos:
+            print(f"[MAX-PLATICA] Estado recuperado: {len(datos.get('verif') or {})} códigos, "
+                  f"{len(datos.get('sesiones') or {})} pláticas", flush=True)
+    except Exception as e:
+        print(f"[MAX-PLATICA] No se pudo recuperar el estado: {e}", flush=True)
+
+    def guardar():
+        ultimo = None
+        while True:
+            time.sleep(4)
+            try:
+                t = time.time()
+                with g["_CAMINO_LOCK"]:
+                    verif = {k: v for k, v in g["_CAMINO_VERIF"].items() if v.get("expira", 0) > t}
+                    verificados = {k: v for k, v in g["_CAMINO_VERIFICADOS"].items() if t - v <= 1800}
+                with _LOCK:
+                    sesiones = {k: v for k, v in _SESIONES.items() if t - v.get("t", 0) <= 6 * 3600}
+                    texto = json.dumps({"verif": verif, "verificados": verificados, "sesiones": sesiones},
+                                       ensure_ascii=False, default=str)
+                if texto != ultimo:
+                    tmp = ESTADO_ARCHIVO + ".tmp"
+                    with open(tmp, "w", encoding="utf-8") as fh:
+                        fh.write(texto)
+                    os.replace(tmp, ESTADO_ARCHIVO)
+                    ultimo = texto
+            except Exception as e:
+                print(f"[MAX-PLATICA] No se pudo guardar el estado: {e}", flush=True)
+                time.sleep(30)
+
+    threading.Thread(target=guardar, daemon=True).start()
