@@ -3079,7 +3079,7 @@ SI AL CLIENTE SÍ LE GUSTÓ LA PROPIEDAD Y HAY ACUERDOS (precio, condiciones, fe
 PROPIEDADES EN CAMPAÑA — LAS 5 SON EXCLUSIVAS DE ACIERTA MAX (no compartidas con otros asesores; el sistema ya envió la ficha oficial si el cliente la mencionó; tú continúa calificando y resolviendo dudas SOLO con estos datos). Por ser exclusivas, empuja con más confianza hacia la cita/visita — no hay competencia de otro asesor por la misma propiedad:
 1. THE BLOCK EASY LIVING (también le dicen "el de ITESO"): depto en RENTA $18,000/mes + mant. $2,800. 1 recámara, 2 baños, 65 m², piso 4, amueblado disponible. Periférico Sur 8331, El Mante, Tlaquepaque, junto a ITESO. No aceptan mascotas. Liga oficial: https://www.aciertamax.com/property/iteso-amplio-departamento-nuevo-vista-panoramica-roof-garden-ubicacion-premium?agent=javier373&lang=es
 2. SANTA ANA 360: depto en VENTA $1,820,000. 2 recámaras, 2 baños, 53 m², año 2022, estacionamiento techado. Santa Ana Tepetitlán, Zapopan, cerca de Bugambilias. Acepta crédito bancario, INFONAVIT y contado. Pet friendly. Liga oficial: https://www.aciertamax.com/property/departamento-equipado-de-2-recamaras-en-santa-ana-360-cerca-de-bugambilias?agent=javier373&lang=es
-3. BELLA VITTORIA: deptos en VENTA desde $3,450,000, A ESTRENAR. 2 recámaras, 2 baños, 70-75 m², 1-2 cajones. Cobre 4232, Lomas de la Victoria, Tlaquepaque, a minutos de Plaza del Sol. Créditos bancarios e INFONAVIT/COFINAVIT, entrega inmediata, registrado ante PROFECO. Liga oficial: https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es
+3. BELLA VITTORIA: deptos en VENTA desde $3,450,000, A ESTRENAR. 🔥 PROMOCIÓN VIGENTE (ofrécela SIEMPRE a quien pregunte por Bella Vittoria o busque depto de compra hasta ~$3.5 M en el sur/poniente de GDL): SOLO 3 departamentos de 71 m² a $2,950,000 en lugar de $3,450,000 (ahorro de $500,000), válido para apartados hasta el 15-dic-2026 o hasta agotar las 3 unidades; aplica con contado, crédito bancario o INFONAVIT/COFINAVIT; apartado $100,000; entrega inmediata. Gancho: "compra a estrenar con menos de 3 millones dentro de Periférico". Empuja con urgencia real (solo 3) hacia visita o apartado; NO inventes otras condiciones ni otros descuentos. 2 recámaras, 2 baños, 70-75 m², 1-2 cajones. Cobre 4232, Lomas de la Victoria, Tlaquepaque, a minutos de Plaza del Sol. Créditos bancarios e INFONAVIT/COFINAVIT, entrega inmediata, registrado ante PROFECO. Liga oficial: https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es
 4. VILLA DHARA (Parque Morelos): loft ÚNICO de doble altura, 1 recámara, 1 baño, 74 m² en total (unos 55 m² de departamento + terraza privada de unos 20 m²), amueblado, a estrenar (2025), piso 2. Frente al Parque Morelos, El Retiro, Guadalajara. RENTA $14,000/mes (mantenimiento $1,500) o VENTA $2,295,000 (acepta bancarios e INFONAVIT/COFINAVIT). Amenidades: gimnasio, biblioteca, salas de trabajo, ludoteca, huerto urbano, vigilancia 24/7. Cerca de Hospital Civil, Catedral, Línea 3. Ideal ejecutivos, médicos, nómadas digitales, Airbnb. Liga oficial: https://www.aciertamax.com/property/el-departamento-mas-exclusivo-de-villa-dhara-terraza-privada-74-m-amueblado?agent=javier373&lang=es
 5. ÉLEVÉ VALLE REAL (solo renta): depto de lujo, 3 recámaras (cada una con baño completo), 3 baños + medio baño, 247 m², 2 cajones + bodega, piso 6, a estrenar. RENTA $37,000/mes. Vista al Campo de Golf Las Lomas, Valle Real, Zapopan. Torre de 15 niveles, amenidades: alberca, gimnasio, jacuzzi, salón de usos múltiples, seguridad 24h. Liga oficial: https://www.aciertamax.com/property/extraordinario-departamento-valle-real-torre-de-lujo-eleve-valle-real-zapopan?agent=javier373&lang=es
 Para PARQUE MORELOS y el resto del inventario: usa buscar_propiedades.
@@ -3695,7 +3695,7 @@ CAMPANAS = {
     "bellavittoria": {
         "claves": ["bella", "vittoria", "bellavittoria", "eb-vi0283", "eb-vi0277"],
         "foto": "https://acierta.pro/assets/openhouse/bv-03-sala-cocina.jpg",
-        "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 VENTA desde $3,450,000 MXN · 🔑 20 departamentos disponibles",
+        "caption": "🏛 BELLA VITTORIA — Vive el estilo de vida que mereces\n📍 Cobre 4232, Lomas de la Victoria, Tlaquepaque (dentro de Periférico)\n💰 🔥 SOLO 3 DEPTOS a $2,950,000 (antes $3,450,000) · ahorras $500,000 · hasta el 15 de diciembre",
         "cuerpo": ("🛏 2 recámaras · 🛁 2 baños · 📐 70–75 m² · 🚗 1-2 cajones "
                    "(opción con preparación para auto eléctrico) · A ESTRENAR\n\n"
                    "✨ Tenemos *20 departamentos disponibles* — diferentes niveles y vistas, con "
@@ -4064,7 +4064,7 @@ def responder_campana(phone, texto, campana):
     if not ok_img:
         wati_send_text(phone, campana["caption"])
     wati_send_text(phone, campana["cuerpo"])
-    if campana is CAMPANAS.get("bellavittoria") and hora_gdl()[:10] <= "2026-12-31":
+    if campana is CAMPANAS.get("bellavittoria") and hora_gdl()[:10] <= "2026-12-15":
         wati_send_text(phone, PROMO_BV_NAVIDAD)
     wati_send_text(phone, campana["seguimiento"])
     for nombre_c, c in CAMPANAS.items():
@@ -5979,8 +5979,13 @@ def _oh_registros():
         return []
 
 
-PROMO_BV_NAVIDAD = ("🎄 *Promoción navideña Bella Vittoria:* aparta tu departamento antes del 31 de diciembre y llévate *gratis un calentador solar de agua* "
-                    "(uno por departamento). Detalles: bellavittoria.vip")
+PROMO_BV_NAVIDAD = ("🔥 *OPORTUNIDAD DE CIERRE DE AÑO · BELLA VITTORIA*\n"
+                    "Compra *a estrenar con menos de 3 millones dentro de Periférico*: departamento de *71 m²* "
+                    "(2 recámaras, 2 baños, 1 cajón) a *$2,950,000* en lugar de $3,450,000 — *ahorras $500,000*.\n"
+                    "⚠️ *Solo 3 departamentos.* Válido para apartados hasta el *15 de diciembre de 2026* o hasta agotar las 3 unidades. "
+                    "Aplica con contado, crédito bancario o INFONAVIT/COFINAVIT. Apartas con $100,000. Entrega inmediata.\n"
+                    "🎄 Además, por departamento apartado antes del 31 de diciembre te llevas *gratis un calentador solar de agua*.\n"
+                    "Detalles: bellavittoria.vip")
 
 
 def _oh_entrante(phone, text):
@@ -7834,7 +7839,7 @@ ACIERTA VERIFICA (promuévelo siempre que el tema sea comprar, rentar, preventa,
 - Es preventivo: no sustituye un avalúo, un peritaje ni la asesoría de un notario o abogado.
 
 RECOMENDACIONES (si pide recomendaciones, desarrollos, proyectos nuevos o dónde invertir, menciona primero los que maneja directamente Acierta Max; usa SOLO estos datos)
-- Bella Vittoria (Lomas de la Victoria, Guadalajara, donde se juntan Guadalajara, Zapopan y Tlaquepaque; municipio de San Pedro Tlaquepaque; dentro de Periférico, cerca de Plaza del Sol): departamentos nuevos de 2 recámaras, 2 baños, 70 a 78 m², con roof top, lobby, terraza con asadores y seguridad 24 h. Venta desde $3,450,000 con entrega inmediata (clave EB-VI0283); renta de $15,000 sin amueblar (EB-WU8547) y $18,000 amueblado (EB-WG7572). El departamento y su estacionamiento tienen un avalúo de $3,700,000 ($3,500,000 más $200,000) y hoy se venden en $3,450,000 con un cajón incluido. Sitio oficial: bellavittoria.vip
+- Bella Vittoria (Lomas de la Victoria, Guadalajara, donde se juntan Guadalajara, Zapopan y Tlaquepaque; municipio de San Pedro Tlaquepaque; dentro de Periférico, cerca de Plaza del Sol): departamentos nuevos de 2 recámaras, 2 baños, 70 a 78 m², con roof top, lobby, terraza con asadores y seguridad 24 h. Venta desde $3,450,000 con entrega inmediata (clave EB-VI0283); PROMOCIÓN: solo 3 departamentos de 71 m² a $2,950,000 (ahorro de $500,000), apartados hasta el 15-dic-2026 o hasta agotar, con contado, crédito bancario o INFONAVIT/COFINAVIT; renta de $15,000 sin amueblar (EB-WU8547) y $18,000 amueblado (EB-WG7572). El departamento y su estacionamiento tienen un avalúo de $3,700,000 ($3,500,000 más $200,000) y hoy se venden en $3,450,000 con un cajón incluido. Sitio oficial: bellavittoria.vip
 - Élevé Valle Real (Zapopan): departamento de lujo en renta, $37,000 al mes; 3 recámaras con baño, 247 m², vista al Campo de Golf Las Lomas, alberca, gimnasio, seguridad 24 h (EB-WM2996).
 - Villa Dhara (El Retiro, Centro de Guadalajara, frente al Parque Morelos): el departamento más exclusivo del desarrollo, con terraza privada (74 m² en total: unos 55 m² de departamento y unos 20 m² de terraza), amueblado; venta $2,295,000 o renta $14,000 al mes (EB-WG7913).
 - The Block Easy Living, junto al ITESO (Periférico Sur, El Mante, Tlaquepaque): departamento nuevo y amplio en renta, $18,000 al mes, con vista panorámica y roof garden (EB-WG7125).
