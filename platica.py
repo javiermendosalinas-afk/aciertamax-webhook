@@ -66,7 +66,7 @@ Lo que necesitas saber (en este orden aproximado, saltando lo que ya sepas):
 7. Cómo la imagina: recámaras, baños, estacionamientos, jardín o patio, niveles, coto o seguridad, amueblado; qué es indispensable, qué es deseable y qué no quiere.
 8. Decisión: quién más decide o tiene que ver la propiedad; si necesita vender o terminar una renta antes.
 
-BUSCAR: en CADA turno en que ya conozcas operación, tipo, zona o municipio y presupuesto, llena el campo "buscar" (con recámaras si ya las sabes); el sistema decide si muestra opciones nuevas. No esperes a saber recámaras ni nada más. Si el cliente menciona una propiedad concreta ("vi una casa en Ciudad Granja de 5.6 millones"), entiende que quiere comprar y búscala con esa zona y ese precio. Si el presupuesto está en dólares, en "buscar" usa su equivalente aproximado en pesos. En "buscar" pon solo el presupuesto de ESA operación: si pasa de rentar a comprar (o al revés) y no te ha dado presupuesto para la nueva, deja precio_max en null; si dice que no importa el precio, también null. "precio_min" solo si el cliente pide un mínimo. Si pide una sola planta o un piso, pon "un_nivel": true. Si dice "cerca de X" o "alrededor de X", pon X en colonias (el sistema incluye lo cercano). Si pide ver más opciones de la misma búsqueda, repite "buscar" igual con "pagina": 2, 3... Después de mostrar opciones sigue perfilando. En tu "respuesta" de ese turno di que en pantalla aparecen opciones reales del inventario; NO describas ninguna porque todavía no las conoces. En los turnos siguientes solo habla de las opciones que aparecen en el bloque OPCIONES MOSTRADAS, con sus datos tal cual; si falta un dato (por ejemplo si aceptan mascotas), di que lo confirma el coach con el propietario. Pregunta cuáles le interesan para el recorrido y anótalas en "elegidas" con su clave.
+BUSCAR: en CADA turno en que ya conozcas operación, tipo, zona o municipio y presupuesto, llena el campo "buscar" (con recámaras si ya las sabes); el sistema decide si muestra opciones nuevas. No esperes a saber recámaras ni nada más. Si el cliente menciona una propiedad concreta ("vi una casa en Ciudad Granja de 5.6 millones"), entiende que quiere comprar y búscala con esa zona y ese precio. Si el presupuesto está en dólares, en "buscar" usa su equivalente aproximado en pesos. En "buscar" pon solo el presupuesto de ESA operación: si pasa de rentar a comprar (o al revés) y no te ha dado presupuesto para la nueva, deja precio_max en null; si dice que no importa el precio, también null. "precio_min" solo si el cliente pide un mínimo. Si pide una sola planta o un piso, pon "un_nivel": true. Si dice "cerca de X" o "alrededor de X", pon X en colonias (el sistema incluye lo cercano). Si pide ver más opciones de la misma búsqueda, repite "buscar" igual con "pagina": 2, 3... Después de mostrar opciones sigue perfilando. Si ya hay opciones en el bloque OPCIONES MOSTRADAS, no digas "para mostrarte opciones dime..."; habla de ellas. Si el cliente dice que no ve ninguna ficha y el bloque OPCIONES MOSTRADAS está vacío, no culpes a un problema técnico: llena "buscar" con lo que ya sabes (operación, tipo y zona bastan; precio_max null si no tiene presupuesto) para que aparezcan. En tu "respuesta" de ese turno di que en pantalla aparecen opciones reales del inventario; NO describas ninguna porque todavía no las conoces. En los turnos siguientes solo habla de las opciones que aparecen en el bloque OPCIONES MOSTRADAS, con sus datos tal cual; si falta un dato (por ejemplo si aceptan mascotas), di que lo confirma el coach con el propietario. Pregunta cuáles le interesan para el recorrido y anótalas en "elegidas" con su clave.
 
 REGLAS:
 - Nunca inventes propiedades, precios, colonias, amenidades, plusvalías, tasas ni cifras de mercado.
@@ -443,6 +443,14 @@ def registrar(app, g):
                              "Ahorita no tengo publicado en mi inventario algo que cumpla con esto. Tu coach lo busca con nuestra red de "
                              "inmobiliarias colegas y te reporta. ¿Me compartes tu nombre y tu WhatsApp a 10 dígitos para enviarte el resumen?")
                 pedir = True
+        # Si la página dice qué tarjetas tiene a la vista y faltan las opciones vigentes (el cliente recargó,
+        # regresó otro día o el servidor se reinició), se le vuelven a mandar para que nunca lea "en pantalla"
+        # sin ver nada.
+        if not nuevas and s["opciones"] and isinstance(d.get("en_pantalla"), list):
+            vistas = {str(c).upper() for c in d.get("en_pantalla") or []}
+            if not {o["clave"] for o in s["opciones"]} <= vistas:
+                nuevas = s["opciones"]
+                total = s.get("total", len(nuevas))
         claves = {o["clave"] for o in s["opciones"]}
         for c in out.get("elegidas") or []:
             c = str(c).upper().strip()
@@ -450,7 +458,9 @@ def registrar(app, g):
                 s["elegidas"].append(c)
         s["msgs"].append({"role": "assistant", "content": respuesta})
         s["t"] = time.time()
-        mapa_url = s.pop("mapa", "") if nuevas else ""
+        mapa_url = (s.pop("mapa", "") or s.get("mapa_ult", "")) if nuevas else ""
+        if mapa_url:
+            s["mapa_ult"] = mapa_url
         return _resp({"ok": True, "respuesta": respuesta, "opciones": nuevas, "total_coincidencias": total, "mapa": mapa_url,
                       "elegidas": s["elegidas"], "pedir_contacto": pedir,
                       "perfil": s["perfil"]})
