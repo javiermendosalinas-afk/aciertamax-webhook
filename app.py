@@ -1988,7 +1988,7 @@ def notificar_interno(phone, texto_completo, resumen_para_plantilla, template_na
 
 
 AVISOS_PERMITIDOS_COACH = ("LEAD INICIAL", "NUEVO CLIENTE ASIGNADO", "PREFERENCIAS DE ATENCIÓN", "TABLERO DIARIO", "Tu acceso como Coach",
-                           "Bienvenido a la red", "Coach Acierta")
+                           "Bienvenido a la red", "Coach Acierta", "AGENDA DE VISITAS", "VISITA AGENDADA", "VISITA CANCELADA")
 
 
 def _redirigir_aviso_coach(phone, texto):
@@ -2954,6 +2954,18 @@ TOOLS = [
          "nombre": {"type": "string"},
          "necesidad": {"type": "string", "description": "Breve: 'crédito bancario', 'Infonavit', 'Cofinavit', etc."}},
       "required": ["nombre", "necesidad"]}},
+    {"name": "agenda_desarrollos",
+     "description": "Agenda compartida de visitas a BELLA VITTORIA y DÚO 24 (el mismo asesor de guardia atiende los dos, todos los días de 10:30 a 17:00; la herramienta ya deja el tiempo de traslado entre uno y otro). Úsala SIEMPRE que un cliente quiera visitar BellaVittoria o DÚO 24 (no uses iniciar_recorrido_crm para estos dos): primero accion='disponibilidad' con la fecha que pida, y propón dos de los horarios libres; cuando confirme, accion='agendar' con fecha, hora, nombre y cuántas personas. Si quiere ver los dos desarrollos, agenda los dos. Si quiere cambiar o cancelar, accion='cancelar' y, si reagenda, vuelve a agendar. La herramienta te dice qué día es hoy.",
+     "input_schema": {"type": "object", "properties": {
+         "accion": {"type": "string", "enum": ["disponibilidad", "agendar", "cancelar"]},
+         "desarrollo": {"type": "string", "enum": ["bellavittoria", "duo24"]},
+         "fecha": {"type": "string", "description": "AAAA-MM-DD, 'hoy', 'mañana' o el día de la semana"},
+         "hora": {"type": "string", "description": "HH:MM en formato 24 h (solo para agendar)"},
+         "nombre": {"type": "string"},
+         "personas": {"type": "integer"},
+         "pago": {"type": "string", "description": "contado, crédito bancario, Infonavit... si ya se sabe"},
+         "notas": {"type": "string", "description": "Qué modelo o unidad le interesa, para el asesor de guardia"}},
+      "required": ["accion"]}},
 ]
 
 SYSTEM_PROMPT = """REGLAS DE ORO DEL TRATO (por encima de todo lo demás):
@@ -3095,9 +3107,10 @@ SI AL CLIENTE SÍ LE GUSTÓ LA PROPIEDAD Y HAY ACUERDOS (precio, condiciones, fe
 PROPIEDADES EN CAMPAÑA — LAS 5 SON EXCLUSIVAS DE ACIERTA MAX (no compartidas con otros asesores; el sistema ya envió la ficha oficial si el cliente la mencionó; tú continúa calificando y resolviendo dudas SOLO con estos datos). Por ser exclusivas, empuja con más confianza hacia la cita/visita — no hay competencia de otro asesor por la misma propiedad:
 1. THE BLOCK EASY LIVING (también le dicen "el de ITESO"): depto en RENTA $18,000/mes + mant. $2,800. 1 recámara, 2 baños, 65 m², piso 4, amueblado disponible. Periférico Sur 8331, El Mante, Tlaquepaque, junto a ITESO. No aceptan mascotas. Liga oficial: https://www.aciertamax.com/property/iteso-amplio-departamento-nuevo-vista-panoramica-roof-garden-ubicacion-premium?agent=javier373&lang=es
 2. SANTA ANA 360: depto en VENTA $1,820,000. 2 recámaras, 2 baños, 53 m², año 2022, estacionamiento techado. Santa Ana Tepetitlán, Zapopan, cerca de Bugambilias. Acepta crédito bancario, INFONAVIT y contado. Pet friendly. Liga oficial: https://www.aciertamax.com/property/departamento-equipado-de-2-recamaras-en-santa-ana-360-cerca-de-bugambilias?agent=javier373&lang=es
-3. BELLA VITTORIA: deptos en VENTA desde $3,450,000, A ESTRENAR. 🔥 PROMOCIÓN VIGENTE (ofrécela SIEMPRE a quien pregunte por Bella Vittoria o busque depto de compra hasta ~$3.5 M en el sur/poniente de GDL): SOLO 3 departamentos de 71 m² a $2,950,000 en lugar de $3,450,000 (ahorro de $500,000), válido para apartados hasta el 15-dic-2026 o hasta agotar las 3 unidades; aplica con contado, crédito bancario o INFONAVIT/COFINAVIT; apartado $100,000; entrega inmediata. Gancho: "compra a estrenar con menos de 3 millones dentro de Periférico". Empuja con urgencia real (solo 3) hacia visita o apartado; NO inventes otras condiciones ni otros descuentos. La promoción aplica SOLO a 3 departamentos seleccionados por Acierta Max, no a cualquier unidad: el precio real de lista de Bella Vittoria es $3,450,000 y esta promoción es única. GUION PARA LEADS DE LA PROMOCIÓN (breve, una pregunta por mensaje): 1) Si quien escribe es inmobiliaria o asesor, atiéndelo como corredor, no como comprador. 2) Pregunta si es para vivir o para invertir y cómo pagaría (contado, crédito bancario, Infonavit o Cofinavit); si es con crédito, ofrécele precalificación sin costo con nuestra especialista en crédito. 3) Cierra SIEMPRE agendando la visita: hay asesor de guardia en el desarrollo TODOS LOS DÍAS de 10:30 a 17:00 (Cobre 4232, Lomas de la Victoria). Propón dos horarios concretos lo más pronto posible (hoy o mañana; este fin de semana si lo prefiere) y confirma día, hora, nombre y cuántas personas vienen. 4) Recuerda que son solo 3 y se asignan por orden de apartado ($100,000). 2 recámaras, 2 baños, 70-75 m², 1-2 cajones. Cobre 4232, Lomas de la Victoria, Tlaquepaque, a minutos de Plaza del Sol. Créditos bancarios e INFONAVIT/COFINAVIT, entrega inmediata, registrado ante PROFECO. Liga oficial: https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es
+3. BELLA VITTORIA: deptos en VENTA desde $3,450,000, A ESTRENAR. 🔥 PROMOCIÓN VIGENTE (ofrécela SIEMPRE a quien pregunte por Bella Vittoria o busque depto de compra hasta ~$3.5 M en el sur/poniente de GDL): SOLO 3 departamentos de 71 m² a $2,950,000 en lugar de $3,450,000 (ahorro de $500,000), válido para apartados hasta el 15-dic-2026 o hasta agotar las 3 unidades; aplica con contado, crédito bancario o INFONAVIT/COFINAVIT; apartado $100,000; entrega inmediata. Gancho: "compra a estrenar con menos de 3 millones dentro de Periférico". Empuja con urgencia real (solo 3) hacia visita o apartado; NO inventes otras condiciones ni otros descuentos. La promoción aplica SOLO a 3 departamentos seleccionados por Acierta Max, no a cualquier unidad: el precio real de lista de Bella Vittoria es $3,450,000 y esta promoción es única. GUION PARA LEADS DE LA PROMOCIÓN (breve, una pregunta por mensaje): 1) Si quien escribe es inmobiliaria o asesor, atiéndelo como corredor, no como comprador. 2) Pregunta si es para vivir o para invertir y cómo pagaría (contado, crédito bancario, Infonavit o Cofinavit); si es con crédito, ofrécele precalificación sin costo con nuestra especialista en crédito. 3) Cierra SIEMPRE agendando la visita: hay asesor de guardia en el desarrollo TODOS LOS DÍAS de 10:30 a 17:00 (Cobre 4232, Lomas de la Victoria). Propón dos horarios concretos lo más pronto posible (hoy o mañana; este fin de semana si lo prefiere) y confirma día, hora, nombre y cuántas personas vienen; para ver horarios libres y apartar la cita usa SIEMPRE agenda_desarrollos (desarrollo='bellavittoria'). 4) Recuerda que son solo 3 y se asignan por orden de apartado ($100,000). 2 recámaras, 2 baños, 70-75 m², 1-2 cajones. Cobre 4232, Lomas de la Victoria, Tlaquepaque, a minutos de Plaza del Sol. Créditos bancarios e INFONAVIT/COFINAVIT, entrega inmediata, registrado ante PROFECO. Liga oficial: https://www.aciertamax.com/property/invierte-en-bella-vittoria-2-recamaras-con-excelente-ubicacion?agent=javier373&lang=es
 4. VILLA DHARA (Parque Morelos): loft ÚNICO de doble altura, 1 recámara, 1 baño, 74 m² en total (unos 55 m² de departamento + terraza privada de unos 20 m²), amueblado, a estrenar (2025), piso 2. Frente al Parque Morelos, El Retiro, Guadalajara. RENTA $14,000/mes (mantenimiento $1,500) o VENTA $2,295,000 (acepta bancarios e INFONAVIT/COFINAVIT). Amenidades: gimnasio, biblioteca, salas de trabajo, ludoteca, huerto urbano, vigilancia 24/7. Cerca de Hospital Civil, Catedral, Línea 3. Ideal ejecutivos, médicos, nómadas digitales, Airbnb. Liga oficial: https://www.aciertamax.com/property/el-departamento-mas-exclusivo-de-villa-dhara-terraza-privada-74-m-amueblado?agent=javier373&lang=es
 5. ÉLEVÉ VALLE REAL (solo renta): depto de lujo, 3 recámaras (cada una con baño completo), 3 baños + medio baño, 247 m², 2 cajones + bodega, piso 6, a estrenar. RENTA $37,000/mes. Vista al Campo de Golf Las Lomas, Valle Real, Zapopan. Torre de 15 niveles, amenidades: alberca, gimnasio, jacuzzi, salón de usos múltiples, seguridad 24h. Liga oficial: https://www.aciertamax.com/property/extraordinario-departamento-valle-real-torre-de-lujo-eleve-valle-real-zapopan?agent=javier373&lang=es
+6. DÚO 24 NEW LIVING (desarrollo de GIG; el cliente suele llegar con un mensaje que dice DUO, DÚO 24 o duo24.com.mx): departamentos en VENTA a estrenar, 2 torres de 24 niveles, Av. López Mateos Sur 4255, Loma Bonita, Zapopan (a 3 min de Plaza del Sol, cerca de Plaza La Perla y Expo Guadalajara). Lista de precios de octubre 2026 (sujeta a cambio sin previo aviso; la cantidad de cajones puede variar). TORRE A — Modelo 06: 49.61 m², 1 rec, 1 baño, 1 cajón, de $4,043,993 a $4,514,000 · Modelo 03: 52.99 m², 1 rec, 1 baño, 1 cajón, de $4,287,229 a $4,766,519 · Modelo 07: 80.64 m², 2 rec, 2 baños, 2 cajones, de $4,876,848 a $5,595,166 · Modelo 05: 90.42 m², 2 rec, 2 baños, 2 cajones, de $5,417,716 a $6,749,156 · Modelo 04: 92.24 m², 2 rec, 2 baños, 2 cajones, de $5,413,816 a $6,374,600 · Modelo 01: 101.09 m², 2 rec, 2 baños, 2 cajones, de $5,961,253 a $6,910,082 · Modelo 02: 116.10 m², 3 rec, 2 baños, 2 cajones, de $6,500,890 a $7,664,161. TORRE B — Modelo 04: 92.24 m², 2 rec, 2 baños, 2 cajones, hasta $5,463,695 (el precio de entrada lo confirma el asesor) · Modelo 02: 103.08 m², 3 rec, 2 baños, 2 cajones, de $5,937,396 a $5,964,526 · Modelo 05: 90.42 m², 2 rec, 2 baños, 2 cajones y terraza de 33.48 m², ÚNICO disponible, $6,370,343. En Torre B ya NO hay modelos 01, 03 ni 07. El precio cambia por nivel y vista: da el rango del modelo que le interese y ofrece confirmar la unidad exacta en la visita. GUION (una pregunta por mensaje): 1) ¿es para vivir o para invertir? y ¿cuántas recámaras o qué tamaño busca?; 2) ¿cómo pagaría (contado o crédito bancario)? — con crédito, ofrece precalificación sin costo con nuestra especialista; 3) cierra SIEMPRE agendando la visita con agenda_desarrollos (desarrollo='duo24'); si también le interesa algo más económico, ofrécele de paso Bella Vittoria (la promoción de $2,950,000) y agenda las dos visitas el mismo día. NUNCA inventes amenidades, fechas de entrega, enganches, rentabilidad ni descuentos que no estén aquí: si preguntan, di que el asesor lo confirma en la visita. Para DÚO 24 no uses buscar_inventario_zmg ni digas que no aparece: ya tienes aquí sus datos.
 Para PARQUE MORELOS y el resto del inventario: usa buscar_propiedades.
 REGLA CRÍTICA DE LAS PROPIEDADES EN CAMPAÑA: si el cliente pide la ficha, fotos o brochure de una de estas 5, o responde "sí / esa / me interesa" cuando se la ofreciste, usa INMEDIATAMENTE enviar_ficha_campana — NO hagas más preguntas antes, NO la describas de nuevo: mándala. Nota: estas 5 propiedades pueden NO aparecer en buscar_propiedades (el nombre de la zona no coincide); NUNCA digas "no aparece en el sistema": tú ya tienes sus datos aquí y su ficha en enviar_ficha_campana.
 
@@ -3439,6 +3452,9 @@ def run_tool(name, args, phone):
                                          operacion=args.get("operacion", ""))
         elif name == "referir_a_betty":
             out = referir_a_betty(phone, args.get("nombre", ""), args.get("necesidad", ""))
+        elif name == "agenda_desarrollos":
+            import agenda_visitas as _agenda_v
+            out = _agenda_v.herramienta(phone, args)
         elif name == "calcular_costos_operacion":
             out = calcular_costos_operacion(args.get("operacion", ""),
                                             args.get("renta_mensual"),
@@ -12045,6 +12061,13 @@ try:
     _platica.registrar(app, globals())
 except Exception as _e_platica:
     print(f"[MAX-PLATICA] No se pudo cargar el módulo: {_e_platica}", flush=True)
+
+# AGENDA COMPARTIDA BellaVittoria + DÚO 24 (mismo asesor de guardia) — ver agenda_visitas.py (27-nov-2026)
+try:
+    import agenda_visitas as _agenda_visitas
+    _agenda_visitas.registrar(globals())
+except Exception as _e_agenda:
+    print(f"[MAX-AGENDA] No se pudo cargar el módulo: {_e_agenda}", flush=True)
 
 
 if __name__ == "__main__":
