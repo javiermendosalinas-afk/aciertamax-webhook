@@ -536,6 +536,21 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
                         if os.environ.get("REPARTO_PREFERENCIAS", "1") != "0" else _siguiente_vendedor())
             memoria_guardar(phone_cliente, VENDEDOR_ASIGNADO=vendedor["nombre"],
                             VENDEDOR_ASIGNADO_PHONE=vendedor["phone"])
+        _ctx_v = {}
+        try:
+            _ctx_v = _contexto_de_propiedades(propiedades)
+        except Exception:
+            pass
+        _es_javier = _ultimos10(vendedor.get("phone", "")) == _ultimos10(JAVIER_PHONE)
+        if not preferido and _alto_valor_zmg(_ctx_v) and not _es_javier:
+            print(f"[MAX-REPARTO] {_ctx_v.get('clave')} alto valor ZMG: pasa de {vendedor.get('nombre')} a Javier", flush=True)
+            vendedor = VENDEDORES[0]
+            _es_javier = True
+            memoria_guardar(phone_cliente, VENDEDOR_ASIGNADO=vendedor["nombre"], VENDEDOR_ASIGNADO_PHONE=vendedor["phone"])
+        _etiqueta_v = ""
+        if _es_javier and not preferido:
+            _etiqueta_v = ("⭐ CLIENTE ALTO VALOR ZMG (venta > $3.5 M o renta > $30 mil): es tuyo, JMS.\n" if _alto_valor_zmg(_ctx_v)
+                           else "🔵 PRIORIDAD BAJA: ningún coach lo cubre ahora (horario, zona o montos); queda contigo, JMS.\n")
         n = len(sh.get_all_values())
         folio_crm = f"CRM-{n:04d}"
         ahora = time.time()
@@ -581,6 +596,7 @@ def crm_crear_registro(phone_cliente, nombre_cliente, propiedades, operacion="",
             print(f"[MAX-ORIG] No se pudo armar el bloque de originadores: {e}", flush=True)
         msg = (
             (f"🟢 LEAD INICIAL — {folio_crm}\n\n" if busca else f"🆕 NUEVO CLIENTE ASIGNADO — {folio_crm}\n\n")
+            + _etiqueta_v
             + f"Cliente: {nombre_cliente} ({phone_cliente})\n"
             + (f"🎯 Busca: {busca}\n\n" if busca else "")
             + (f"Le interesan estas propiedades:\n{lista_texto}\n\n" if propiedades else "")
@@ -11414,21 +11430,63 @@ def _contexto_de_propiedades(propiedades):
         c = (pr.get("codigo_eb") or "").upper()
         p = next((x for x in INVENTARIO_ZMG if (x.get("codigo_eb") or "").upper() == c), None) if c else None
         if p:
-            return {"operacion": p.get("Operación", ""), "precio": p.get("Precio") or 0, "lat": p.get("lat"), "lon": p.get("lon"), "clave": c}
+            return {"operacion": p.get("Operación", ""), "precio": p.get("Precio") or 0, "lat": p.get("lat"), "lon": p.get("lon"), "clave": c,
+                    "municipio": p.get("Municipio", "")}
         if pr.get("precio") or pr.get("operacion"):
-            return {"operacion": pr.get("operacion", ""), "precio": pr.get("precio") or 0, "lat": pr.get("lat"), "lon": pr.get("lon"), "clave": c}
+            return {"operacion": pr.get("operacion", ""), "precio": pr.get("precio") or 0, "lat": pr.get("lat"), "lon": pr.get("lon"), "clave": c,
+                    "municipio": pr.get("municipio", "")}
     return {}
+
+
+# Reglas de Javier (25-nov-2026): en la ZMG, venta de más de $3.5 M o renta de más de $30 mil
+# al mes son SIEMPRE de Javier (JMS). Lo que ningún coach cubre (horario, zona o montos) también
+# es de Javier, marcado como prioridad baja. Horario de JMS para agendar con los originadores.
+JMS_VENTA_MIN = float(os.environ.get("JMS_VENTA_MIN", "3500000"))
+JMS_RENTA_MIN = float(os.environ.get("JMS_RENTA_MIN", "30000"))
+JMS_HORARIO = os.environ.get("JMS_HORARIO", "de 8:00 a 12:00 y de 17:00 a 20:00")
+MUNICIPIOS_ZMG = ("guadalajara", "zapopan", "tlaquepaque", "tonala", "tlajomulco", "el salto", "juanacatlan",
+                  "ixtlahuacan", "zapotlanejo", "acatlan")
+
+
+def _alto_valor_zmg(ctx):
+    if not ctx:
+        return False
+    precio = _num(ctx.get("precio"))
+    if not precio:
+        return False
+    muni = _norm_txt(ctx.get("municipio") or "")
+    if muni and not any(m in muni for m in MUNICIPIOS_ZMG):
+        return False
+    if (ctx.get("operacion") or "").upper().startswith("RENTA"):
+        return precio > JMS_RENTA_MIN
+    return precio > JMS_VENTA_MIN
+
+
+def _horario_coach_texto(vendedor):
+    """Ventana para agendar que se le da al originador (variable 4 de la plantilla)."""
+    tel10 = _ultimos10((vendedor or {}).get("phone", ""))
+    if not vendedor or tel10 == _ultimos10(JAVIER_PHONE):
+        return f"Para agendar la visita, Javier Mendoza tiene disponible {JMS_HORARIO}. ¿Qué día y hora te acomoda dentro de esa ventana?"
+    p = _prefs_todas().get(tel10) or {}
+    if p.get("HORA_INI") and p.get("HORA_FIN"):
+        dias = (p.get("DIAS") or "").replace(",", ", ")
+        return (f"Para agendar la visita, {(vendedor.get('nombre') or 'nuestro coach').split()[0]} tiene disponible de {p['HORA_INI']} a {p['HORA_FIN']}"
+                + (f" ({dias})" if dias else "") + ". ¿Qué día y hora te acomoda dentro de esa ventana?")
+    return "Para agendar la visita, ¿qué días y horarios tienes para mostrarla esta semana?"
 
 
 def _vendedor_por_preferencias(ctx):
     """Coach elegible por turnos, o Javier si nadie cumple."""
     javier = VENDEDORES[0]
+    if _alto_valor_zmg(ctx):
+        print(f"[MAX-REPARTO] {ctx.get('clave') or ''} {ctx.get('operacion')} ${ctx.get('precio')}: alto valor ZMG → Javier", flush=True)
+        return dict(javier, motivo="alto_valor")
     prefs = _prefs_todas()
     red = _coaches_red()
     elegibles = [t for t in red if t in prefs and _cumple(prefs[t], ctx)]
     if not elegibles:
-        print(f"[MAX-REPARTO] Nadie cumple {ctx}: el cliente es de Javier", flush=True)
-        return javier
+        print(f"[MAX-REPARTO] Nadie cumple {ctx}: el cliente es de Javier (prioridad baja)", flush=True)
+        return dict(javier, motivo="baja")
     ultimo = ""
     try:
         valores = _crm_sheet().get_all_values()
@@ -11902,7 +11960,8 @@ def _consultar_originador(phone_cliente, nombre_cliente, propiedades, vendedor, 
             base = _prop_de_inventario(clave, "") or {}
             desc = f"{clave}" + (f" ({(base.get('titulo') or '')[:60]})" if base.get("titulo") else "")
             coach = (vendedor or {}).get("nombre", "Javier Mendoza")
-            ok = wati_send_template_message("521" + tel, "consulta_disponibilidad", [saludo, coach, desc])
+            ok = wati_send_template_message("521" + tel, os.environ.get("PLANTILLA_ORIGINADOR", "consulta_disponibilidad"),
+                                            [saludo, coach, desc, _horario_coach_texto(vendedor)])
             _cons_hoja().append_row([hora_gdl(), folio or "", clave, f"{asesor} · {o.get('inmobiliaria', '')}".strip(" ·"), tel,
                                      nombre_cliente or "", _ultimos10(phone_cliente), coach, _ultimos10((vendedor or {}).get("phone", "")),
                                      "ENVIADA" if ok else "ERROR PLANTILLA", "", "", "", "", hora_gdl()])
