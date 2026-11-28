@@ -3741,6 +3741,22 @@ CAMPANAS = {
                    "Acierta Max — EXCLUSIVA · Socio AMPI, certificado ✅"),
         "seguimiento": "¿Lo buscas para vivir o como inversión? Hay unidades desde ese precio y te puedo agendar visita al desarrollo esta semana 🙌",
     },
+    # DÚO 24 (GIG) — el anuncio de duo24.com.mx manda al cliente a escribir solo "DUO" (27-nov-2026).
+    # La palabra suelta "duo" se reconoce en detectar_campana con límite de palabra.
+    "duo24": {
+        "claves": ["duo24", "duo 24", "dúo 24", "dúo24", "duo24.com.mx"],
+        "foto": None,
+        "caption": "🏙 DÚO 24 NEW LIVING — departamentos a estrenar en 2 torres de 24 niveles\n📍 Av. López Mateos Sur 4255, Loma Bonita, Zapopan (a 3 min de Plaza del Sol)\n💰 VENTA desde $4,043,993",
+        "cuerpo": ("🛏 1 recámara · 49–53 m² · 1 baño · 1 cajón — desde $4,043,993\n"
+                   "🛏 2 recámaras · 80–101 m² · 2 baños · 2 cajones — desde $4,876,848\n"
+                   "🛏 3 recámaras · 103–116 m² · 2 baños · 2 cajones — desde $5,937,396\n"
+                   "🌿 Torre B: un único 2 recámaras con terraza de 33 m² — $6,370,343\n\n"
+                   "El precio cambia por nivel y vista; en la visita te mostramos la unidad exacta.\n"
+                   "Lista de precios de octubre 2026, sujeta a cambio sin previo aviso.\n\n"
+                   "🔗 www.duo24.com.mx\n\n"
+                   "Acierta Max — Socio AMPI, certificado ✅"),
+        "seguimiento": "¿Es para vivir o para invertir? Y ¿cuántas recámaras buscas? Con eso te digo qué modelo te queda y te agendo la visita 🙌",
+    },
     "villa_dhara": {
         "claves": ["villa dhara", "dhara", "parque morelos", "eb-wg7913"],
         "foto": "https://assets.easybroker.com/property_images/6057913/107125331/EB-WG7913.png",
@@ -4062,6 +4078,8 @@ _cargar_campanas_semanales()
 
 def detectar_campana(texto):
     t = texto.lower()
+    if "duo24" in CAMPANAS and re.search(r"(?<![a-zñáéíóú])d[uú]o(?![a-zñáéíóú])", t):
+        return "duo24", CAMPANAS["duo24"]
     for nombre, c in CAMPANAS.items():
         if any(k in t for k in c["claves"]):
             return nombre, c
